@@ -1,0 +1,13 @@
+{
+  "Notification": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "/Users/yingzhang/Documents/dev/claude-monitor/target/debug/claude-monitor hook"
+        }
+      ]
+    }
+  ]
+}
