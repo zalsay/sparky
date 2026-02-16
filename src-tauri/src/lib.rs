@@ -10,7 +10,7 @@ mod websocket;
 use websocket::FeishuWsClient;
 
 mod pty;
-use pty::{PtyManager, pty_spawn, pty_write, pty_kill, pty_resize};
+use pty::{PtyManager, pty_spawn, pty_write, pty_kill, pty_resize, pty_exists};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -19,6 +19,7 @@ pub struct AppConfig {
     pub encrypt_key: Option<String>,
     pub verification_token: Option<String>,
     pub chat_id: Option<String>,
+    pub project_path: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -29,6 +30,7 @@ impl Default for AppConfig {
             encrypt_key: None,
             verification_token: None,
             chat_id: None,
+            project_path: None,
         }
     }
 }
@@ -124,6 +126,16 @@ pub struct HookStatus {
     pub last_event_at: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub id: i64,
+    pub name: String,
+    pub path: String,
+    pub hooks_installed: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 fn get_config_path(app_handle: &tauri::AppHandle) -> PathBuf {
     let app_data_dir = app_handle.path().app_data_dir().expect("Failed to get app data dir");
     fs::create_dir_all(&app_data_dir).expect("Failed to create app data dir");
@@ -158,6 +170,20 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
         )",
         [],
     )?;
+
+    // 创建项目表
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            path TEXT NOT NULL,
+            hooks_installed INTEGER DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )",
+        [],
+    )?;
+
     Ok(())
 }
 
@@ -209,6 +235,127 @@ fn save_config(app_handle: tauri::AppHandle, config: AppConfig) -> Result<(), St
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
     fs::write(&config_path, config_str)
         .map_err(|e| format!("Failed to write config: {}", e))?;
+    Ok(())
+}
+
+fn get_claude_settings_path() -> Result<std::path::PathBuf, String> {
+    let home = dirs::home_dir().ok_or("Failed to find home directory")?;
+    Ok(home.join(".claude").join("settings.local.json"))
+}
+
+#[tauri::command]
+fn check_hooks_installed(project_path: String) -> Result<bool, String> {
+    let settings_path = std::path::Path::new(&project_path)
+        .join(".claude")
+        .join("settings.local.json");
+
+    if !settings_path.exists() {
+        return Ok(false);
+    }
+
+    let content = fs::read_to_string(&settings_path)
+        .map_err(|e| format!("Failed to read settings: {}", e))?;
+
+    let settings: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse settings: {}", e))?;
+
+    if let Some(hooks) = settings.get("hooks") {
+        if let Some(hook_obj) = hooks.as_object() {
+            // Check for our hooks
+            let has_notification = hook_obj.contains_key("Notification");
+            let has_permission = hook_obj.contains_key("PermissionRequest");
+            let has_stop = hook_obj.contains_key("Stop");
+            return Ok(has_notification || has_permission || has_stop);
+        }
+    }
+
+    Ok(false)
+}
+
+#[tauri::command]
+fn install_hooks(project_path: String) -> Result<(), String> {
+    let settings_path = std::path::Path::new(&project_path)
+        .join(".claude")
+        .join("settings.local.json");
+
+    // Ensure .claude directory exists
+    if let Some(parent) = settings_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create .claude directory: {}", e))?;
+    }
+
+    // Get the hook executable path
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("Failed to get executable path: {}", e))?;
+
+    let hooks_config = serde_json::json!({
+        "hooks": {
+            "Notification": exe_path.to_string_lossy().to_string(),
+            "PermissionRequest": exe_path.to_string_lossy().to_string(),
+            "Stop": exe_path.to_string_lossy().to_string(),
+            "UserPromptSubmit": exe_path.to_string_lossy().to_string()
+        }
+    });
+
+    if settings_path.exists() {
+        // Read existing settings and merge
+        let content = fs::read_to_string(&settings_path)
+            .map_err(|e| format!("Failed to read settings: {}", e))?;
+
+        let mut settings: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse settings: {}", e))?;
+
+        // Merge hooks
+        if let Some(obj) = settings.as_object_mut() {
+            obj.insert("hooks".to_string(), hooks_config["hooks"].clone());
+        }
+
+        let new_content = serde_json::to_string_pretty(&settings)
+            .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+
+        fs::write(&settings_path, new_content)
+            .map_err(|e| format!("Failed to write settings: {}", e))?;
+    } else {
+        // Create new settings file
+        let content = serde_json::to_string_pretty(&hooks_config)
+            .map_err(|e| format!("Failed to serialize: {}", e))?;
+
+        fs::write(&settings_path, content)
+            .map_err(|e| format!("Failed to write settings: {}", e))?;
+    }
+
+    log::info!("Hooks installed successfully to {:?}", settings_path);
+    Ok(())
+}
+
+#[tauri::command]
+fn uninstall_hooks(project_path: String) -> Result<(), String> {
+    let settings_path = std::path::Path::new(&project_path)
+        .join(".claude")
+        .join("settings.local.json");
+
+    if !settings_path.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&settings_path)
+        .map_err(|e| format!("Failed to read settings: {}", e))?;
+
+    let mut settings: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse settings: {}", e))?;
+
+    // Remove hooks
+    if let Some(obj) = settings.as_object_mut() {
+        obj.remove("hooks");
+    }
+
+    let new_content = serde_json::to_string_pretty(&settings)
+        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+
+    fs::write(&settings_path, new_content)
+        .map_err(|e| format!("Failed to write settings: {}", e))?;
+
+    log::info!("Hooks uninstalled successfully");
     Ok(())
 }
 
@@ -406,6 +553,103 @@ fn get_hook_status() -> Result<HookStatus, String> {
     }
 }
 
+#[tauri::command]
+fn get_projects() -> Result<Vec<Project>, String> {
+    let conn = open_db()?;
+
+    let mut stmt = conn
+        .prepare("SELECT id, name, path, hooks_installed, created_at, updated_at FROM projects ORDER BY updated_at DESC")
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Project {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                path: row.get(2)?,
+                hooks_installed: row.get::<_, i64>(3)? != 0,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut projects = Vec::new();
+    for project in rows {
+        projects.push(project.map_err(|e| e.to_string())?);
+    }
+
+    Ok(projects)
+}
+
+#[tauri::command]
+fn add_project(name: String, path: String) -> Result<Project, String> {
+    let conn = open_db()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+
+    conn.execute(
+        "INSERT INTO projects (name, path, hooks_installed, created_at, updated_at) VALUES (?1, ?2, 0, ?3, ?4)",
+        params![name, path, now, now],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let id = conn.last_insert_rowid();
+
+    Ok(Project {
+        id,
+        name,
+        path,
+        hooks_installed: false,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+#[tauri::command]
+fn update_project(id: i64, name: String, path: String) -> Result<(), String> {
+    let conn = open_db()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+
+    conn.execute(
+        "UPDATE projects SET name = ?1, path = ?2, updated_at = ?3 WHERE id = ?4",
+        params![name, path, now, id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_project(id: i64) -> Result<(), String> {
+    let conn = open_db()?;
+    conn.execute("DELETE FROM projects WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_project_hooks_status(id: i64, hooks_installed: bool) -> Result<(), String> {
+    let conn = open_db()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+
+    conn.execute(
+        "UPDATE projects SET hooks_installed = ?1, updated_at = ?2 WHERE id = ?3",
+        params![hooks_installed as i64, now, id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let (event_tx, _event_rx) = mpsc::channel::<String>(100);
@@ -417,6 +661,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(state)
         .manage(PtyManager::new())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -485,7 +730,16 @@ pub fn run() {
             pty_spawn,
             pty_write,
             pty_kill,
-            pty_resize
+            pty_resize,
+            pty_exists,
+            check_hooks_installed,
+            install_hooks,
+            uninstall_hooks,
+            get_projects,
+            add_project,
+            update_project,
+            delete_project,
+            set_project_hooks_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

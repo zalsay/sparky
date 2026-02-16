@@ -5,9 +5,10 @@ import '@xterm/xterm/css/xterm.css';
 
 interface TerminalProps {
   onData?: (data: string) => void;
+  getIsResumed?: () => boolean;
 }
 
-export default function TerminalComponent({ onData }: TerminalProps) {
+export default function TerminalComponent({ onData, getIsResumed }: TerminalProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const terminalInstance = useRef<Terminal | null>(null);
   const fitAddon = useRef<FitAddon | null>(null);
@@ -40,16 +41,36 @@ export default function TerminalComponent({ onData }: TerminalProps) {
 
     const term = new Terminal({
       cursorBlink: true,
-      fontSize: 14,
+      cursorStyle: 'bar',
+      fontSize: 15,
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      fontWeight: 'bold',
+      fontWeightBold: '900',
       theme: {
         background: '#1e1e1e',
-        foreground: '#d4d4d4',
+        foreground: '#e0e0e0',
         cursor: '#ffffff',
+        cursorAccent: '#1e1e1e',
         selectionBackground: '#264f78',
+        black: '#000000',
+        red: '#ff5555',
+        green: '#50fa7b',
+        yellow: '#f1fa8c',
+        blue: '#bd93f9',
+        magenta: '#ff79c6',
+        cyan: '#8be9fd',
+        white: '#bfbfbf',
+        brightBlack: '#4d4d4d',
+        brightRed: '#ff6e67',
+        brightGreen: '#5af78e',
+        brightYellow: '#f4f99d',
+        brightBlue: '#caa9fa',
+        brightMagenta: '#ff92d0',
+        brightCyan: '#9aedfe',
+        brightWhite: '#e6e6e6',
       },
       convertEol: true,
-      rows: 20,
+      rows: 24,
       allowProposedApi: true,
     });
 
@@ -57,7 +78,15 @@ export default function TerminalComponent({ onData }: TerminalProps) {
     term.loadAddon(fit);
 
     term.open(terminalRef.current);
-    fit.fit();
+
+    // 延迟一下再 fit，确保容器已渲染
+    setTimeout(() => {
+      try {
+        fit.fit();
+      } catch (e) {
+        console.warn('Fit error:', e);
+      }
+    }, 100);
 
     // 自动聚焦终端
     term.focus();
@@ -65,10 +94,11 @@ export default function TerminalComponent({ onData }: TerminalProps) {
     terminalInstance.current = term;
     fitAddon.current = fit;
 
-    term.writeln('═══ Claude Monitor 终端 ═══');
-    term.writeln('');
-    term.writeln('已连接到终端');
-    term.writeln('');
+    // 如果是恢复会话，不显示启动消息
+    const isResumed = getIsResumed ? getIsResumed() : false;
+    if (!isResumed) {
+      term.writeln('正在启动终端...');
+    }
 
     // 当用户输入时发送给 PTY
     term.onData((data) => {
@@ -79,7 +109,11 @@ export default function TerminalComponent({ onData }: TerminalProps) {
     });
 
     const handleResize = () => {
-      fit.fit();
+      try {
+        fit.fit();
+      } catch (e) {
+        // ignore
+      }
     };
 
     window.addEventListener('resize', handleResize);
@@ -100,14 +134,26 @@ export default function TerminalComponent({ onData }: TerminalProps) {
     <div
       ref={terminalRef}
       onClick={handleClick}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.boxShadow = '0 0 20px rgba(86, 182, 255, 0.3), inset 0 0 30px rgba(0, 0, 0, 0.5)';
+        e.currentTarget.style.border = '1px solid rgba(86, 182, 255, 0.3)';
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.boxShadow = 'inset 0 0 20px rgba(0, 0, 0, 0.5)';
+        e.currentTarget.style.border = '1px solid transparent';
+      }}
       style={{
         width: '100%',
         height: '100%',
         minHeight: '400px',
         backgroundColor: '#1e1e1e',
-        padding: '8px',
+        padding: '12px',
         boxSizing: 'border-box',
         cursor: 'text',
+        borderRadius: '8px',
+        boxShadow: 'inset 0 0 20px rgba(0, 0, 0, 0.5)',
+        border: '1px solid transparent',
+        transition: 'all 0.3s ease',
       }}
     />
   );

@@ -22,3 +22,4 @@
 - 2026-02-13 修正本地 hooks 配置为合法事件键（仅保留 Notification）。
 - 2026-02-13 按官方格式改为 settings.local.json 顶层事件键配置。
 - 2026-02-13 修复 settings.local.json 为空导致 Claude 无法启动的问题。
+- 2026-02-13 调整 Tauri 窗口默认尺寸为 1920x1080。

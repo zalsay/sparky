@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Claude Monitor",
+  "productName": "Sparky",
   "version": "0.1.0",
-  "identifier": "com.claude.monitor",
+  "identifier": "com.sparky.desktop",
   "build": {
     "frontendDist": "../ui/dist",
     "devUrl": "http://localhost:5176",
@@ -12,9 +12,9 @@
   "app": {
     "windows": [
       {
-        "title": "Claude Monitor",
-        "width": 1200,
-        "height": 800,
+        "title": "Sparky",
+        "width": 1920,
+        "height": 1080,
         "resizable": true,
         "fullscreen": false,
         "center": true

@@ -6,10 +6,9 @@ use std::thread;
 use tauri::{Emitter, Manager};
 
 pub struct PtyManager {
-    pty_pairs: Mutex<HashMap<u32, PtyPair>>,
-    children: Mutex<HashMap<u32, Box<dyn Child + Send + Sync>>>,
-    writers: Mutex<HashMap<u32, Box<dyn Write + Send>>>,
-    next_pid: Mutex<u32>,
+    pty_pairs: Mutex<HashMap<String, PtyPair>>,
+    children: Mutex<HashMap<String, Box<dyn Child + Send + Sync>>>,
+    writers: Mutex<HashMap<String, Box<dyn Write + Send>>>,
 }
 
 impl PtyManager {
@@ -18,44 +17,44 @@ impl PtyManager {
             pty_pairs: Mutex::new(HashMap::new()),
             children: Mutex::new(HashMap::new()),
             writers: Mutex::new(HashMap::new()),
-            next_pid: Mutex::new(1),
         }
     }
 
-    pub fn add_pty(&self, pair: PtyPair, child: Box<dyn Child + Send + Sync>) -> u32 {
-        let mut next_pid = self.next_pid.lock().unwrap();
-        let pid = *next_pid;
-        *next_pid += 1;
+    pub fn add_pty(&self, project_path: String, pair: PtyPair, child: Box<dyn Child + Send + Sync>) {
+        // Remove existing PTY if any
+        let _ = self.remove_pty(&project_path);
 
         // Create writer immediately and store it
         let writer = pair.master.take_writer().expect("Failed to take writer");
-        self.writers.lock().unwrap().insert(pid, writer);
+        self.writers.lock().unwrap().insert(project_path.clone(), writer);
 
-        self.pty_pairs.lock().unwrap().insert(pid, pair);
-        self.children.lock().unwrap().insert(pid, child);
-
-        pid
+        self.pty_pairs.lock().unwrap().insert(project_path.clone(), pair);
+        self.children.lock().unwrap().insert(project_path, child);
     }
 
-    pub fn write(&self, pid: u32, data: &str) -> Result<(), String> {
+    pub fn write(&self, project_path: &str, data: &str) -> Result<(), String> {
         let mut writers = self.writers.lock().unwrap();
-        if let Some(writer) = writers.get_mut(&pid) {
+        if let Some(writer) = writers.get_mut(project_path) {
             writer.write_all(data.as_bytes()).map_err(|e| format!("Write error: {}", e))?;
             writer.flush().map_err(|e| format!("Flush error: {}", e))?;
             Ok(())
         } else {
-            Err(format!("Writer not found for pid: {}", pid))
+            Err(format!("Writer not found for project: {}", project_path))
         }
     }
 
-    pub fn remove_pty(&self, pid: u32) -> Option<(PtyPair, Box<dyn Child + Send + Sync>)> {
-        let pair = self.pty_pairs.lock().unwrap().remove(&pid);
-        let child = self.children.lock().unwrap().remove(&pid);
-        let _writer = self.writers.lock().unwrap().remove(&pid);
+    pub fn remove_pty(&self, project_path: &str) -> Option<(PtyPair, Box<dyn Child + Send + Sync>)> {
+        let pair = self.pty_pairs.lock().unwrap().remove(project_path);
+        let child = self.children.lock().unwrap().remove(project_path);
+        let _writer = self.writers.lock().unwrap().remove(project_path);
         match (pair, child) {
             (Some(pair), Some(child)) => Some((pair, child)),
             _ => None,
         }
+    }
+
+    pub fn has_pty(&self, project_path: &str) -> bool {
+        self.pty_pairs.lock().unwrap().contains_key(project_path)
     }
 }
 
@@ -68,8 +67,9 @@ pub async fn pty_spawn(
     envs: HashMap<String, String>,
     cols: u16,
     rows: u16,
-) -> Result<u32, String> {
-    log::info!("Spawning PTY: program={}, args={:?}, cwd={}", program, args, cwd);
+    project_path: String,
+) -> Result<String, String> {
+    log::info!("Spawning PTY: program={}, args={:?}, cwd={}, project={}", program, args, cwd, project_path);
 
     let pty_system = native_pty_system();
 
@@ -92,25 +92,24 @@ pub async fn pty_spawn(
     let child = pair.slave.spawn_command(cmd)
         .map_err(|e| format!("Failed to spawn command: {}", e))?;
 
-    // Store the pair and child, get a unique PID
+    // Store the pair and child with project path as key
     let manager = app.state::<PtyManager>();
-    let pid = manager.add_pty(pair, child);
+    manager.add_pty(project_path.clone(), pair, child);
 
-    log::info!("PTY spawned with internal pid: {}", pid);
+    log::info!("PTY spawned for project: {}", project_path);
 
     // Spawn a task to read from the PTY
     let app_handle = app.clone();
-    let reader_pid = pid;
 
     // Get a reader clone
     let master_reader = {
         let manager = app.state::<PtyManager>();
         let pair_guard = manager.pty_pairs.lock().unwrap();
-        let pair = pair_guard.get(&reader_pid).unwrap();
+        let pair = pair_guard.get(&project_path).unwrap();
         pair.master.try_clone_reader().map_err(|e| format!("Failed to clone master: {}", e))?
     };
-    drop(manager);
 
+    let project_path_clone = project_path.clone();
     thread::spawn(move || {
         let mut reader = master_reader;
         let mut buf = [0u8; 1024];
@@ -120,44 +119,44 @@ pub async fn pty_spawn(
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
                     let _ = app_handle.emit("pty-data", serde_json::json!({
-                        "pid": reader_pid,
+                        "projectPath": project_path_clone,
                         "data": data
                     }));
                 }
                 Err(_) => break,
             }
         }
-        log::info!("PTY reader thread exiting for pid: {}", reader_pid);
+        log::info!("PTY reader thread exiting for project: {}", project_path_clone);
     });
 
-    Ok(pid)
+    Ok(project_path)
 }
 
 #[tauri::command]
-pub fn pty_write(app: tauri::AppHandle, pid: u32, data: String) -> Result<(), String> {
-    log::debug!("PTY write: pid={}, data={}", pid, data);
+pub fn pty_write(app: tauri::AppHandle, project_path: String, data: String) -> Result<(), String> {
+    log::debug!("PTY write: project={}, data={}", project_path, data);
 
     let manager = app.state::<PtyManager>();
-    manager.write(pid, &data)
+    manager.write(&project_path, &data)
 }
 
 #[tauri::command]
-pub fn pty_kill(app: tauri::AppHandle, pid: u32) -> Result<(), String> {
-    log::info!("PTY kill: pid={}", pid);
+pub fn pty_kill(app: tauri::AppHandle, project_path: String) -> Result<(), String> {
+    log::info!("PTY kill: project={}", project_path);
 
     let manager = app.state::<PtyManager>();
-    let _ = manager.remove_pty(pid);
+    let _ = manager.remove_pty(&project_path);
     Ok(())
 }
 
 #[tauri::command]
-pub fn pty_resize(app: tauri::AppHandle, pid: u32, cols: u16, rows: u16) -> Result<(), String> {
-    log::info!("PTY resize: pid={}, cols={}, rows={}", pid, cols, rows);
+pub fn pty_resize(app: tauri::AppHandle, project_path: String, cols: u16, rows: u16) -> Result<(), String> {
+    log::info!("PTY resize: project={}, cols={}, rows={}", project_path, cols, rows);
 
     let manager = app.state::<PtyManager>();
     let mut pairs = manager.pty_pairs.lock().unwrap();
 
-    if let Some(pair) = pairs.get_mut(&pid) {
+    if let Some(pair) = pairs.get_mut(&project_path) {
         pair.master
             .resize(PtySize {
                 rows,
@@ -168,6 +167,12 @@ pub fn pty_resize(app: tauri::AppHandle, pid: u32, cols: u16, rows: u16) -> Resu
             .map_err(|e| format!("Resize error: {}", e))?;
         Ok(())
     } else {
-        Err(format!("PTY not found for pid: {}", pid))
+        Err(format!("PTY not found for project: {}", project_path))
     }
+}
+
+#[tauri::command]
+pub fn pty_exists(app: tauri::AppHandle, project_path: String) -> bool {
+    let manager = app.state::<PtyManager>();
+    manager.has_pty(&project_path)
 }

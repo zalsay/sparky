@@ -1,9 +1,11 @@
-import { useState, useEffect, useRef } from 'react';
-import { Form, Input, Button, Card, message, Divider, Tabs, Tag, Table, Empty, Modal, Space } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, HomeOutlined, ReloadOutlined, DeleteOutlined, EyeOutlined, ConsoleSqlOutlined } from '@ant-design/icons';
+import { useState, useEffect } from 'react';
+import { Form, Input, Button, Card, message, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs } from 'antd';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import { usePty } from './hooks/usePty';
 import TerminalComponent from './components/Terminal';
+import logo from '../../logo.png';
 import './App.css';
 
 interface AppConfig {
@@ -14,68 +16,43 @@ interface AppConfig {
   chat_id?: string;
 }
 
-interface HookRecord {
+interface Project {
   id: number;
-  event_name: string;
-  session_id: string;
-  notification_text: string;
-  transcript_path: string;
-  content: string;
-  result: string;
-  created_at: number;
-}
-
-interface HookRecordsResponse {
-  records: HookRecord[];
-  total: number;
-  page: number;
-  page_size: number;
-}
-
-interface HookStatus {
-  last_event_name?: string | null;
-  last_result?: string | null;
-  last_event_at?: number | null;
+  name: string;
+  path: string;
+  hooks_installed: boolean;
 }
 
 function App() {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [testingConnection, setTestingConnection] = useState(false);
-  const [hookStatus, setHookStatus] = useState<HookStatus | null>(null);
-  const [hookRecords, setHookRecords] = useState<HookRecord[]>([]);
-  const [hooksLoading, setHooksLoading] = useState(false);
-  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
-  const [hooksPagination, setHooksPagination] = useState({ page: 1, pageSize: 20, total: 0 });
-  const [wssStatus, setWssStatus] = useState<{ last_receive_time?: number; last_open_id?: string } | null>(null);
-  const [terminalTabActive, setTerminalTabActive] = useState(false);
-  const { startPty, write, kill } = usePty();
+  const [activeMenu, setActiveMenu] = useState<string>('project');
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  const { startPty, write, getIsResumed } = usePty();
 
   useEffect(() => {
     loadConfig();
-    fetchHooks();
-    const timer = setInterval(fetchHooks, 5000);
-    return () => clearInterval(timer);
+    fetchProjects();
   }, []);
 
-  // 当终端标签页激活时启动 PTY
-  const ptyStartedRef = useRef(false);
-
+  // 打开项目详情时启动 PTY
   useEffect(() => {
-    if (terminalTabActive && !ptyStartedRef.current) {
-      console.log('Starting PTY...');
-      ptyStartedRef.current = true;
-      startPty();
+    if (activeMenu === 'project-detail' && selectedProject) {
+      startPty(selectedProject.path);
     }
-  }, [terminalTabActive]);
+  }, [activeMenu, selectedProject]);
 
-  // 组件卸载时清理 PTY
-  useEffect(() => {
-    return () => {
-      console.log('Cleaning up PTY on unmount...');
-      kill();
-    };
-  }, []);
+  const handleEnterProject = (project: Project) => {
+    setSelectedProject(project);
+    setActiveMenu('project-detail');
+  };
+
+  const handleBackToProjects = () => {
+    setSelectedProject(null);
+    setActiveMenu('project');
+  };
 
   const loadConfig = async () => {
     try {
@@ -83,6 +60,15 @@ function App() {
       form.setFieldsValue(config);
     } catch (error) {
       message.error(`加载配置失败: ${error}`);
+    }
+  };
+
+  const fetchProjects = async () => {
+    try {
+      const projectsData = await invoke<Project[]>('get_projects');
+      setProjects(projectsData);
+    } catch (error) {
+      console.error('Failed to fetch projects:', error);
     }
   };
 
@@ -101,7 +87,7 @@ function App() {
   const handleTestConnection = async () => {
     const appId = form.getFieldValue('app_id');
     const appSecret = form.getFieldValue('app_secret');
-    
+
     if (!appId || !appSecret) {
       message.warning('请先填写 App ID 和 App Secret');
       return;
@@ -109,10 +95,7 @@ function App() {
 
     setTestingConnection(true);
     try {
-      const result = await invoke<string>('test_feishu_connection', { 
-        appId, 
-        appSecret 
-      });
+      const result = await invoke<string>('test_feishu_connection', { appId, appSecret });
       message.success(result);
     } catch (error) {
       message.error(`测试失败: ${error}`);
@@ -121,478 +104,281 @@ function App() {
     }
   };
 
-  const fetchHooks = async (page: number = 1) => {
-    setHooksLoading(true);
-    try {
-      const [status, recordsRes, wss] = await Promise.all([
-        invoke<HookStatus>('get_hook_status'),
-        invoke<HookRecordsResponse>('get_hook_records', { page, pageSize: 20 }),
-        invoke<{ last_receive_time?: number; last_open_id?: string }>('get_wss_status').catch(() => ({}))
-      ]);
-      setHookStatus(status);
-      setHookRecords(recordsRes.records);
-      setHooksPagination({ page: recordsRes.page, pageSize: recordsRes.page_size, total: recordsRes.total });
-      setWssStatus(wss);
-    } catch (error) {
-      message.error(`加载 hooks 记录失败: ${error}`);
-    } finally {
-      setHooksLoading(false);
+  const handleAddProject = async () => {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: '选择项目文件夹',
+    });
+    if (selected && typeof selected === 'string') {
+      const name = selected.split('/').pop() || '未命名项目';
+      try {
+        const newProject = await invoke<Project>('add_project', { name, path: selected });
+        setProjects([...projects, newProject]);
+        message.success(`项目 "${name}" 添加成功`);
+      } catch (error) {
+        message.error(`添加项目失败: ${error}`);
+      }
     }
   };
 
-  const lastEventAt = hookStatus?.last_event_at ?? null;
-  const isOnline = lastEventAt ? Date.now() - lastEventAt < 120000 : false;
-  const statusText = isOnline ? '在线' : '离线';
-  const statusColor = isOnline ? 'green' : 'default';
-  const lastEventName = hookStatus?.last_event_name ?? '暂无';
-  const lastResult = hookStatus?.last_result ?? '暂无';
-  const lastEventTime = lastEventAt
-    ? new Date(lastEventAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    : '暂无';
+  const handleDeleteProject = (id: number) => {
+    Modal.confirm({
+      title: '确认删除',
+      content: '确定要删除这个项目吗？',
+      onOk: async () => {
+        try {
+          await invoke('delete_project', { id });
+          setProjects(projects.filter(p => p.id !== id));
+          message.success('删除成功');
+        } catch (error) {
+          message.error(`删除项目失败: ${error}`);
+        }
+      },
+    });
+  };
 
-  const columns = [
-    {
-      title: '时间',
-      dataIndex: 'created_at',
-      key: 'created_at',
-      width: 160,
-      render: (value: number) => new Date(value).toLocaleString(),
-    },
-    {
-      title: '事件',
-      dataIndex: 'event_name',
-      key: 'event_name',
-      width: 150,
-      render: (value: string) => <Tag color="blue">{value}</Tag>,
-    },
-    {
-      title: 'Session',
-      dataIndex: 'session_id',
-      key: 'session_id',
-      width: 120,
-      render: (value: string) => <span style={{ fontSize: '12px', color: '#888' }}>{value.slice(0, 12)}</span>,
-    },
-    {
-      title: 'CWD',
-      dataIndex: 'content',
-      key: 'cwd',
-      width: 150,
-      render: (_: string, record: HookRecord) => {
-        const match = record.content?.match(/\*\*CWD\*\*: (.+)/);
-        const cwd = match ? match[1] : '';
-        return <span style={{ fontSize: '12px', color: '#666' }} title={cwd}>{cwd.split('/').slice(-2).join('/')}</span>;
-      },
-    },
-    {
-      title: '摘要',
-      dataIndex: 'notification_text',
-      key: 'notification_text',
-      render: (_: string, record: HookRecord) => {
-        const text = record.notification_text || '';
-        return (
-          <span
-            className="summary-text"
-            style={{ cursor: 'pointer', color: '#1890ff' }}
-            onClick={() => {
-              Modal.info({
-                title: 'Hook 详情',
-                width: 600,
-                content: (
-                  <div style={{ whiteSpace: 'pre-wrap', fontSize: '13px', lineHeight: 1.6 }}>
-                    {record.content || '无内容'}
-                  </div>
-                ),
-                onOk() {},
-              });
-            }}
-          >
-            {text.slice(0, 40)}{text.length > 40 ? '...' : ''}
-          </span>
-        );
-      },
-    },
-    {
-      title: '结果',
-      dataIndex: 'result',
-      key: 'result',
-      width: 80,
-      render: (value: string) => (
-        <Tag color={value.startsWith('failed') ? 'red' : value === 'sent' ? 'green' : 'orange'}>
-          {value}
-        </Tag>
-      ),
-    },
-    {
-      title: '操作',
-      key: 'action',
-      width: 100,
-      render: (_: any, record: HookRecord) => (
-        <Space size="small">
-          <Button
-            type="text"
-            size="small"
-            icon={<EyeOutlined />}
-            onClick={() => {
-              Modal.info({
-                title: 'Hook 详情',
-                width: 600,
-                content: (
-                  <div style={{ whiteSpace: 'pre-wrap', fontSize: '13px', lineHeight: 1.6 }}>
-                    {record.content || '无内容'}
-                  </div>
-                ),
-              });
-            }}
-          />
-          <Button
-            type="text"
-            size="small"
-            danger
-            icon={<DeleteOutlined />}
-            onClick={() => {
-              Modal.confirm({
-                title: '确认删除',
-                content: '确定要删除这条记录吗？',
-                onOk: async () => {
-                  try {
-                    await invoke('delete_hook_record', { id: record.id });
-                    message.success('删除成功');
-                    fetchHooks();
-                  } catch (error) {
-                    message.error(`删除失败: ${error}`);
-                  }
-                },
-              });
-            }}
-          />
-        </Space>
-      ),
-    },
-  ];
+  const handleInstallHooks = async (project: Project) => {
+    try {
+      await invoke('install_hooks', { projectPath: project.path });
+      await invoke('set_project_hooks_status', { id: project.id, hooksInstalled: true });
+      setProjects(projects.map(p => p.id === project.id ? { ...p, hooks_installed: true } : p));
+      message.success('Hooks 安装成功');
+    } catch (error) {
+      message.error(`安装Hooks失败: ${error}`);
+    }
+  };
+
+  const handleUninstallHooks = async (project: Project) => {
+    try {
+      await invoke('uninstall_hooks', { projectPath: project.path });
+      await invoke('set_project_hooks_status', { id: project.id, hooksInstalled: false });
+      setProjects(projects.map(p => p.id === project.id ? { ...p, hooks_installed: false } : p));
+      message.success('Hooks 已卸载');
+    } catch (error) {
+      message.error(`卸载Hooks失败: ${error}`);
+    }
+  };
 
   return (
     <div className="app-container">
       <header className="app-header">
         <div className="header-content">
           <div className="logo">
-            <span className="logo-icon">●</span>
-            <h1>Claude Monitor</h1>
+            <img src={logo} alt="logo" className="logo-img" />
+            <h1>Sparky</h1>
           </div>
           <p className="subtitle">飞书集成 · 长连接模式</p>
         </div>
       </header>
 
       <main className="app-main">
-        <Tabs
-          className="app-tabs"
-          defaultActiveKey="home"
-          onChange={(key) => setTerminalTabActive(key === 'terminal')}
-          items={[
-            {
-              key: 'home',
-              label: (
-                <span>
-                  <HomeOutlined /> 主页
-                </span>
-              ),
-              children: (
+        <div className="app-layout">
+          <aside className="app-sidebar">
+            <Menu
+              mode="inline"
+              selectedKeys={[activeMenu]}
+              onClick={(e) => setActiveMenu(e.key)}
+              style={{ height: '100%', borderRight: 0 }}
+              items={[
+                { key: 'project', icon: <SettingOutlined />, label: '项目' },
+                { key: 'settings', icon: <ApiOutlined />, label: '设置' },
+                { key: 'help', icon: <EyeOutlined />, label: '帮助' },
+              ]}
+            />
+          </aside>
+          <div className="app-content">
+            {activeMenu === 'project' && (
+              <div className="project-page">
+                <Card bordered={false}>
+                  <div className="card-header">
+                    <h2>项目管理</h2>
+                    <Button type="primary" icon={<SaveOutlined />} onClick={handleAddProject} style={{ marginLeft: 'auto' }}>
+                      添加项目
+                    </Button>
+                  </div>
+                  <p className="card-description">管理您的项目，每个项目可以独立配置 Claude Code Hooks</p>
+                  <Divider />
+                  {projects.length === 0 ? (
+                    <Empty description="暂无项目，请添加项目" />
+                  ) : (
+                    <Table
+                      dataSource={projects}
+                      rowKey="id"
+                      pagination={false}
+                      columns={[
+                        { title: '项目名称', dataIndex: 'name', key: 'name' },
+                        { title: '路径', dataIndex: 'path', key: 'path' },
+                        {
+                          title: 'Hooks 状态',
+                          key: 'hooks',
+                          render: (_: any, record: Project) => (
+                            <Tag color={record.hooks_installed ? 'black' : 'default'}>
+                              {record.hooks_installed ? '已安装' : '未安装'}
+                            </Tag>
+                          ),
+                        },
+                        {
+                          title: '操作',
+                          key: 'action',
+                          render: (_: any, record: Project) => (
+                            <Space>
+                              <Button size="small" className="action-btn" onClick={() => handleEnterProject(record)}>
+                                进入
+                              </Button>
+                              <Button size="small" className="action-btn" onClick={() => record.hooks_installed ? handleUninstallHooks(record) : handleInstallHooks(record)}>
+                                {record.hooks_installed ? '卸载' : '安装'}
+                              </Button>
+                              <Button size="small" className="action-btn danger" icon={<DeleteOutlined />} onClick={() => handleDeleteProject(record.id)} />
+                            </Space>
+                          ),
+                        },
+                      ]}
+                    />
+                  )}
+                </Card>
+              </div>
+            )}
+
+            {activeMenu === 'project-detail' && selectedProject && (
+              <div className="project-detail-page">
+                <Card bordered={false}>
+                  <div className="card-header">
+                    <Button icon={<ArrowLeftOutlined />} onClick={handleBackToProjects} style={{ marginRight: 12 }}>
+                      返回
+                    </Button>
+                    <h2>{selectedProject.name}</h2>
+                  </div>
+                  <Tabs
+                    defaultActiveKey="claude"
+                    items={[
+                      {
+                        key: 'claude',
+                        label: 'Claude',
+                        children: (
+                          <div style={{ height: '500px' }}>
+                            <TerminalComponent onData={write} getIsResumed={getIsResumed} />
+                          </div>
+                        ),
+                      },
+                      {
+                        key: 'detail',
+                        label: '详情',
+                        children: (
+                          <div>
+                            <div className="status-row">
+                              <span className="status-label">项目名称</span>
+                              <span className="status-value">{selectedProject.name}</span>
+                            </div>
+                            <div className="status-row">
+                              <span className="status-label">项目路径</span>
+                              <span className="status-value" style={{ fontSize: '12px', wordBreak: 'break-all' }}>{selectedProject.path}</span>
+                            </div>
+                            <div className="status-row">
+                              <span className="status-label">Hooks 状态</span>
+                              <Tag color={selectedProject.hooks_installed ? 'black' : 'default'}>
+                                {selectedProject.hooks_installed ? '已安装' : '未安装'}
+                              </Tag>
+                            </div>
+                            <Divider />
+                            <Space>
+                              <Button type="primary" icon={<FolderOutlined />} onClick={() => {
+                                message.info('项目路径: ' + selectedProject.path);
+                              }}>
+                                打开文件夹
+                              </Button>
+                              <Button icon={<SettingOutlined />} onClick={() => selectedProject.hooks_installed ? handleUninstallHooks(selectedProject) : handleInstallHooks(selectedProject)}>
+                                {selectedProject.hooks_installed ? '卸载 Hooks' : '安装 Hooks'}
+                              </Button>
+                            </Space>
+                          </div>
+                        ),
+                      },
+                    ]}
+                  />
+                </Card>
+              </div>
+            )}
+
+            {activeMenu === 'settings' && (
+              <div className="settings-page">
                 <div className="main-grid">
                   <div className="left-column">
                     <Card className="config-card" bordered={false}>
                       <div className="card-header">
-                        <SettingOutlined className="card-icon" />
-                        <h2>Claude 连接状态</h2>
+                        <ApiOutlined className="card-icon" />
+                        <h2>飞书应用配置</h2>
                       </div>
+                      <p className="card-description">配置飞书开放平台应用凭证，启用长连接模式实现消息推送与接收</p>
                       <Divider />
-                      <div className="status-row">
-                        <span className="status-label">状态</span>
-                        <Tag color={statusColor}>{statusText}</Tag>
-                      </div>
-                      <div className="status-row">
-                        <span className="status-label">最近事件</span>
-                        <span className="status-value">{lastEventName}</span>
-                      </div>
-                      <div className="status-row">
-                        <span className="status-label">上行 (发送到飞书)</span>
-                        <span className="status-value">{lastEventTime}</span>
-                      </div>
-                      <div className="status-row">
-                        <span className="status-label">下行 (收到消息)</span>
-                        <span className="status-value">
-                          {wssStatus?.last_receive_time
-                            ? new Date(wssStatus.last_receive_time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-                            : '暂无'}
-                        </span>
-                      </div>
-                      <div className="status-row">
-                        <span className="status-label">最近结果</span>
-                        <Tag color={lastResult === 'sent' ? 'green' : lastResult.startsWith('failed') ? 'red' : 'orange'}>
-                          {lastResult}
-                        </Tag>
-                      </div>
-                    </Card>
-                  </div>
-
-                  <div className="right-column">
-                    <Card className="help-card" bordered={false}>
-                      <div className="card-header">
-                        <SettingOutlined className="card-icon" />
-                        <h2>Hooks 记录</h2>
-                        <Space style={{ marginLeft: 'auto' }}>
-                          {selectedRowKeys.length > 0 && (
-                            <Button
-                              type="text"
-                              danger
-                              icon={<DeleteOutlined />}
-                              onClick={() => {
-                                Modal.confirm({
-                                  title: '批量删除',
-                                  content: `确定要删除选中的 ${selectedRowKeys.length} 条记录吗？`,
-                                  onOk: async () => {
-                                    try {
-                                      await invoke('delete_hook_records', { ids: selectedRowKeys.map(k => Number(k)) });
-                                      message.success('删除成功');
-                                      setSelectedRowKeys([]);
-                                      fetchHooks();
-                                    } catch (error) {
-                                      message.error(`删除失败: ${error}`);
-                                    }
-                                  },
-                                });
-                              }}
-                            >
-                              删除选中 ({selectedRowKeys.length})
-                            </Button>
-                          )}
-                          <Button
-                            type="text"
-                            icon={<ReloadOutlined />}
-                            onClick={() => fetchHooks(1)}
-                            loading={hooksLoading}
-                          />
-                        </Space>
-                      </div>
-                      <Divider />
-                      {hookRecords.length === 0 ? (
-                        <Empty description="暂无记录" />
-                      ) : (
-                        <Table
-                          columns={columns}
-                          dataSource={hookRecords}
-                          rowKey="id"
-                          loading={hooksLoading}
-                          pagination={{
-                            current: hooksPagination.page,
-                            pageSize: hooksPagination.pageSize,
-                            total: hooksPagination.total,
-                            onChange: (page) => fetchHooks(page),
-                            showSizeChanger: false,
-                          }}
-                          size="small"
-                          scroll={{ y: 400 }}
-                          rowSelection={{
-                            selectedRowKeys,
-                            onChange: (keys) => setSelectedRowKeys(keys),
-                          }}
-                        />
-                      )}
-                    </Card>
-                  </div>
-                </div>
-              ),
-            },
-            {
-              key: 'settings',
-              label: (
-                <span>
-                  <SettingOutlined /> 设置
-                </span>
-              ),
-              children: (
-                <div className="main-grid">
-                  <div className="left-column">
-                    <Card className="config-card" bordered={false}>
-                      <div className="card-header">
-                        <SettingOutlined className="card-icon" />
-                        <h2>应用配置</h2>
-                      </div>
-                      
-                      <p className="card-description">
-                        配置飞书开放平台应用凭证，启用长连接模式实现消息推送与接收
-                      </p>
-
-                      <Divider />
-
-                      <Form
-                        form={form}
-                        layout="vertical"
-                        onFinish={handleSave}
-                        className="config-form"
-                      >
-                        <Form.Item
-                          label="App ID"
-                          name="app_id"
-                          rules={[{ required: true, message: '请输入 App ID' }]}
-                        >
-                          <Input 
-                            placeholder="cli_xxxxxxxxxxxxxxxx" 
-                            size="large"
-                            className="input-field"
-                          />
+                      <Form form={form} layout="vertical" onFinish={handleSave} className="config-form">
+                        <Form.Item label="App ID" name="app_id" rules={[{ required: true, message: '请输入 App ID' }]}>
+                          <Input placeholder="cli_xxxxxxxxxxxxxxxx" size="large" className="input-field" />
                         </Form.Item>
-
-                        <Form.Item
-                          label="App Secret"
-                          name="app_secret"
-                          rules={[{ required: true, message: '请输入 App Secret' }]}
-                        >
-                          <Input.Password 
-                            placeholder="应用密钥" 
-                            size="large"
-                            className="input-field"
-                          />
+                        <Form.Item label="App Secret" name="app_secret" rules={[{ required: true, message: '请输入 App Secret' }]}>
+                          <Input.Password placeholder="应用密钥" size="large" className="input-field" />
                         </Form.Item>
-
-                        <Form.Item
-                          label="默认群聊 ID"
-                          name="chat_id"
-                          extra="可选 · 发送消息的目标群聊 ID，可在群聊信息中查看"
-                        >
-                          <Input 
-                            placeholder="oc_xxxxxxxxxxxxxxxxxxxxxxxx" 
-                            size="large"
-                            className="input-field"
-                          />
+                        <Form.Item label="默认群聊 ID" name="chat_id" extra="可选">
+                          <Input placeholder="oc_xxxxxxxxxxxxxxxxxxxxxxxx" size="large" className="input-field" />
                         </Form.Item>
-
-                        <Form.Item
-                          label="Encrypt Key"
-                          name="encrypt_key"
-                          extra="可选 · 用于消息加密"
-                        >
-                          <Input.Password 
-                            placeholder="加密密钥" 
-                            size="large"
-                            className="input-field"
-                          />
+                        <Form.Item label="Encrypt Key" name="encrypt_key" extra="可选">
+                          <Input.Password placeholder="加密密钥" size="large" className="input-field" />
                         </Form.Item>
-
-                        <Form.Item
-                          label="Verification Token"
-                          name="verification_token"
-                          extra="可选 · 用于验证消息来源"
-                        >
-                          <Input.Password 
-                            placeholder="验证令牌" 
-                            size="large"
-                            className="input-field"
-                          />
+                        <Form.Item label="Verification Token" name="verification_token" extra="可选">
+                          <Input.Password placeholder="验证令牌" size="large" className="input-field" />
                         </Form.Item>
-
                         <div className="action-buttons">
-                          <Button
-                            type="default"
-                            icon={<ApiOutlined />}
-                            onClick={handleTestConnection}
-                            loading={testingConnection}
-                            size="large"
-                            className="test-button"
-                          >
-                            测试连接
-                          </Button>
-                          
-                          <Button
-                            type="primary"
-                            htmlType="submit"
-                            icon={<SaveOutlined />}
-                            loading={loading}
-                            size="large"
-                            className="save-button"
-                          >
-                            保存配置
-                          </Button>
+                          <Button type="default" icon={<ApiOutlined />} onClick={handleTestConnection} loading={testingConnection} size="large">测试连接</Button>
+                          <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={loading} size="large">保存配置</Button>
                         </div>
                       </Form>
                     </Card>
                   </div>
+                </div>
+              </div>
+            )}
 
-                  <div className="right-column">
-                    <Card className="help-card" bordered={false}>
+            {activeMenu === 'help' && (
+              <div className="help-page">
+                <div className="main-grid">
+                  <div className="left-column">
+                    <Card bordered={false}>
                       <h3>快速开始</h3>
                       <ol className="steps-list">
-                        <li>
-                          <span className="step-number">1</span>
-                          <span className="step-text">创建飞书开放平台应用</span>
-                        </li>
-                        <li>
-                          <span className="step-number">2</span>
-                          <span className="step-text">开启机器人能力并配置权限</span>
-                        </li>
-                        <li>
-                          <span className="step-number">3</span>
-                          <span className="step-text">复制应用凭证到左侧表单</span>
-                        </li>
-                        <li>
-                          <span className="step-number">4</span>
-                          <span className="step-text">配置事件订阅（长连接模式）</span>
-                        </li>
-                        <li>
-                          <span className="step-number">5</span>
-                          <span className="step-text">配置 Claude Code Hooks</span>
-                        </li>
+                        <li><span className="step-number">1</span><span className="step-text">创建飞书开放平台应用</span></li>
+                        <li><span className="step-number">2</span><span className="step-text">开启机器人能力并配置权限</span></li>
+                        <li><span className="step-number">3</span><span className="step-text">复制应用凭证到设置页面</span></li>
+                        <li><span className="step-number">4</span><span className="step-text">在项目管理中添加项目</span></li>
+                        <li><span className="step-number">5</span><span className="step-text">为项目安装 Hooks</span></li>
                       </ol>
                     </Card>
-
-                    <Card className="permissions-card" bordered={false}>
+                    <Card bordered={false}>
                       <h3>所需权限</h3>
                       <div className="permissions-list">
-                        <div className="permission-item">
-                          <code>im:message</code>
-                          <span>获取与发送消息</span>
-                        </div>
-                        <div className="permission-item">
-                          <code>im:message.group_at_msg</code>
-                          <span>接收群聊@消息</span>
-                        </div>
-                        <div className="permission-item">
-                          <code>im:message.p2p_msg</code>
-                          <span>接收单聊消息</span>
-                        </div>
-                        <div className="permission-item">
-                          <code>im:message:send_as_bot</code>
-                          <span>以应用身份发消息</span>
-                        </div>
+                        <div className="permission-item"><code>im:message</code><span>获取与发送消息</span></div>
+                        <div className="permission-item"><code>im:message.group_at_msg</code><span>接收群聊@消息</span></div>
+                        <div className="permission-item"><code>im:message.p2p_msg</code><span>接收单聊消息</span></div>
                       </div>
                     </Card>
                   </div>
+                  <div className="right-column">
+                    <Card bordered={false}>
+                      <h3>关于 Sparky</h3>
+                      <p>Sparky 是一个集成了 Claude Code 与飞书的桌面应用，可以实时监控 Claude Code 的运行状态，并通过飞书发送通知。</p>
+                      <Divider />
+                      <p className="version-info">版本: 0.1.0</p>
+                      <p className="tech-info">基于 Tauri + React 构建</p>
+                    </Card>
+                  </div>
                 </div>
-              ),
-            },
-            {
-              key: 'terminal',
-              label: (
-                <span>
-                  <ConsoleSqlOutlined /> 终端
-                </span>
-              ),
-              children: (
-                <div style={{ height: '100%', padding: '16px' }}>
-                  <Card
-                    bordered={false}
-                    style={{ height: '100%' }}
-                    bodyStyle={{ height: '100%', padding: 0 }}
-                  >
-                    <TerminalComponent onData={(data) => write(data)} />
-                  </Card>
-                </div>
-              ),
-            },
-          ]}
-        />
+              </div>
+            )}
+          </div>
+        </div>
       </main>
 
       <footer className="app-footer">
-        <p>Claude Monitor v0.1.0 · 基于 Tauri 构建</p>
+        <p>Sparky v0.1.0 · 基于 Tauri 构建</p>
       </footer>
     </div>
   );

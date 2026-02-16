@@ -1,7 +1,7 @@
 [package]
-name = "claude-monitor-app"
+name = "sparky-app"
 version = "0.1.0"
-description = "Claude Code Monitor with Feishu Integration"
+description = "Sparky - Claude Code Monitor with Feishu Integration"
 authors = ["you"]
 license = ""
 repository = ""
@@ -36,3 +36,4 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 prost = "0.13"
 flate2 = "1.0"
 portable-pty = "0.8"
+tauri-plugin-dialog = "2"
