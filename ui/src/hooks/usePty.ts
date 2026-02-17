@@ -42,7 +42,6 @@ export function usePty(onData?: (data: string, projectPath: string) => void) {
 
     const unlisten = await listen<{ projectPath: string; data: string }>('pty-data', (event) => {
       if (event.payload.projectPath === projectPath) {
-        console.log('PTY data received:', event.payload.data);
         if ((window as any).__terminalWrite) {
           (window as any).__terminalWrite(event.payload.data);
         }

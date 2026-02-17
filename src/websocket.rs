@@ -430,24 +430,42 @@ impl FeishuWsClient {
         if let Some(dash_pos) = trimmed.find('-') {
             let code_part = &trimmed[..dash_pos];
             let choice_part = &trimmed[dash_pos+1..];
-            if code_part.len() == 4 
+            if code_part.len() == 2 
                 && code_part.chars().all(|c| c.is_ascii_digit())
                 && (choice_part == "1" || choice_part == "2" || choice_part == "3") 
             {
                 tracing::info!("Received permission response: code={}, choice={}", code_part, choice_part);
-                self.send_permission_response(code_part, choice_part).await?;
+                self.send_permission_response(code_part, choice_part, sender).await?;
             }
         }
 
         Ok(())
     }
 
-    async fn send_permission_response(&self, code: &str, choice: &str) -> Result<()> {
+    async fn send_permission_response(&self, code: &str, choice: &str, open_id: &str) -> Result<()> {
         // 验证是否有 pending 请求，并执行命令
-        if let Err(e) = crate::feishu::verify_and_execute_command(code, choice) {
-            tracing::error!("Failed to verify and execute pty command: {}", e);
-        } else {
-            tracing::info!("PTY command verified and queued for code={}, choice={}", code, choice);
+        match crate::feishu::verify_and_execute_command(code, choice) {
+            Ok(_) => {
+                tracing::info!("PTY command verified and queued for code={}, choice={}", code, choice);
+                
+                // 发送接收成功的消息到飞书，避免用户等待
+                let feishu_client = crate::feishu::FeishuClient::new(self.app_id.clone(), self.app_secret.clone());
+                let msg = format!("✅ 接收成功 (code={})，正在执行...", code);
+                if let Err(e) = feishu_client.send_message(open_id, msg, None, "open_id").await {
+                    tracing::error!("Failed to send confirmation message to Feishu: {}", e);
+                }
+            }
+            Err(e) if e.starts_with("DUPLICATE:") => {
+                tracing::info!("Ignoring redundant permission response: {}", e);
+            }
+            Err(e) => {
+                tracing::error!("Failed to verify and execute pty command: {}", e);
+                
+                // 发送失败消息
+                let feishu_client = crate::feishu::FeishuClient::new(self.app_id.clone(), self.app_secret.clone());
+                let msg = format!("❌ 执行失败: {}", e);
+                let _ = feishu_client.send_message(open_id, msg, None, "open_id").await;
+            }
         }
         Ok(())
     }

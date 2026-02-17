@@ -303,64 +303,77 @@ async fn run_hook(config: &config::Config) -> Result<()> {
     if event_name == "Stop" && !hook_input.transcript_path.is_empty() {
         match std::fs::read_to_string(&hook_input.transcript_path) {
             Ok(transcript) => {
-                // 提取所有 assistant 消息的最后几条
+                // 提取最新的交流过程（只包含文本和工具调用，过滤掉执行详情）
                 let lines: Vec<&str> = transcript.lines().collect();
-                let mut assistant_msgs: Vec<String> = Vec::new();
+                let mut session_elements: Vec<String> = Vec::new();
 
-                // 从后向前遍历，找到包含 text 类型的 assistant 消息
-                for line in lines.iter().rev().take(50) {
+                // 从后向前遍历，开始收集
+                for line in lines.iter().rev().take(100) {
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
-                        // 检查是否是 assistant 消息
-                        let is_assistant = json.get("type").and_then(|v| v.as_str()) == Some("assistant")
-                            || json.get("message").and_then(|v| v.get("role")).and_then(|v| v.as_str()) == Some("assistant");
+                        let role = json.get("message").and_then(|v| v.get("role")).and_then(|v| v.as_str());
+                        
+                        // 提取内容
+                        if let Some(content_val) = json.get("message").and_then(|v| v.get("content")) {
+                            let mut turn_has_tool_result = false;
+                            let mut turn_elements = Vec::new();
 
-                        if is_assistant {
-                            // 提取 content 中的 text 类型内容
-                            if let Some(message_obj) = json.get("message") {
-                                if let Some(content_val) = message_obj.get("content") {
-                                    if let Some(content_array) = content_val.as_array() {
-                                        for item in content_array {
-                                            // 提取 text 类型的内容
-                                            if item.get("type").and_then(|v| v.as_str()) == Some("text") {
-                                                if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                                                    assistant_msgs.push(text.to_string());
-                                                }
+                            if let Some(content_array) = content_val.as_array() {
+                                for item in content_array {
+                                    let item_type = item.get("type").and_then(|v| v.as_str());
+                                    
+                                    if item_type == Some("text") {
+                                        if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                                            if !text.trim().is_empty() {
+                                                turn_elements.push(format!("⏺ {}", text));
                                             }
                                         }
-                                    } else if let Some(text) = content_val.as_str() {
-                                        assistant_msgs.push(text.to_string());
+                                    } else if item_type == Some("tool_use") {
+                                        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                                        let input = item.get("input").map(|v| v.to_string()).unwrap_or_default();
+                                        // 简化 input 显示
+                                        let input_display = if input.len() > 100 { format!("{}...", &input[..100]) } else { input };
+                                        turn_elements.push(format!("⏺ **{}**({})", name, input_display));
+                                    } else if item_type == Some("tool_result") {
+                                        turn_has_tool_result = true;
+                                        // 过滤掉 tool_result，不再添加 ⎿ 行
                                     }
                                 }
+                            } else if let Some(text) = content_val.as_str() {
+                                if !text.trim().is_empty() {
+                                    turn_elements.push(format!("⏺ {}", text));
+                                }
                             }
-                            // 找到 3 条包含实际文本的 assistant 消息就停止
-                            if assistant_msgs.len() >= 3 {
+
+                            if !turn_elements.is_empty() {
+                                // 因为是 rev 遍历行，所以要把这一行的元素按原来的正序加入 session_elements
+                                // 稍后整体再 rev 一次
+                                for el in turn_elements.into_iter().rev() {
+                                    session_elements.push(el);
+                                }
+                            }
+
+                            // 如果是用户发送的文本消息（且不是工具回传），说明到了本轮对话的起点，停止
+                            if role == Some("user") && !turn_has_tool_result {
                                 break;
                             }
                         }
                     }
                 }
 
-                if !assistant_msgs.is_empty() {
+                if !session_elements.is_empty() {
                     content.push_str("\n\n**Claude 回复**\n");
-                    // 显示所有提取的消息（倒序，最后的在前）
-                    for msg in assistant_msgs.iter().rev() {
-                        let truncated = if msg.len() > 500 {
-                            format!("{}...", &msg[..500])
-                        } else {
-                            msg.clone()
-                        };
-                        content.push_str(&truncated);
-                        content.push_str("\n---\n");
+                    // 整体反转回正序（从前到后）
+                    for el in session_elements.iter().rev() {
+                        content.push_str(el);
+                        content.push_str("\n\n");
                     }
                 } else {
-                    // 如果没有提取到，显示原始 transcript 的最后部分
-                    let last_lines: Vec<String> = lines.iter().rev().take(3).map(|s| s.to_string()).collect();
-                    if !last_lines.is_empty() {
-                        content.push_str("\n\n**Claude 回复**\n（无法解析，转录最后几行）\n");
-                        for line in last_lines {
-                            content.push_str(&line);
-                            content.push_str("\n");
-                        }
+                    // 如果没有提取到，显示最后 3 行作为保底
+                    content.push_str("\n\n**Claude 回复**\n（无法解析转录）\n");
+                    let last_lines: Vec<&str> = lines.iter().rev().take(3).cloned().collect();
+                    for line in last_lines.iter().rev() {
+                        content.push_str(line);
+                        content.push_str("\n");
                     }
                 }
             }

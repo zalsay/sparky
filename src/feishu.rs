@@ -38,9 +38,32 @@ pub fn create_permission_request(project_path: &str) -> Result<String, String> {
     let conn = open_db()?;
     let db_path = dirs::home_dir().unwrap().join("sparky/hooks.db");
     
-    // 生成 4 位随机码
-    let code: u16 = rand::rng().random_range(1000..10000);
-    let code_str = code.to_string();
+    // 生成 2 位随机码，并确保不与当前 pending 的冲突
+    let mut code_str = String::new();
+    let mut found = false;
+    
+    // 尝试最多 100 次找到唯一的 2 位码
+    for _ in 0..100 {
+        let code: u16 = rand::rng().random_range(10..100);
+        let candidate = code.to_string();
+        
+        // 检查数据库中是否存在同名的 pending code
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM permission_requests WHERE code = ?1 AND status = 'pending')",
+            params![candidate],
+            |row| row.get(0),
+        ).unwrap_or(false);
+        
+        if !exists {
+            code_str = candidate;
+            found = true;
+            break;
+        }
+    }
+    
+    if !found {
+        return Err("无法生成唯一的 2 位配对码（未处理请求过多）".to_string());
+    }
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -85,6 +108,17 @@ pub fn verify_and_execute_command(code: &str, choice: &str) -> Result<(), String
             (id, path)
         }
         None => {
+            // 检查是否是因为已经执行过了
+            let status_result: Option<String> = conn.query_row(
+                "SELECT status FROM permission_requests WHERE code = ?1 ORDER BY created_at DESC LIMIT 1",
+                params![code],
+                |row| row.get(0),
+            ).optional().unwrap_or(None);
+
+            if let Some(status) = status_result {
+                return Err(format!("DUPLICATE: 配对码 {} 已被处理 (状态: {})", code, status));
+            }
+
             tracing::warn!("[db:verify] No pending request found for code={}", code);
             return Err(format!("No pending permission request found for code {}", code));
         }

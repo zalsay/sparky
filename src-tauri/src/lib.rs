@@ -15,6 +15,7 @@ use pty::{PtyManager, pty_spawn, pty_write, pty_kill, pty_resize, pty_exists};
 pub struct AppConfig {
     pub app_id: String,
     pub app_secret: String,
+    pub app_name: Option<String>,
     pub encrypt_key: Option<String>,
     pub verification_token: Option<String>,
     pub chat_id: Option<String>,
@@ -28,6 +29,7 @@ impl Default for AppConfig {
         AppConfig {
             app_id: String::new(),
             app_secret: String::new(),
+            app_name: None,
             encrypt_key: None,
             verification_token: None,
             chat_id: None,
@@ -229,6 +231,7 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     // 迁移：给已存在的表添加 open_id 列
     let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN open_id TEXT", []);
     let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN hook_events_filter TEXT", []);
+    let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN app_name TEXT", []);
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS app_config_dingtalk (
@@ -382,6 +385,7 @@ fn load_config_from_table(conn: &Connection, table_name: &str) -> Result<Option<
             project_path: row.get(5).map_err(|e| e.to_string())?,
             open_id: None,
             hook_events_filter: None,
+            app_name: None,
         }))
     } else {
         Ok(None)
@@ -405,7 +409,7 @@ fn migrate_app_config_table(conn: &Connection) -> Result<(), String> {
 fn load_config_from_db(conn: &Connection) -> Result<Option<AppConfig>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter
+            "SELECT app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name
              FROM app_config_feishu WHERE id = 1",
         )
         .map_err(|e| e.to_string())?;
@@ -420,6 +424,7 @@ fn load_config_from_db(conn: &Connection) -> Result<Option<AppConfig>, String> {
             project_path: row.get(5).map_err(|e| e.to_string())?,
             open_id: row.get(6).map_err(|e| e.to_string())?,
             hook_events_filter: row.get(7).map_err(|e| e.to_string())?,
+            app_name: row.get(8).map_err(|e| e.to_string())?,
         }))
     } else {
         Ok(None)
@@ -432,14 +437,15 @@ fn upsert_config(conn: &Connection, config: &AppConfig) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .as_secs() as i64;
     conn.execute(
-        "INSERT INTO app_config_feishu (id, app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, updated_at)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "INSERT INTO app_config_feishu (id, app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(id) DO UPDATE SET
            app_id = excluded.app_id,
            app_secret = excluded.app_secret,
            encrypt_key = excluded.encrypt_key,
            verification_token = excluded.verification_token,
            chat_id = excluded.chat_id,
+           app_name = excluded.app_name,
            project_path = excluded.project_path,
            open_id = COALESCE(excluded.open_id, app_config_feishu.open_id),
            hook_events_filter = excluded.hook_events_filter,
@@ -453,6 +459,7 @@ fn upsert_config(conn: &Connection, config: &AppConfig) -> Result<(), String> {
             config.project_path,
             config.open_id,
             config.hook_events_filter,
+            config.app_name,
             now
         ],
     )
@@ -588,6 +595,32 @@ fn get_config() -> Result<AppConfig, String> {
 fn save_config(config: AppConfig) -> Result<(), String> {
     let conn = open_db()?;
     upsert_config(&conn, &config)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn open_folder(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -1238,7 +1271,8 @@ pub fn run() {
             add_project,
             update_project,
             delete_project,
-            set_project_hooks_status
+            set_project_hooks_status,
+            open_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
