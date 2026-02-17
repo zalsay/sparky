@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { usePty } from './hooks/usePty';
@@ -63,6 +63,22 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const { startPty, write } = usePty();
   const tauriAvailable = isTauri();
   const inputBufferRef = useRef<Record<string, string>>({});
+  const [wsConnected, setWsConnected] = useState(false);
+  const [lastInput, setLastInput] = useState('');
+
+  // Poll WebSocket connection status
+  useEffect(() => {
+    if (!tauriAvailable) return;
+    const poll = async () => {
+      try {
+        const connected = await invoke<boolean>('get_ws_connected');
+        setWsConnected(connected);
+      } catch { /* ignore */ }
+    };
+    poll();
+    const interval = setInterval(poll, 3000);
+    return () => clearInterval(interval);
+  }, [tauriAvailable]);
 
 
   useEffect(() => {
@@ -120,21 +136,41 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     }
     const projectPath = selectedProject.path;
     let buffer = inputBufferRef.current[projectPath] || '';
-    for (const char of data) {
-      const code = char.charCodeAt(0);
-      if (char === '\r' || char === '\n') {
+    let i = 0;
+    while (i < data.length) {
+      const code = data.charCodeAt(i);
+      // Skip ANSI escape sequences (ESC [ ... letter or ESC + char)
+      if (code === 0x1b) {
+        i++;
+        if (i < data.length && data[i] === '[') {
+          i++;
+          while (i < data.length && !/[A-Za-z~]/.test(data[i])) i++;
+          i++; // skip the final letter
+        } else if (i < data.length) {
+          i++; // skip single char after ESC
+        }
+        continue;
+      }
+      if (data[i] === '\r' || data[i] === '\n') {
         buffer = '';
+        i++;
         continue;
       }
       if (code === 127) {
         buffer = buffer.slice(0, -1);
+        i++;
         continue;
       }
-      if (code >= 32 && char !== '\x1b') {
-        buffer += char;
+      // Skip other control chars
+      if (code < 32) {
+        i++;
+        continue;
       }
+      buffer += data[i];
+      i++;
     }
     inputBufferRef.current[projectPath] = buffer;
+    setLastInput(buffer);
   };
 
   const handleEnterProject = (project: Project) => {
@@ -378,429 +414,452 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
         }
       }}
     >
-      <AntApp>
-        <div className={`app-container ${isDarkMode ? 'dark-mode' : ''} ${terminalFullscreen ? 'terminal-fullscreen' : ''}`}>
-          <header className="app-header">
-            <div className="header-content" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <div className="logo">
-                  <img src={logo} alt="logo" className="logo-img" />
-                  <h1>Sparky</h1>
-                </div>
-                <p className="subtitle">多渠道集成 · 随时随地链接 Claude Code</p>
+      <div className={`app-container ${isDarkMode ? 'dark-mode' : ''} ${terminalFullscreen ? 'terminal-fullscreen' : ''}`}>
+        <header className="app-header">
+          <div className="header-content" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <div className="logo">
+                <img src={logo} alt="logo" className="logo-img" />
+                <h1>Sparky</h1>
               </div>
-              <Switch
-                checked={isDarkMode}
-                onChange={(checked) => setIsDarkMode(checked)}
-                checkedChildren={<MoonOutlined />}
-                unCheckedChildren={<SunOutlined />}
-              />
+              <p className="subtitle">多渠道集成 · 随时随地链接 Claude Code</p>
             </div>
-          </header>
+            <Switch
+              className="theme-switch"
+              checked={isDarkMode}
+              onChange={(checked) => setIsDarkMode(checked)}
+              checkedChildren={<MoonOutlined />}
+              unCheckedChildren={<SunOutlined />}
+            />
+          </div>
+        </header>
 
-          <main className="app-main">
-            <div className="app-layout">
-              <aside className="app-sidebar">
-                <Menu
-                  mode="inline"
-                  selectedKeys={[activeMenu]}
-                  onClick={(e) => setActiveMenu(e.key)}
-                  style={{ height: '100%', borderRight: 0 }}
-                  items={[
-                    { key: 'project', icon: <ProjectOutlined />, label: '项目' },
-                    { key: 'settings', icon: <SettingOutlined />, label: '设置' },
-                    { key: 'help', icon: <EyeOutlined />, label: '帮助' },
-                  ]}
-                />
-              </aside>
-              <div className="app-content">
-                {activeMenu === 'project' && (
-                  <div className="project-page">
-                    <Card className="projects-card" variant="borderless">
-                      <div className="card-header">
-                        <ProjectOutlined className="card-icon" />
-                        <h2>项目管理</h2>
-                        <Button type="primary" icon={<PlusOutlined />} onClick={handleAddProject} style={{ marginLeft: 'auto' }}>
-                          添加项目
-                        </Button>
-                      </div>
-                      <p className="card-description">管理您的项目，每个项目可以独立配置 Claude Code Hooks</p>
-                      <Divider />
-                      {projects.length === 0 ? (
-                        <Empty description="暂无项目，请添加项目" />
-                      ) : (
-                        <Table
-                          dataSource={projects}
-                          rowKey="id"
-                          pagination={false}
-                          columns={[
-                            { title: '项目名称', dataIndex: 'name', key: 'name' },
-                            { title: '路径', dataIndex: 'path', key: 'path' },
-                            {
-                              title: 'Hooks 状态',
-                              key: 'hooks',
-                              render: (_: any, record: Project) => (
-                                <Tag color={record.hooks_installed ? 'black' : 'default'}>
-                                  {record.hooks_installed ? '已安装' : '未安装'}
-                                </Tag>
-                              ),
-                            },
-                            {
-                              title: '操作',
-                              key: 'action',
-                              render: (_: any, record: Project) => (
-                                <Space>
-                                  <Button size="small" className="action-btn" onClick={() => handleEnterProject(record)}>
-                                    进入
-                                  </Button>
-                                  <Button size="small" className="action-btn" onClick={() => record.hooks_installed ? handleUninstallHooks(record) : handleInstallHooks(record)}>
-                                    {record.hooks_installed ? '卸载' : '安装'}
-                                  </Button>
-                                  <Button size="small" className="action-btn danger" icon={<DeleteOutlined />} onClick={() => handleDeleteProject(record.id)} />
-                                </Space>
-                              ),
-                            },
-                          ]}
-                        />
-                      )}
-                    </Card>
-                  </div>
-                )}
-
-                {activeMenu === 'project-detail' && selectedProject && (
-                  <div className="project-detail-page">
-                    <Card className="project-detail-card" variant="borderless">
-                      <div className="card-header">
-                        <Button icon={<ArrowLeftOutlined />} onClick={handleBackToProjects} style={{ marginRight: 12 }}>
-                          返回
-                        </Button>
-                        <h2>{selectedProject.name}</h2>
-                      </div>
-                      <Tabs
-                        defaultActiveKey="claude"
-                        items={[
+        <main className="app-main">
+          <div className="app-layout">
+            <aside className="app-sidebar">
+              <Menu
+                mode="inline"
+                selectedKeys={[activeMenu]}
+                onClick={(e) => setActiveMenu(e.key)}
+                style={{ height: '100%', borderRight: 0 }}
+                items={[
+                  { key: 'project', icon: <ProjectOutlined />, label: '项目' },
+                  { key: 'settings', icon: <SettingOutlined />, label: '设置' },
+                  { key: 'help', icon: <EyeOutlined />, label: '帮助' },
+                ]}
+              />
+            </aside>
+            <div className="app-content">
+              {activeMenu === 'project' && (
+                <div className="project-page">
+                  <Card className="projects-card" variant="borderless">
+                    <div className="card-header">
+                      <ProjectOutlined className="card-icon" />
+                      <h2>项目管理</h2>
+                      <Button type="primary" icon={<PlusOutlined />} onClick={handleAddProject} style={{ marginLeft: 'auto' }}>
+                        添加项目
+                      </Button>
+                    </div>
+                    <p className="card-description">管理您的项目，每个项目可以独立配置 Claude Code Hooks</p>
+                    <Divider />
+                    {projects.length === 0 ? (
+                      <Empty description="暂无项目，请添加项目" />
+                    ) : (
+                      <Table
+                        dataSource={projects}
+                        rowKey="id"
+                        pagination={false}
+                        columns={[
                           {
-                            key: 'claude',
-                            label: 'Claude',
-                            children: (
-                              <div className={`terminal-wrapper ${terminalFullscreen ? 'fullscreen' : ''}`}>
-                                <Button
-                                  type="text"
-                                  icon={terminalFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
-                                  style={{
-                                    position: 'absolute',
-                                    right: 16,
-                                    top: 16,
-                                    zIndex: 100,
-                                    color: 'rgba(255, 255, 255, 0.65)',
-                                    background: 'rgba(0, 0, 0, 0.2)'
-                                  }}
-                                  onClick={() => setTerminalFullscreen(!terminalFullscreen)}
-                                />
-                                <TerminalComponent projectPath={selectedProject.path} onData={handleTerminalInput} mergeTop historyLines={terminalHistory} fullscreen={terminalFullscreen} />
-                              </div>
+                            title: '项目名称', dataIndex: 'name', key: 'name',
+                            render: (name: string) => <span style={{ fontWeight: 500 }}>{name}</span>
+                          },
+                          {
+                            title: '路径', dataIndex: 'path', key: 'path',
+                            render: (path: string) => <span style={{ fontSize: 12, color: 'var(--text-secondary)', wordBreak: 'break-all' }}>{path}</span>
+                          },
+                          {
+                            title: 'Hooks',
+                            key: 'hooks',
+                            width: 100,
+                            render: (_: any, record: Project) => (
+                              <Tag className={`hooks-tag ${record.hooks_installed ? 'installed' : ''}`}>
+                                {record.hooks_installed ? '已安装' : '未安装'}
+                              </Tag>
                             ),
                           },
                           {
-                            key: 'detail',
-                            label: '详情',
-                            children: (
-                              <div className="detail-form">
-                                <div className="status-row">
-                                  <span className="status-label">项目名称</span>
-                                  <span className="status-value">{selectedProject.name}</span>
-                                </div>
-                                <div className="status-row">
-                                  <span className="status-label">项目路径</span>
-                                  <span className="status-value" style={{ fontSize: '12px', wordBreak: 'break-all' }}>{selectedProject.path}</span>
-                                </div>
-                                <div className="status-row">
-                                  <span className="status-label">Hooks 状态</span>
-                                  <Tag color={selectedProject.hooks_installed ? 'black' : 'default'}>
-                                    {selectedProject.hooks_installed ? '已安装' : '未安装'}
-                                  </Tag>
-                                </div>
-                                <Divider />
-                                <Space>
-                                  <Button type="primary" icon={<FolderOutlined />} onClick={async () => {
-                                    try {
-                                      await invoke('open_folder', { path: selectedProject.path });
-                                    } catch (error) {
-                                      messageApi.error(`无法打开文件夹: ${error}`);
-                                    }
-                                  }}>
-                                    打开文件夹
+                            title: '操作',
+                            key: 'action',
+                            width: 180,
+                            render: (_: any, record: Project) => (
+                              <Space>
+                                <Button size="small" type="primary" onClick={() => handleEnterProject(record)}>
+                                  Go <RightOutlined style={{ fontSize: 10 }} />
+                                </Button>
+                                {!record.hooks_installed && (
+                                  <Button size="small" type="text" className="action-btn-text" onClick={() => handleInstallHooks(record)}>
+                                    配置
                                   </Button>
-                                  <Button icon={<SettingOutlined />} onClick={() => selectedProject.hooks_installed ? handleUninstallHooks(selectedProject) : handleInstallHooks(selectedProject)}>
-                                    {selectedProject.hooks_installed ? '卸载 Hooks' : '安装 Hooks'}
-                                  </Button>
-                                </Space>
-                                <Divider />
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                                  <h3 style={{ margin: 0 }}>Claude 记录</h3>
-                                  <Button danger disabled={hookRecordSelection.length === 0} onClick={handleDeleteHookRecords}>
-                                    批量删除
-                                  </Button>
-                                </div>
-                                <Table
-                                  dataSource={hookRecords}
-                                  rowKey="id"
-                                  loading={hookRecordsLoading}
-                                  rowSelection={{
-                                    selectedRowKeys: hookRecordSelection,
-                                    onChange: (keys) => setHookRecordSelection(keys as number[]),
-                                  }}
-                                  pagination={{
-                                    current: hookRecordsPage,
-                                    total: hookRecordsTotal,
-                                    pageSize: 20,
-                                    showSizeChanger: false,
-                                    onChange: (page) => fetchHookRecords(page),
-                                  }}
-                                  columns={[
-                                    { title: '事件', dataIndex: 'event_name', key: 'event_name', width: 140 },
-                                    { title: '摘要', dataIndex: 'notification_text', key: 'notification_text' },
-                                    { title: '结果', dataIndex: 'result', key: 'result', width: 180 },
-                                    {
-                                      title: '时间',
-                                      dataIndex: 'created_at',
-                                      key: 'created_at',
-                                      width: 180,
-                                      render: (value: number) => formatHookTime(value),
-                                    },
-                                    {
-                                      title: '操作',
-                                      key: 'action',
-                                      width: 160,
-                                      render: (_: any, record: HookRecord) => (
-                                        <Space>
-                                          <Button
-                                            size="small"
-                                            className="action-btn"
-                                            onClick={() => {
-                                              setHookDetailRecord(record);
-                                              setHookDetailOpen(true);
-                                            }}
-                                          >
-                                            查看详情
-                                          </Button>
-                                          <Button
-                                            size="small"
-                                            className="action-btn danger"
-                                            onClick={() => handleDeleteHookRecord(record.id)}
-                                          >
-                                            删除
-                                          </Button>
-                                        </Space>
-                                      ),
-                                    },
-                                  ]}
-                                />
-                                <Modal
-                                  title="Hooks 记录详情"
-                                  open={hookDetailOpen}
-                                  onCancel={() => setHookDetailOpen(false)}
-                                  footer={null}
-                                  destroyOnClose
-                                >
-                                  {hookDetailRecord && (
-                                    <div>
-                                      <div className="status-row">
-                                        <span className="status-label">事件</span>
-                                        <span className="status-value">{hookDetailRecord.event_name}</span>
-                                      </div>
-                                      <div className="status-row">
-                                        <span className="status-label">会话</span>
-                                        <span className="status-value">{hookDetailRecord.session_id}</span>
-                                      </div>
-                                      <div className="status-row">
-                                        <span className="status-label">时间</span>
-                                        <span className="status-value">{formatHookTime(hookDetailRecord.created_at)}</span>
-                                      </div>
-                                      <div className="status-row">
-                                        <span className="status-label">结果</span>
-                                        <span className="status-value">{hookDetailRecord.result}</span>
-                                      </div>
-                                      <Divider />
-                                      <div className="status-row">
-                                        <span className="status-label">摘要</span>
-                                        <span className="status-value">{hookDetailRecord.notification_text}</span>
-                                      </div>
-                                      <div className="status-row">
-                                        <span className="status-label">内容</span>
-                                        <span className="status-value" style={{ whiteSpace: 'pre-wrap' }}>
-                                          {hookDetailRecord.content}
-                                        </span>
-                                      </div>
-                                      <div className="status-row">
-                                        <span className="status-label">Transcript</span>
-                                        <span className="status-value" style={{ fontSize: '12px', wordBreak: 'break-all' }}>
-                                          {hookDetailRecord.transcript_path}
-                                        </span>
-                                      </div>
-                                    </div>
-                                  )}
-                                </Modal>
-                              </div>
+                                )}
+                                <Button size="small" className="action-btn-outline danger" icon={<DeleteOutlined />} onClick={() => handleDeleteProject(record.id)} />
+                              </Space>
                             ),
                           },
                         ]}
                       />
-                    </Card>
-                  </div>
-                )}
+                    )}
+                  </Card>
+                </div>
+              )}
 
-                {activeMenu === 'settings' && (
-                  <div className="settings-page">
-                    <div className="main-grid">
-                      <div className="left-column">
-                        <Card className="projects-card channel-card" variant="borderless">
-                          <div className="card-header">
-                            <SettingOutlined className="card-icon" />
-                            <h2>设置中心</h2>
-                          </div>
-                          <p className="card-description">管理飞书、钉钉与企业微信的应用配置</p>
-                          <Divider />
-                          <div className="channel-block">
-                            <Tabs
-                              className="channel-tabs"
-                              defaultActiveKey="feishu"
-                              items={[
-                                {
-                                  key: 'feishu',
-                                  label: '飞书',
-                                  children: (
-                                    <Card className="config-card" variant="borderless">
-                                      <div className="card-header">
-                                        <SettingOutlined className="card-icon" />
-                                        <h2>飞书应用配置</h2>
-                                      </div>
-                                      <p className="card-description">配置飞书开放平台应用凭证，启用长连接模式实现消息推送与接收</p>
-                                      <Divider />
-                                      <Form form={form} layout="vertical" onFinish={handleSave} className="config-form">
-                                        <Form.Item label="应用名称" name="app_name" tooltip="为你的应用起一个好记的名字" rules={[{ required: true, message: '请输入应用名称' }]}>
-                                          <Input placeholder="例如：Sparky 生产环境" size="large" className="input-field" />
-                                        </Form.Item>
-                                        <Form.Item label="App ID" name="app_id" rules={[{ required: true, message: '请输入 App ID' }]}>
-                                          <Input placeholder="cli_xxxxxxxxxxxxxxxx" size="large" className="input-field" />
-                                        </Form.Item>
-                                        <Form.Item label="App Secret" name="app_secret" rules={[{ required: true, message: '请输入 App Secret' }]}>
-                                          <Input.Password placeholder="应用密钥" size="large" className="input-field" />
-                                        </Form.Item>
-                                        <Form.Item label="默认群聊 ID" name="chat_id" extra="可选">
-                                          <Input placeholder="oc_xxxxxxxxxxxxxxxxxxxxxxxx" size="large" className="input-field" />
-                                        </Form.Item>
-                                        <Form.Item label="Encrypt Key" name="encrypt_key" extra="可选">
-                                          <Input.Password placeholder="加密密钥" size="large" className="input-field" />
-                                        </Form.Item>
-                                        <Form.Item label="Verification Token" name="verification_token" extra="可选">
-                                          <Input.Password placeholder="验证令牌" size="large" className="input-field" />
-                                        </Form.Item>
-                                        <Form.Item
-                                          label="Hook 事件过滤"
-                                          name="hook_events_filter"
-                                          extra="选择需要推送到飞书的事件类型，不选则推送全部事件"
-                                          getValueFromEvent={(checkedValues: string[]) => checkedValues.length > 0 ? checkedValues.join(',') : undefined}
-                                          getValueProps={(value: string | undefined) => ({
-                                            value: value ? value.split(',').map((s: string) => s.trim()) : [],
-                                          })}
+              {activeMenu === 'project-detail' && selectedProject && (
+                <div className="project-detail-page">
+                  <Card className="project-detail-card" variant="borderless">
+                    <div className="project-detail-header">
+                      <Button
+                        type="text"
+                        icon={<ArrowLeftOutlined />}
+                        onClick={handleBackToProjects}
+                        className="back-button"
+                      />
+                      <span className="header-divider" />
+                      <span className="project-title-badge">{selectedProject.name}</span>
+                      <span className={`ws-status-badge ${wsConnected ? 'connected' : 'disconnected'}`}>
+                        <span className="ws-status-dot" />
+                        {wsConnected ? '已连接' : '未连接'}
+                      </span>
+                    </div>
+                    {lastInput && (
+                      <div className="last-input-bar">
+                        <span className="last-input-label">输入中</span>
+                        <code className="last-input-content">{lastInput}</code>
+                      </div>
+                    )}
+                    <Tabs
+                      defaultActiveKey="claude"
+                      items={[
+                        {
+                          key: 'claude',
+                          label: 'Claude',
+                          children: (
+                            <div className={`terminal-wrapper ${terminalFullscreen ? 'fullscreen' : ''}`}>
+                              <Button
+                                type="text"
+                                icon={terminalFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+                                style={{
+                                  position: 'absolute',
+                                  right: 16,
+                                  top: 16,
+                                  zIndex: 100,
+                                  color: 'rgba(255, 255, 255, 0.65)',
+                                  background: 'rgba(0, 0, 0, 0.2)'
+                                }}
+                                onClick={() => setTerminalFullscreen(!terminalFullscreen)}
+                              />
+                              <TerminalComponent projectPath={selectedProject.path} onData={handleTerminalInput} mergeTop historyLines={terminalHistory} fullscreen={terminalFullscreen} />
+                            </div>
+                          ),
+                        },
+                        {
+                          key: 'detail',
+                          label: '详情',
+                          children: (
+                            <div className="detail-form">
+                              <div className="status-row">
+                                <span className="status-label">项目名称</span>
+                                <span className="status-value">{selectedProject.name}</span>
+                              </div>
+                              <div className="status-row">
+                                <span className="status-label">项目路径</span>
+                                <span className="status-value" style={{ fontSize: '12px', wordBreak: 'break-all' }}>{selectedProject.path}</span>
+                              </div>
+                              <div className="status-row">
+                                <span className="status-label">Hooks 状态</span>
+                                <Tag color={selectedProject.hooks_installed ? 'black' : 'default'}>
+                                  {selectedProject.hooks_installed ? '已安装' : '未安装'}
+                                </Tag>
+                              </div>
+                              <Divider />
+                              <Space>
+                                <Button type="primary" icon={<FolderOutlined />} onClick={async () => {
+                                  try {
+                                    await invoke('open_folder', { path: selectedProject.path });
+                                  } catch (error) {
+                                    messageApi.error(`无法打开文件夹: ${error}`);
+                                  }
+                                }}>
+                                  打开文件夹
+                                </Button>
+                                <Button icon={<SettingOutlined />} onClick={() => selectedProject.hooks_installed ? handleUninstallHooks(selectedProject) : handleInstallHooks(selectedProject)}>
+                                  {selectedProject.hooks_installed ? '卸载 Hooks' : '安装 Hooks'}
+                                </Button>
+                              </Space>
+                              <Divider />
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                                <h3 style={{ margin: 0 }}>Claude 记录</h3>
+                                <Button danger disabled={hookRecordSelection.length === 0} onClick={handleDeleteHookRecords}>
+                                  批量删除
+                                </Button>
+                              </div>
+                              <Table
+                                dataSource={hookRecords}
+                                rowKey="id"
+                                loading={hookRecordsLoading}
+                                rowSelection={{
+                                  selectedRowKeys: hookRecordSelection,
+                                  onChange: (keys) => setHookRecordSelection(keys as number[]),
+                                }}
+                                pagination={{
+                                  current: hookRecordsPage,
+                                  total: hookRecordsTotal,
+                                  pageSize: 20,
+                                  showSizeChanger: false,
+                                  onChange: (page) => fetchHookRecords(page),
+                                }}
+                                columns={[
+                                  { title: '事件', dataIndex: 'event_name', key: 'event_name', width: 140 },
+                                  { title: '摘要', dataIndex: 'notification_text', key: 'notification_text' },
+                                  { title: '结果', dataIndex: 'result', key: 'result', width: 180 },
+                                  {
+                                    title: '时间',
+                                    dataIndex: 'created_at',
+                                    key: 'created_at',
+                                    width: 180,
+                                    render: (value: number) => formatHookTime(value),
+                                  },
+                                  {
+                                    title: '操作',
+                                    key: 'action',
+                                    width: 160,
+                                    render: (_: any, record: HookRecord) => (
+                                      <Space>
+                                        <Button
+                                          size="small"
+                                          className="action-btn"
+                                          onClick={() => {
+                                            setHookDetailRecord(record);
+                                            setHookDetailOpen(true);
+                                          }}
                                         >
-                                          <Checkbox.Group
-                                            options={[
-                                              { label: '🛑 Stop（任务结束）', value: 'Stop' },
-                                              { label: '🔐 PermissionRequest（权限确认）', value: 'PermissionRequest' },
-                                              { label: '📌 Notification（通知）', value: 'Notification' },
-                                              { label: '📝 UserPromptSubmit（用户输入）', value: 'UserPromptSubmit' },
-                                            ]}
-                                            style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}
-                                          />
-                                        </Form.Item>
-                                        <div className="action-buttons">
-                                          <Button type="default" icon={<ApiOutlined />} onClick={handleTestConnection} loading={testingConnection} size="large">测试连接</Button>
-                                          <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={loading} size="large">保存配置</Button>
-                                        </div>
-                                      </Form>
-                                    </Card>
-                                  ),
-                                },
-                                {
-                                  key: 'dingtalk',
-                                  label: '钉钉',
-                                  children: (
-                                    <Card className="config-card" variant="borderless">
-                                      <div className="card-header">
-                                        <ApiOutlined className="card-icon" />
-                                        <h2>钉钉应用配置</h2>
-                                      </div>
-                                      <p className="card-description">等待开发</p>
-                                    </Card>
-                                  ),
-                                },
-                                {
-                                  key: 'wework',
-                                  label: '企业微信',
-                                  children: (
-                                    <Card className="config-card" variant="borderless">
-                                      <div className="card-header">
-                                        <ApiOutlined className="card-icon" />
-                                        <h2>企业微信应用配置</h2>
-                                      </div>
-                                      <p className="card-description">等待开发</p>
-                                    </Card>
-                                  ),
-                                },
-                              ]}
-                            />
-                          </div>
-                        </Card>
-                      </div>
-                    </div>
-                  </div>
-                )}
+                                          查看详情
+                                        </Button>
+                                        <Button
+                                          size="small"
+                                          className="action-btn danger"
+                                          onClick={() => handleDeleteHookRecord(record.id)}
+                                        >
+                                          删除
+                                        </Button>
+                                      </Space>
+                                    ),
+                                  },
+                                ]}
+                              />
+                              <Modal
+                                title="Hooks 记录详情"
+                                open={hookDetailOpen}
+                                onCancel={() => setHookDetailOpen(false)}
+                                footer={null}
+                                destroyOnClose
+                              >
+                                {hookDetailRecord && (
+                                  <div>
+                                    <div className="status-row">
+                                      <span className="status-label">事件</span>
+                                      <span className="status-value">{hookDetailRecord.event_name}</span>
+                                    </div>
+                                    <div className="status-row">
+                                      <span className="status-label">会话</span>
+                                      <span className="status-value">{hookDetailRecord.session_id}</span>
+                                    </div>
+                                    <div className="status-row">
+                                      <span className="status-label">时间</span>
+                                      <span className="status-value">{formatHookTime(hookDetailRecord.created_at)}</span>
+                                    </div>
+                                    <div className="status-row">
+                                      <span className="status-label">结果</span>
+                                      <span className="status-value">{hookDetailRecord.result}</span>
+                                    </div>
+                                    <Divider />
+                                    <div className="status-row">
+                                      <span className="status-label">摘要</span>
+                                      <span className="status-value">{hookDetailRecord.notification_text}</span>
+                                    </div>
+                                    <div className="status-row">
+                                      <span className="status-label">内容</span>
+                                      <span className="status-value" style={{ whiteSpace: 'pre-wrap' }}>
+                                        {hookDetailRecord.content}
+                                      </span>
+                                    </div>
+                                    <div className="status-row">
+                                      <span className="status-label">Transcript</span>
+                                      <span className="status-value" style={{ fontSize: '12px', wordBreak: 'break-all' }}>
+                                        {hookDetailRecord.transcript_path}
+                                      </span>
+                                    </div>
+                                  </div>
+                                )}
+                              </Modal>
+                            </div>
+                          ),
+                        },
+                      ]}
+                    />
+                  </Card>
+                </div>
+              )}
 
-                {activeMenu === 'help' && (
-                  <div className="help-page">
-                    <div className="main-grid">
-                      <div className="left-column">
-                        <Card variant="borderless">
-                          <h3>快速开始</h3>
-                          <ol className="steps-list">
-                            <li><span className="step-number">1</span><span className="step-text">创建飞书开放平台应用</span></li>
-                            <li><span className="step-number">2</span><span className="step-text">开启机器人能力并配置权限</span></li>
-                            <li><span className="step-number">3</span><span className="step-text">复制应用凭证到设置页面</span></li>
-                            <li><span className="step-number">4</span><span className="step-text">在项目管理中添加项目</span></li>
-                            <li><span className="step-number">5</span><span className="step-text">为项目安装 Hooks</span></li>
-                          </ol>
-                        </Card>
-                        <Card variant="borderless">
-                          <h3>所需权限</h3>
-                          <div className="permissions-list">
-                            <div className="permission-item"><code>im:message</code><span>获取与发送消息</span></div>
-                            <div className="permission-item"><code>im:message.group_at_msg</code><span>接收群聊@消息</span></div>
-                            <div className="permission-item"><code>im:message.p2p_msg</code><span>接收单聊消息</span></div>
-                          </div>
-                        </Card>
-                      </div>
-                      <div className="right-column">
-                        <Card className="about-card" variant="borderless">
-                          <h3>关于 Sparky</h3>
-                          <p>Sparky 是一个集成了 Claude Code 与飞书的桌面应用，可以实时监控 Claude Code 的运行状态，并通过飞书发送通知。</p>
-                          <Divider />
-                          <p className="version-info">版本: 0.1.0</p>
-                        </Card>
-                      </div>
+              {activeMenu === 'settings' && (
+                <div className="settings-page">
+                  <div className="main-grid">
+                    <div className="left-column">
+                      <Card className="projects-card channel-card" variant="borderless">
+                        <div className="card-header">
+                          <SettingOutlined className="card-icon" />
+                          <h2>设置中心</h2>
+                        </div>
+                        <p className="card-description">管理飞书、钉钉与企业微信的应用配置</p>
+                        <Divider />
+                        <div className="channel-block">
+                          <Tabs
+                            className="channel-tabs"
+                            defaultActiveKey="feishu"
+                            items={[
+                              {
+                                key: 'feishu',
+                                label: '飞书',
+                                children: (
+                                  <Card className="config-card" variant="borderless">
+                                    <div className="card-header">
+                                      <SettingOutlined className="card-icon" />
+                                      <h2>飞书应用配置</h2>
+                                    </div>
+                                    <p className="card-description">配置飞书开放平台应用凭证，启用长连接模式实现消息推送与接收</p>
+                                    <Divider />
+                                    <Form form={form} layout="vertical" onFinish={handleSave} className="config-form">
+                                      <Form.Item label="应用名称" name="app_name" tooltip="为你的应用起一个好记的名字" rules={[{ required: true, message: '请输入应用名称' }]}>
+                                        <Input placeholder="例如：Sparky 生产环境" size="large" className="input-field" />
+                                      </Form.Item>
+                                      <Form.Item label="App ID" name="app_id" rules={[{ required: true, message: '请输入 App ID' }]}>
+                                        <Input placeholder="cli_xxxxxxxxxxxxxxxx" size="large" className="input-field" />
+                                      </Form.Item>
+                                      <Form.Item label="App Secret" name="app_secret" rules={[{ required: true, message: '请输入 App Secret' }]}>
+                                        <Input.Password placeholder="应用密钥" size="large" className="input-field" />
+                                      </Form.Item>
+                                      <Form.Item label="默认群聊 ID" name="chat_id" extra="可选">
+                                        <Input placeholder="oc_xxxxxxxxxxxxxxxxxxxxxxxx" size="large" className="input-field" />
+                                      </Form.Item>
+                                      <Form.Item label="Encrypt Key" name="encrypt_key" extra="可选">
+                                        <Input.Password placeholder="加密密钥" size="large" className="input-field" />
+                                      </Form.Item>
+                                      <Form.Item label="Verification Token" name="verification_token" extra="可选">
+                                        <Input.Password placeholder="验证令牌" size="large" className="input-field" />
+                                      </Form.Item>
+                                      <Form.Item
+                                        label="Hook 事件过滤"
+                                        name="hook_events_filter"
+                                        extra="选择需要推送到飞书的事件类型，不选则推送全部事件"
+                                        getValueFromEvent={(checkedValues: string[]) => checkedValues.length > 0 ? checkedValues.join(',') : undefined}
+                                        getValueProps={(value: string | undefined) => ({
+                                          value: value ? value.split(',').map((s: string) => s.trim()) : [],
+                                        })}
+                                      >
+                                        <Checkbox.Group
+                                          options={[
+                                            { label: '🛑 Stop（任务结束）', value: 'Stop' },
+                                            { label: '🔐 PermissionRequest（权限确认）', value: 'PermissionRequest' },
+                                            { label: '📌 Notification（通知）', value: 'Notification' },
+                                            { label: '📝 UserPromptSubmit（用户输入）', value: 'UserPromptSubmit' },
+                                          ]}
+                                          style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}
+                                        />
+                                      </Form.Item>
+                                      <div className="action-buttons">
+                                        <Button type="default" icon={<ApiOutlined />} onClick={handleTestConnection} loading={testingConnection} size="large">测试连接</Button>
+                                        <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={loading} size="large">保存配置</Button>
+                                      </div>
+                                    </Form>
+                                  </Card>
+                                ),
+                              },
+                              {
+                                key: 'dingtalk',
+                                label: '钉钉',
+                                children: (
+                                  <Card className="config-card" variant="borderless">
+                                    <div className="card-header">
+                                      <ApiOutlined className="card-icon" />
+                                      <h2>钉钉应用配置</h2>
+                                    </div>
+                                    <p className="card-description">等待开发</p>
+                                  </Card>
+                                ),
+                              },
+                              {
+                                key: 'wework',
+                                label: '企业微信',
+                                children: (
+                                  <Card className="config-card" variant="borderless">
+                                    <div className="card-header">
+                                      <ApiOutlined className="card-icon" />
+                                      <h2>企业微信应用配置</h2>
+                                    </div>
+                                    <p className="card-description">等待开发</p>
+                                  </Card>
+                                ),
+                              },
+                            ]}
+                          />
+                        </div>
+                      </Card>
                     </div>
                   </div>
-                )}
-              </div>
+                </div>
+              )}
+
+              {activeMenu === 'help' && (
+                <div className="help-page">
+                  <div className="main-grid">
+                    <div className="left-column">
+                      <Card variant="borderless">
+                        <h3>快速开始</h3>
+                        <ol className="steps-list">
+                          <li><span className="step-number">1</span><span className="step-text">创建飞书开放平台应用</span></li>
+                          <li><span className="step-number">2</span><span className="step-text">开启机器人能力并配置权限</span></li>
+                          <li><span className="step-number">3</span><span className="step-text">复制应用凭证到设置页面</span></li>
+                          <li><span className="step-number">4</span><span className="step-text">在项目管理中添加项目</span></li>
+                          <li><span className="step-number">5</span><span className="step-text">为项目安装 Hooks</span></li>
+                        </ol>
+                      </Card>
+                      <Card variant="borderless">
+                        <h3>所需权限</h3>
+                        <div className="permissions-list">
+                          <div className="permission-item"><code>im:message</code><span>获取与发送消息</span></div>
+                          <div className="permission-item"><code>im:message.group_at_msg</code><span>接收群聊@消息</span></div>
+                          <div className="permission-item"><code>im:message.p2p_msg</code><span>接收单聊消息</span></div>
+                        </div>
+                      </Card>
+                    </div>
+                    <div className="right-column">
+                      <Card className="about-card" variant="borderless">
+                        <h3>关于 Sparky</h3>
+                        <p>Sparky 是一个集成了 Claude Code 与飞书的桌面应用，可以实时监控 Claude Code 的运行状态，并通过飞书发送通知。</p>
+                        <Divider />
+                        <p className="version-info">版本: 0.1.0</p>
+                      </Card>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
-          </main>
+          </div>
+        </main>
 
-          <footer className="app-footer">
-            <p>Sparky © 2026 你的随身助手</p>
-          </footer>
-        </div>
-      </AntApp>
+        <footer className="app-footer">
+          <p>Sparky © 2026 你的随身助手</p>
+        </footer>
+      </div>
     </ConfigProvider>
   );
 }

@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use tokio::sync::{mpsc, Mutex};
 use rusqlite::{params, Connection};
 
@@ -10,6 +11,13 @@ use websocket::FeishuWsClient;
 
 mod pty;
 use pty::{PtyManager, pty_spawn, pty_write, pty_kill, pty_resize, pty_exists};
+
+pub struct WsConnectionState(pub Arc<AtomicBool>);
+
+#[tauri::command]
+fn get_ws_connected(state: tauri::State<'_, WsConnectionState>) -> bool {
+    state.0.load(std::sync::atomic::Ordering::SeqCst)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -624,10 +632,6 @@ fn open_folder(path: String) -> Result<(), String> {
     Ok(())
 }
 
-fn get_claude_settings_path() -> Result<std::path::PathBuf, String> {
-    let home = dirs::home_dir().ok_or("Failed to find home directory")?;
-    Ok(home.join(".claude").join("settings.local.json"))
-}
 
 fn build_hook_command() -> Result<String, String> {
     if let Ok(cmd) = std::env::var("CLAUDE_MONITOR_HOOK_COMMAND") {
@@ -1184,9 +1188,12 @@ pub fn run() {
         event_tx,
     });
 
+    let ws_connected = Arc::new(AtomicBool::new(false));
+
     tauri::Builder::default()
         .manage(state)
         .manage(PtyManager::new())
+        .manage(WsConnectionState(ws_connected.clone()))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -1219,9 +1226,10 @@ pub fn run() {
                 if let Some(config) = config {
                     if !config.app_id.is_empty() && !config.app_secret.is_empty() {
                         log::info!("Starting Feishu WebSocket connection...");
-                        let client = FeishuWsClient::new(
+                        let client = FeishuWsClient::new_with_connected(
                             config.app_id.clone(),
                             config.app_secret.clone(),
+                            ws_connected.clone(),
                         );
 
                         loop {
@@ -1272,7 +1280,8 @@ pub fn run() {
             update_project,
             delete_project,
             set_project_hooks_status,
-            open_folder
+            open_folder,
+            get_ws_connected
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

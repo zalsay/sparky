@@ -90,7 +90,7 @@ export function usePty(onData?: (data: string, projectPath: string) => void) {
 
       const result = await invoke<string>('pty_spawn', {
         program: 'zsh',
-        args: [],
+        args: ['-l'],
         cwd: projectPath,
         envs: {
           TERM: 'xterm-256color',

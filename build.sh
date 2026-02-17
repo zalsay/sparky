@@ -30,9 +30,20 @@ build_target() {
 OS="$(uname)"
 case "$OS" in
     Darwin*)
-        echo "🍎 Detected macOS. Building for x64 and ARM..."
-        build_target "x86_64-apple-darwin" "dmg"
-        build_target "aarch64-apple-darwin" "dmg"
+        if [ "$1" == "--all" ]; then
+            echo "🍎 Detected macOS. Building for ALL targets (x64 and ARM)..."
+            build_target "x86_64-apple-darwin" "dmg"
+            build_target "aarch64-apple-darwin" "dmg"
+        else
+            ARCH=$(uname -m)
+            if [ "$ARCH" == "arm64" ]; then
+                 echo "🍎 Detected macOS (Apple Silicon). Building for ARM..."
+                 build_target "aarch64-apple-darwin" "dmg"
+            else
+                 echo "🍎 Detected macOS (Intel). Building for x64..."
+                 build_target "x86_64-apple-darwin" "dmg"
+            fi
+        fi
         ;;
     Linux*)
         echo "🐧 Detected Linux. Building for x64 deb/rpm..."

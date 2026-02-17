@@ -95,6 +95,7 @@ pub struct FeishuWsClient {
 }
 
 impl FeishuWsClient {
+    #[allow(dead_code)]
     pub fn new(app_id: String, app_secret: String) -> Self {
         FeishuWsClient {
             app_id,
@@ -105,9 +106,19 @@ impl FeishuWsClient {
         }
     }
 
-    // 获取最后联系的用户 open_id
-    pub fn get_last_open_id(&self) -> Option<String> {
-        self.last_open_id.get().map(|s| s.clone())
+    pub fn new_with_connected(app_id: String, app_secret: String, connected: Arc<AtomicBool>) -> Self {
+        FeishuWsClient {
+            app_id,
+            app_secret,
+            connected,
+            ping_interval_secs: Arc::new(AtomicU64::new(30)),
+            last_open_id: Arc::new(OnceLock::new()),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::SeqCst)
     }
 
     async fn get_ws_url(&self) -> Result<String> {
@@ -504,9 +515,5 @@ impl FeishuWsClient {
         log::info!("User choice saved: {}", choice);
 
         Ok(())
-    }
-
-    pub fn is_connected(&self) -> bool {
-        self.connected.load(Ordering::SeqCst)
     }
 }
