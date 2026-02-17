@@ -62,9 +62,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [hookDetailRecord, setHookDetailRecord] = useState<HookRecord | null>(null);
   const { startPty, write } = usePty();
   const tauriAvailable = isTauri();
-  const inputBufferRef = useRef<Record<string, string>>({});
+  const inputBufferRef = useRef('');
+  const [lastCommand, setLastCommand] = useState('');
   const [wsConnected, setWsConnected] = useState(false);
-  const [lastInput, setLastInput] = useState('');
 
   // Poll WebSocket connection status
   useEffect(() => {
@@ -134,24 +134,25 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     if (!tauriAvailable || !selectedProject) {
       return;
     }
-    const projectPath = selectedProject.path;
-    let buffer = inputBufferRef.current[projectPath] || '';
+    let buffer = inputBufferRef.current;
     let i = 0;
     while (i < data.length) {
       const code = data.charCodeAt(i);
-      // Skip ANSI escape sequences (ESC [ ... letter or ESC + char)
       if (code === 0x1b) {
         i++;
         if (i < data.length && data[i] === '[') {
           i++;
           while (i < data.length && !/[A-Za-z~]/.test(data[i])) i++;
-          i++; // skip the final letter
+          i++;
         } else if (i < data.length) {
-          i++; // skip single char after ESC
+          i++;
         }
         continue;
       }
       if (data[i] === '\r' || data[i] === '\n') {
+        if (buffer.trim()) {
+          setLastCommand(buffer.trim());
+        }
         buffer = '';
         i++;
         continue;
@@ -161,7 +162,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
         i++;
         continue;
       }
-      // Skip other control chars
       if (code < 32) {
         i++;
         continue;
@@ -169,8 +169,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       buffer += data[i];
       i++;
     }
-    inputBufferRef.current[projectPath] = buffer;
-    setLastInput(buffer);
+    inputBufferRef.current = buffer;
   };
 
   const handleEnterProject = (project: Project) => {
@@ -530,10 +529,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                         {wsConnected ? '已连接' : '未连接'}
                       </span>
                     </div>
-                    {lastInput && (
+                    {lastCommand && (
                       <div className="last-input-bar">
-                        <span className="last-input-label">输入中</span>
-                        <code className="last-input-content">{lastInput}</code>
+                        <span className="last-input-label">最近输入</span>
+                        <code className="last-input-content">{lastCommand}</code>
                       </div>
                     )}
                     <Tabs
