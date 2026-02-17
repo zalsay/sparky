@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { usePty } from './hooks/usePty';
@@ -49,6 +49,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [loading, setLoading] = useState(false);
   const [testingConnection, setTestingConnection] = useState(false);
   const [activeMenu, setActiveMenu] = useState<string>('project');
+  const [terminalFullscreen, setTerminalFullscreen] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [terminalHistory, setTerminalHistory] = useState<string[]>([]);
@@ -378,7 +379,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       }}
     >
       <AntApp>
-        <div className={`app-container ${isDarkMode ? 'dark-mode' : ''}`}>
+        <div className={`app-container ${isDarkMode ? 'dark-mode' : ''} ${terminalFullscreen ? 'terminal-fullscreen' : ''}`}>
           <header className="app-header">
             <div className="header-content" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
@@ -482,8 +483,21 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                             key: 'claude',
                             label: 'Claude',
                             children: (
-                              <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-                                <TerminalComponent projectPath={selectedProject.path} onData={handleTerminalInput} mergeTop historyLines={terminalHistory} />
+                              <div className={`terminal-wrapper ${terminalFullscreen ? 'fullscreen' : ''}`}>
+                                <Button
+                                  type="text"
+                                  icon={terminalFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+                                  style={{
+                                    position: 'absolute',
+                                    right: 16,
+                                    top: 16,
+                                    zIndex: 100,
+                                    color: 'rgba(255, 255, 255, 0.65)',
+                                    background: 'rgba(0, 0, 0, 0.2)'
+                                  }}
+                                  onClick={() => setTerminalFullscreen(!terminalFullscreen)}
+                                />
+                                <TerminalComponent projectPath={selectedProject.path} onData={handleTerminalInput} mergeTop historyLines={terminalHistory} fullscreen={terminalFullscreen} />
                               </div>
                             ),
                           },
@@ -522,7 +536,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   </Button>
                                 </Space>
                                 <Divider />
-                                <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                                  <h3 style={{ margin: 0 }}>Claude 记录</h3>
                                   <Button danger disabled={hookRecordSelection.length === 0} onClick={handleDeleteHookRecords}>
                                     批量删除
                                   </Button>

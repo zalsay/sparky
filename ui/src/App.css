@@ -1065,3 +1065,23 @@ body {
 .ant-switch-checked:hover {
   background-color: var(--active-bg) !important;
 }
+
+/* ==================== Terminal Fullscreen ==================== */
+
+.terminal-wrapper {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.terminal-wrapper.fullscreen {
+  position: fixed !important;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 10000;
+  background-color: #1e1e1e;
+  padding: 0;
+}

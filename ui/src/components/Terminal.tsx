@@ -8,6 +8,7 @@ interface TerminalProps {
   onData?: (data: string) => void;
   mergeTop?: boolean;
   historyLines?: string[];
+  fullscreen?: boolean;
 }
 
 interface TerminalCacheItem {
@@ -70,7 +71,7 @@ function getOrCreateTerminal(projectPath: string) {
   return created;
 }
 
-export default function TerminalComponent({ projectPath, onData, mergeTop, historyLines }: TerminalProps) {
+export default function TerminalComponent({ projectPath, onData, mergeTop, historyLines, fullscreen }: TerminalProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -149,6 +150,17 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
   }, [projectPath]);
 
   useEffect(() => {
+    // 当 fullscreen 状态改变时，重新适应大小
+    setTimeout(() => {
+      try {
+        fitRef.current?.fit();
+      } catch (e) {
+        // ignore
+      }
+    }, 100);
+  }, [fullscreen]);
+
+  useEffect(() => {
     if (!historyLines || historyLines.length === 0) {
       return;
     }
@@ -184,7 +196,7 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
         padding: '12px',
         boxSizing: 'border-box',
         cursor: 'text',
-        borderRadius: mergeTop ? '0 0 8px 8px' : '8px',
+        borderRadius: fullscreen ? '0' : (mergeTop ? '0 0 8px 8px' : '8px'),
         boxShadow: 'inset 0 0 20px rgba(0, 0, 0, 0.5)',
         border: '1px solid transparent',
         transition: 'all 0.3s ease',
