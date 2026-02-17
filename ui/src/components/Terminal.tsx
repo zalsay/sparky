@@ -4,105 +4,125 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 
 interface TerminalProps {
+  projectPath: string;
   onData?: (data: string) => void;
-  getIsResumed?: () => boolean;
+  mergeTop?: boolean;
+  historyLines?: string[];
 }
 
-export default function TerminalComponent({ onData, getIsResumed }: TerminalProps) {
+interface TerminalCacheItem {
+  term: Terminal;
+  fit: FitAddon;
+  historyApplied?: boolean;
+}
+
+const terminalCache = new Map<string, TerminalCacheItem>();
+let activeProjectPath: string | null = null;
+let globalWriterReady = false;
+
+function getOrCreateTerminal(projectPath: string) {
+  const cached = terminalCache.get(projectPath);
+  if (cached) {
+    return cached;
+  }
+
+  const term = new Terminal({
+    cursorBlink: true,
+    cursorStyle: 'bar',
+    fontSize: 15,
+    fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+    fontWeight: 'bold',
+    fontWeightBold: '900',
+    theme: {
+      background: '#1e1e1e',
+      foreground: '#e0e0e0',
+      cursor: '#ffffff',
+      cursorAccent: '#1e1e1e',
+      selectionBackground: '#264f78',
+      black: '#000000',
+      red: '#ff5555',
+      green: '#50fa7b',
+      yellow: '#f1fa8c',
+      blue: '#bd93f9',
+      magenta: '#ff79c6',
+      cyan: '#8be9fd',
+      white: '#bfbfbf',
+      brightBlack: '#4d4d4d',
+      brightRed: '#ff6e67',
+      brightGreen: '#5af78e',
+      brightYellow: '#f4f99d',
+      brightBlue: '#caa9fa',
+      brightMagenta: '#ff92d0',
+      brightCyan: '#9aedfe',
+      brightWhite: '#e6e6e6',
+    },
+    convertEol: true,
+    rows: 24,
+    allowProposedApi: true,
+  });
+
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  term.writeln('正在启动终端...');
+
+  const created = { term, fit, historyApplied: false };
+  terminalCache.set(projectPath, created);
+  return created;
+}
+
+export default function TerminalComponent({ projectPath, onData, mergeTop, historyLines }: TerminalProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
-  const terminalInstance = useRef<Terminal | null>(null);
-  const fitAddon = useRef<FitAddon | null>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
   const onDataRef = useRef(onData);
 
-  // 更新 onData ref
   useEffect(() => {
     onDataRef.current = onData;
   }, [onData]);
 
-  // 暴露写入方法给全局，供 PTY 数据回传使用
   useEffect(() => {
-    (window as any).__terminalWrite = (data: string) => {
-      if (terminalInstance.current) {
-        terminalInstance.current.write(data);
-      }
-    };
-    return () => {
-      delete (window as any).__terminalWrite;
-    };
+    if (!globalWriterReady) {
+      (window as any).__terminalWrite = (data: string) => {
+        if (!activeProjectPath) {
+          return;
+        }
+        const cached = terminalCache.get(activeProjectPath);
+        if (cached) {
+          cached.term.write(data);
+        }
+      };
+      globalWriterReady = true;
+    }
   }, []);
 
   useEffect(() => {
     if (!terminalRef.current) return;
 
-    // 如果终端已经存在，不重新创建
-    if (terminalInstance.current) {
-      return;
+    activeProjectPath = projectPath;
+    const container = terminalRef.current;
+    container.innerHTML = '';
+
+    const cached = getOrCreateTerminal(projectPath);
+    if (cached.term.element) {
+      container.appendChild(cached.term.element);
+    } else {
+      cached.term.open(container);
     }
 
-    const term = new Terminal({
-      cursorBlink: true,
-      cursorStyle: 'bar',
-      fontSize: 15,
-      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-      fontWeight: 'bold',
-      fontWeightBold: '900',
-      theme: {
-        background: '#1e1e1e',
-        foreground: '#e0e0e0',
-        cursor: '#ffffff',
-        cursorAccent: '#1e1e1e',
-        selectionBackground: '#264f78',
-        black: '#000000',
-        red: '#ff5555',
-        green: '#50fa7b',
-        yellow: '#f1fa8c',
-        blue: '#bd93f9',
-        magenta: '#ff79c6',
-        cyan: '#8be9fd',
-        white: '#bfbfbf',
-        brightBlack: '#4d4d4d',
-        brightRed: '#ff6e67',
-        brightGreen: '#5af78e',
-        brightYellow: '#f4f99d',
-        brightBlue: '#caa9fa',
-        brightMagenta: '#ff92d0',
-        brightCyan: '#9aedfe',
-        brightWhite: '#e6e6e6',
-      },
-      convertEol: true,
-      rows: 24,
-      allowProposedApi: true,
-    });
-
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-
-    term.open(terminalRef.current);
-
-    // 延迟一下再 fit，确保容器已渲染
     setTimeout(() => {
       try {
-        fit.fit();
+        cached.fit.fit();
       } catch (e) {
-        console.warn('Fit error:', e);
+        // ignore
       }
     }, 100);
 
-    // 自动聚焦终端
-    term.focus();
+    cached.term.focus();
 
-    terminalInstance.current = term;
-    fitAddon.current = fit;
+    termRef.current = cached.term;
+    fitRef.current = cached.fit;
 
-    // 如果是恢复会话，不显示启动消息
-    const isResumed = getIsResumed ? getIsResumed() : false;
-    if (!isResumed) {
-      term.writeln('正在启动终端...');
-    }
-
-    // 当用户输入时发送给 PTY
-    term.onData((data) => {
-      console.log('Terminal input:', data);
+    const dataDisposable = cached.term.onData((data) => {
       if (onDataRef.current) {
         onDataRef.current(data);
       }
@@ -110,7 +130,7 @@ export default function TerminalComponent({ onData, getIsResumed }: TerminalProp
 
     const handleResize = () => {
       try {
-        fit.fit();
+        cached.fit.fit();
       } catch (e) {
         // ignore
       }
@@ -120,14 +140,28 @@ export default function TerminalComponent({ onData, getIsResumed }: TerminalProp
 
     return () => {
       window.removeEventListener('resize', handleResize);
-      term.dispose();
-      terminalInstance.current = null;
+      dataDisposable.dispose();
+      if (container) {
+        container.innerHTML = '';
+      }
+      termRef.current = null;
     };
-  }, []); // 空依赖项，只在挂载时运行一次
+  }, [projectPath]);
 
-  // 点击时聚焦终端
+  useEffect(() => {
+    if (!historyLines || historyLines.length === 0) {
+      return;
+    }
+    const cached = terminalCache.get(projectPath);
+    if (!cached || cached.historyApplied) {
+      return;
+    }
+    cached.term.write(`${historyLines.join('\r\n')}\r\n`);
+    cached.historyApplied = true;
+  }, [historyLines, projectPath]);
+
   const handleClick = () => {
-    terminalInstance.current?.focus();
+    termRef.current?.focus();
   };
 
   return (
@@ -150,7 +184,7 @@ export default function TerminalComponent({ onData, getIsResumed }: TerminalProp
         padding: '12px',
         boxSizing: 'border-box',
         cursor: 'text',
-        borderRadius: '8px',
+        borderRadius: mergeTop ? '0 0 8px 8px' : '8px',
         boxShadow: 'inset 0 0 20px rgba(0, 0, 0, 0.5)',
         border: '1px solid transparent',
         transition: 'all 0.3s ease',

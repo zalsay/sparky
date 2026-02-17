@@ -109,27 +109,98 @@ pub async fn pty_spawn(
         pair.master.try_clone_reader().map_err(|e| format!("Failed to clone master: {}", e))?
     };
 
+    // PTY Reader Thread
     let project_path_clone = project_path.clone();
+    let log_path = get_pty_log_path(&project_path);
+    
+    // Ensure directory exists
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
     thread::spawn(move || {
         let mut reader = master_reader;
         let mut buf = [0u8; 1024];
+        let mut pending: Vec<u8> = Vec::new();
+
+        // Open log file in the thread
+        let mut log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .ok();
+
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let _ = app_handle.emit("pty-data", serde_json::json!({
-                        "projectPath": project_path_clone,
-                        "data": data
-                    }));
+                    // Write to log file
+                    if let Some(f) = log_file.as_mut() {
+                        let _ = f.write_all(&buf[..n]);
+                        let _ = f.flush();
+                    }
+
+                    pending.extend_from_slice(&buf[..n]);
+                    // ... (rest of parsing logic)
+                    loop {
+                        match std::str::from_utf8(&pending) {
+                            Ok(valid) => {
+                                if !valid.is_empty() {
+                                    let _ = app_handle.emit("pty-data", serde_json::json!({
+                                        "projectPath": project_path_clone,
+                                        "data": valid
+                                    }));
+                                }
+                                pending.clear();
+                                break;
+                            }
+                            Err(err) => {
+                                let valid_up_to = err.valid_up_to();
+                                if valid_up_to > 0 {
+                                    let valid = unsafe { std::str::from_utf8_unchecked(&pending[..valid_up_to]) };
+                                    let _ = app_handle.emit("pty-data", serde_json::json!({
+                                        "projectPath": project_path_clone,
+                                        "data": valid
+                                    }));
+                                }
+                                if let Some(error_len) = err.error_len() {
+                                    pending.drain(0..valid_up_to + error_len);
+                                    let _ = app_handle.emit("pty-data", serde_json::json!({
+                                        "projectPath": project_path_clone,
+                                        "data": ""
+                                    }));
+                                    continue;
+                                } else {
+                                    pending = pending[valid_up_to..].to_vec();
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
                 Err(_) => break,
+            }
+        }
+        if !pending.is_empty() {
+            if let Ok(valid) = std::str::from_utf8(&pending) {
+                if !valid.is_empty() {
+                     let _ = app_handle.emit("pty-data", serde_json::json!({
+                        "projectPath": project_path_clone,
+                        "data": valid
+                    }));
+                }
             }
         }
         log::info!("PTY reader thread exiting for project: {}", project_path_clone);
     });
 
     Ok(project_path)
+}
+
+fn get_pty_log_path(project_path: &str) -> std::path::PathBuf {
+    let home = dirs::home_dir().expect("Failed to get home dir");
+    let safe_name = project_path.replace("/", "_").replace(":", "_");
+    home.join("sparky/pty_logs").join(format!("{}.log", safe_name))
 }
 
 #[tauri::command]

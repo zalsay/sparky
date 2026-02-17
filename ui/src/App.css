@@ -30,25 +30,24 @@ body {
 .app-header {
   background: #fff;
   border-bottom: 1px solid #e0e0e0;
-  padding: 24px 0;
+  padding: 14px 0;
 }
 
 .header-content {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 0 32px;
+  width: 100%;
+  padding: 0 24px;
 }
 
 .logo {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .logo-img {
-  width: 32px;
-  height: 32px;
+  width: 26px;
+  height: 26px;
   border-radius: 8px;
 }
 
@@ -59,7 +58,7 @@ body {
 }
 
 .app-header h1 {
-  font-size: 26px;
+  font-size: 22px;
   font-weight: 600;
   color: #000;
   margin: 0;
@@ -77,22 +76,20 @@ body {
 
 .app-main {
   flex: 1;
-  max-width: 1400px;
   width: 100%;
-  margin: 0 auto;
-  padding: 24px;
+  padding: 20px 24px;
 }
 
 /* ==================== 侧边栏布局 ==================== */
 
 .app-layout {
   display: flex;
-  gap: 24px;
+  gap: 12px;
   min-height: calc(100vh - 200px);
 }
 
 .app-sidebar {
-  width: 180px;
+  width: 140px;
   flex-shrink: 0;
   background: #fff;
   border-radius: 8px;
@@ -107,22 +104,26 @@ body {
 .app-sidebar .ant-menu-item {
   margin: 4px 8px;
   border-radius: 6px;
-  color: #555;
+  color: #000;
 }
 
 .app-sidebar .ant-menu-item:hover {
   background: #f0f0f0;
-  color: #333;
+  color: #000;
 }
 
 .app-sidebar .ant-menu-item-selected {
-  background: linear-gradient(135deg, #e0e0e0 0%, #c0c0c0 100%) !important;
-  color: #333 !important;
+  background: #000 !important;
+  color: #fff !important;
   font-weight: 500;
 }
 
 .app-sidebar .ant-menu-item-selected::after {
   display: none;
+}
+
+.app-sidebar .ant-menu-item-selected .anticon {
+  color: #fff !important;
 }
 
 .app-content {
@@ -217,6 +218,194 @@ body {
 
 .status-row:last-child {
   border-bottom: none;
+}
+
+.project-detail-page .ant-tabs-nav {
+  margin: 0;
+  padding: 6px 0 0;
+  background: transparent;
+  border-radius: 10px;
+}
+
+.project-detail-page .ant-tabs-top > .ant-tabs-nav {
+  margin-bottom: 0 !important;
+}
+
+.project-detail-page .ant-tabs-nav-wrap {
+  padding-bottom: 0;
+}
+
+.project-detail-page .ant-tabs-nav-list {
+  padding-bottom: 0;
+}
+
+.project-detail-page .ant-tabs-nav-operations {
+  margin-bottom: 0;
+}
+
+.project-detail-page .ant-tabs-nav-list,
+.project-detail-page .ant-tabs-tab,
+.project-detail-page .ant-tabs-tab-btn {
+  line-height: 1;
+}
+
+.project-detail-page .ant-tabs-nav::before {
+  border-bottom: none;
+}
+
+.project-detail-page .ant-tabs-tab {
+  margin: 0 6px 0 0;
+  padding: 6px 16px;
+  border-radius: 8px;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.project-detail-page .ant-tabs-tab .ant-tabs-tab-btn {
+  color: #000;
+  font-weight: 500;
+}
+
+.project-detail-page .ant-tabs-tab:hover .ant-tabs-tab-btn {
+  color: #000;
+}
+
+.project-detail-page .ant-tabs-tab-active {
+  background: #000;
+  box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.5);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.project-detail-page .ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: #ffffff !important;
+}
+
+.project-detail-page .ant-tabs-tab-active .ant-tabs-tab-btn:focus,
+.project-detail-page .ant-tabs-tab-active .ant-tabs-tab-btn:active,
+.project-detail-page .ant-tabs-tab-active .ant-tabs-tab-btn:hover {
+  color: #ffffff !important;
+}
+
+.project-detail-page .ant-tabs-ink-bar {
+  background: #ffffff;
+}
+
+.project-detail-page .ant-tabs-content-holder {
+  padding-top: 0 !important;
+  margin-top: 0 !important;
+}
+
+.project-detail-page .ant-tabs-content {
+  margin-top: 0 !important;
+}
+
+.project-detail-page .ant-tabs-tabpane {
+  padding-top: 0 !important;
+  margin-top: 0 !important;
+}
+
+.project-detail-page .ant-card-body {
+  padding: 0;
+}
+
+.project-detail-page .card-header {
+  padding: 12px 12px 0;
+  margin-bottom: 6px;
+}
+
+.project-detail-page .ant-tabs {
+  margin-top: 0;
+  padding: 0 12px 12px;
+}
+
+.project-detail-page .detail-form {
+  border: 1px solid #000;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.channel-tabs .ant-tabs-nav {
+  margin: 0;
+  padding: 6px 0 0;
+  background: transparent;
+  border-radius: 10px;
+}
+
+.channel-tabs .ant-tabs-top > .ant-tabs-nav {
+  margin-bottom: 0 !important;
+}
+
+.channel-tabs .ant-tabs-nav-wrap {
+  padding-bottom: 0;
+}
+
+.channel-tabs .ant-tabs-nav-list {
+  padding-bottom: 0;
+}
+
+.channel-tabs .ant-tabs-nav-operations {
+  margin-bottom: 0;
+}
+
+.channel-tabs .ant-tabs-nav-list,
+.channel-tabs .ant-tabs-tab,
+.channel-tabs .ant-tabs-tab-btn {
+  line-height: 1;
+}
+
+.channel-tabs .ant-tabs-nav::before {
+  border-bottom: none;
+}
+
+.channel-tabs .ant-tabs-tab {
+  margin: 0 6px 0 0;
+  padding: 6px 16px;
+  border-radius: 8px;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.channel-tabs .ant-tabs-tab .ant-tabs-tab-btn {
+  color: #000;
+  font-weight: 500;
+}
+
+.channel-tabs .ant-tabs-tab:hover .ant-tabs-tab-btn {
+  color: #000;
+}
+
+.channel-tabs .ant-tabs-tab-active {
+  background: #000;
+  box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.5);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.channel-tabs .ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: #ffffff !important;
+}
+
+.channel-tabs .ant-tabs-tab-active .ant-tabs-tab-btn:focus,
+.channel-tabs .ant-tabs-tab-active .ant-tabs-tab-btn:active,
+.channel-tabs .ant-tabs-tab-active .ant-tabs-tab-btn:hover {
+  color: #ffffff !important;
+}
+
+.channel-tabs .ant-tabs-ink-bar {
+  background: #ffffff;
+}
+
+.channel-tabs .ant-tabs-content-holder {
+  padding-top: 0 !important;
+  margin-top: 0 !important;
+}
+
+.channel-tabs .ant-tabs-content {
+  margin-top: 0 !important;
+}
+
+.channel-tabs .ant-tabs-tabpane {
+  padding-top: 0 !important;
+  margin-top: 0 !important;
 }
 
 .status-label {
@@ -430,15 +619,15 @@ body {
   }
 
   .app-header {
-    padding: 20px 0;
+    padding: 12px 0;
   }
 
   .header-content {
-    padding: 0 24px;
+    padding: 0 20px;
   }
 
   .app-main {
-    padding: 24px;
+    padding: 18px 20px;
   }
 
   .config-card,
@@ -458,16 +647,19 @@ body {
 }
 
 @media (max-width: 768px) {
+  .header-content {
+    padding: 0 16px;
+  }
   .app-header h1 {
-    font-size: 22px;
+    font-size: 20px;
   }
 
   .logo-icon {
-    font-size: 24px;
+    font-size: 22px;
   }
 
   .app-main {
-    padding: 20px 16px;
+    padding: 16px 16px;
   }
 
   .config-card,

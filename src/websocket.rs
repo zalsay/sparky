@@ -307,14 +307,24 @@ impl FeishuWsClient {
 
         self.send_ack(frame, write).await?;
 
-        let payload_str = Self::decode_payload(frame)?;
+        let payload_str = match Self::decode_payload(frame) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("[ws] failed to decode payload: {}", e);
+                return Ok(());
+            }
+        };
         if let Some(payload_str) = payload_str {
-            tracing::debug!("Event payload: {}", payload_str);
+            tracing::info!("[ws:event] payload len={}, preview={}", payload_str.len(), &payload_str[..payload_str.len().min(500)]);
             if let Ok(event) = serde_json::from_str::<EventPayload>(&payload_str) {
                 self.handle_event(&event).await?;
             } else if let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload_str) {
-                tracing::debug!("Raw event json: {}", value);
+                tracing::warn!("[ws:event] parsed as generic JSON but not EventPayload: {}", value);
+            } else {
+                tracing::warn!("[ws:event] payload is not valid JSON: {}", &payload_str[..payload_str.len().min(200)]);
             }
+        } else {
+            tracing::debug!("[ws:event] no payload in data frame");
         }
 
         Ok(())
@@ -322,7 +332,7 @@ impl FeishuWsClient {
 
     async fn handle_event(&self, event: &EventPayload) -> Result<()> {
         let event_type = &event.header.event_type;
-        tracing::info!("Received event: {}", event_type);
+        tracing::info!("[ws:event] type={}, event_id={}", event_type, event.header.event_id);
 
         match event_type.as_str() {
             "card.action.trigger" => {
@@ -332,7 +342,7 @@ impl FeishuWsClient {
                 self.handle_message_receive(&event.event).await?;
             }
             _ => {
-                tracing::debug!("Unhandled event type: {}", event_type);
+                tracing::warn!("[ws:event] unhandled event type: {}, event_id={}", event_type, event.header.event_id);
             }
         }
 
@@ -376,6 +386,13 @@ impl FeishuWsClient {
             .and_then(|sender_id| sender_id.get("open_id"))
             .and_then(|value| value.as_str())
             .unwrap_or("unknown");
+
+        if sender != "unknown" {
+            // 保存 open_id 到 SQLite
+            if let Err(e) = crate::feishu::save_open_id_to_db(sender) {
+                tracing::error!("Failed to save open_id to DB: {}", e);
+            }
+        }
 
         // 解析消息内容
         let text_content = if message_type == "text" {

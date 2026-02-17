@@ -1,5 +1,5 @@
 [package]
-name = "claude-monitor"
+name = "sparky"
 version = "0.1.0"
 edition = "2021"
 
@@ -19,6 +19,7 @@ prost = "0.13"
 prost-types = "0.13"
 flate2 = "1.0"
 rusqlite = { version = "0.31", features = ["bundled"] }
+chrono = "0.4"
 
 [build-dependencies]
 prost-build = "0.13"

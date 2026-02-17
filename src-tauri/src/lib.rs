@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::Manager;
 use tokio::sync::{mpsc, Mutex};
 use rusqlite::{params, Connection};
 
@@ -20,6 +19,8 @@ pub struct AppConfig {
     pub verification_token: Option<String>,
     pub chat_id: Option<String>,
     pub project_path: Option<String>,
+    pub open_id: Option<String>,
+    pub hook_events_filter: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -31,6 +32,8 @@ impl Default for AppConfig {
             verification_token: None,
             chat_id: None,
             project_path: None,
+            open_id: None,
+            hook_events_filter: None,
         }
     }
 }
@@ -136,12 +139,6 @@ pub struct Project {
     pub updated_at: i64,
 }
 
-fn get_config_path(app_handle: &tauri::AppHandle) -> PathBuf {
-    let app_data_dir = app_handle.path().app_data_dir().expect("Failed to get app data dir");
-    fs::create_dir_all(&app_data_dir).expect("Failed to create app data dir");
-    app_data_dir.join("config.json")
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WssStatus {
     pub last_receive_time: Option<i64>,
@@ -149,28 +146,14 @@ pub struct WssStatus {
 }
 
 fn get_db_path() -> PathBuf {
-    let config_dir = dirs::config_dir()
-        .expect("Failed to get config directory")
-        .join("com.claude.monitor");
-    fs::create_dir_all(&config_dir).expect("Failed to create config directory");
-    config_dir.join("hooks.db")
+    let base_dir = dirs::home_dir()
+        .expect("Failed to get home directory")
+        .join("sparky");
+    fs::create_dir_all(&base_dir).expect("Failed to create base directory");
+    base_dir.join("hooks.db")
 }
 
 fn init_db(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS hook_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_name TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            notification_text TEXT NOT NULL,
-            transcript_path TEXT NOT NULL,
-            content TEXT NOT NULL,
-            result TEXT NOT NULL,
-            created_at INTEGER NOT NULL
-        )",
-        [],
-    )?;
-
     // 创建项目表
     conn.execute(
         "CREATE TABLE IF NOT EXISTS projects (
@@ -184,13 +167,369 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
         [],
     )?;
 
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS terminal_input_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_path TEXT NOT NULL,
+            input TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS terminal_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_path TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS app_config_feishu (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            app_id TEXT NOT NULL,
+            app_secret TEXT NOT NULL,
+            encrypt_key TEXT,
+            verification_token TEXT,
+            chat_id TEXT,
+            project_path TEXT,
+            open_id TEXT,
+            hook_events_filter TEXT,
+            updated_at INTEGER NOT NULL
+        )",
+        [],
+    )?;
+
+    // 迁移：给已存在的表添加 open_id 列
+    let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN open_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN hook_events_filter TEXT", []);
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS app_config_dingtalk (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            app_id TEXT NOT NULL,
+            app_secret TEXT NOT NULL,
+            encrypt_key TEXT,
+            verification_token TEXT,
+            chat_id TEXT,
+            project_path TEXT,
+            updated_at INTEGER NOT NULL
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS app_config_wework (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            app_id TEXT NOT NULL,
+            app_secret TEXT NOT NULL,
+            encrypt_key TEXT,
+            verification_token TEXT,
+            chat_id TEXT,
+            project_path TEXT,
+            updated_at INTEGER NOT NULL
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS db_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )",
+        [],
+    )?;
+
     Ok(())
 }
 
-fn open_db() -> Result<Connection, String> {
+pub(crate) fn open_db() -> Result<Connection, String> {
     let conn = Connection::open(get_db_path()).map_err(|e| e.to_string())?;
     init_db(&conn).map_err(|e| e.to_string())?;
+    cleanup_legacy_data(&conn)?;
+    migrate_app_config_table(&conn)?;
     Ok(conn)
+}
+
+fn project_hooks_table_name(project_path: &str) -> String {
+    let mut hash: u64 = 14695981039346656037;
+    for byte in project_path.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    format!("hook_records_{:x}", hash)
+}
+
+fn ensure_project_hooks_table(conn: &Connection, table_name: &str) -> Result<(), String> {
+    let sql = format!(
+        "CREATE TABLE IF NOT EXISTS {} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_name TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            notification_text TEXT NOT NULL,
+            transcript_path TEXT NOT NULL,
+            content TEXT NOT NULL,
+            result TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )",
+        table_name
+    );
+    conn.execute(&sql, []).map_err(|e| e.to_string())?;
+    ensure_session_id_column(conn, table_name)?;
+    Ok(())
+}
+
+fn ensure_session_id_column(conn: &Connection, table_name: &str) -> Result<(), String> {
+    let pragma_sql = format!("PRAGMA table_info({})", table_name);
+    let mut stmt = conn.prepare(&pragma_sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| e.to_string())?;
+    let mut has_session = false;
+    for row in rows {
+        if row.map_err(|e| e.to_string())? == "session_id" {
+            has_session = true;
+            break;
+        }
+    }
+    if !has_session {
+        let alter_sql = format!(
+            "ALTER TABLE {} ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+            table_name
+        );
+        conn.execute(&alter_sql, []).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn cleanup_legacy_data(conn: &Connection) -> Result<(), String> {
+    let cleaned: Result<String, _> = conn.query_row(
+        "SELECT value FROM db_meta WHERE key = 'cleanup_legacy_v1'",
+        [],
+        |row| row.get(0),
+    );
+    if cleaned.is_ok() {
+        return Ok(());
+    }
+    conn.execute("DROP TABLE IF EXISTS hook_records", [])
+        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM terminal_history", [])
+        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM terminal_input_history", [])
+        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO db_meta (key, value) VALUES ('cleanup_legacy_v1', '1')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn table_exists(conn: &Connection, table_name: &str) -> Result<bool, String> {
+    let exists: Result<i64, rusqlite::Error> = conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        params![table_name],
+        |row| row.get(0),
+    );
+    match exists {
+        Ok(_) => Ok(true),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn load_config_from_table(conn: &Connection, table_name: &str) -> Result<Option<AppConfig>, String> {
+    let sql = format!(
+        "SELECT app_id, app_secret, encrypt_key, verification_token, chat_id, project_path
+         FROM {} WHERE id = 1",
+        table_name
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+    if let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        Ok(Some(AppConfig {
+            app_id: row.get(0).map_err(|e| e.to_string())?,
+            app_secret: row.get(1).map_err(|e| e.to_string())?,
+            encrypt_key: row.get(2).map_err(|e| e.to_string())?,
+            verification_token: row.get(3).map_err(|e| e.to_string())?,
+            chat_id: row.get(4).map_err(|e| e.to_string())?,
+            project_path: row.get(5).map_err(|e| e.to_string())?,
+            open_id: None,
+            hook_events_filter: None,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+fn migrate_app_config_table(conn: &Connection) -> Result<(), String> {
+    if !table_exists(conn, "app_config")? {
+        return Ok(());
+    }
+    if load_config_from_db(conn)?.is_none() {
+        if let Some(config) = load_config_from_table(conn, "app_config")? {
+            upsert_config(conn, &config)?;
+        }
+    }
+    conn.execute("DROP TABLE IF EXISTS app_config", [])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn load_config_from_db(conn: &Connection) -> Result<Option<AppConfig>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter
+             FROM app_config_feishu WHERE id = 1",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+    if let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        Ok(Some(AppConfig {
+            app_id: row.get(0).map_err(|e| e.to_string())?,
+            app_secret: row.get(1).map_err(|e| e.to_string())?,
+            encrypt_key: row.get(2).map_err(|e| e.to_string())?,
+            verification_token: row.get(3).map_err(|e| e.to_string())?,
+            chat_id: row.get(4).map_err(|e| e.to_string())?,
+            project_path: row.get(5).map_err(|e| e.to_string())?,
+            open_id: row.get(6).map_err(|e| e.to_string())?,
+            hook_events_filter: row.get(7).map_err(|e| e.to_string())?,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+fn upsert_config(conn: &Connection, config: &AppConfig) -> Result<(), String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+    conn.execute(
+        "INSERT INTO app_config_feishu (id, app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(id) DO UPDATE SET
+           app_id = excluded.app_id,
+           app_secret = excluded.app_secret,
+           encrypt_key = excluded.encrypt_key,
+           verification_token = excluded.verification_token,
+           chat_id = excluded.chat_id,
+           project_path = excluded.project_path,
+           open_id = COALESCE(excluded.open_id, app_config_feishu.open_id),
+           hook_events_filter = excluded.hook_events_filter,
+           updated_at = excluded.updated_at",
+        params![
+            config.app_id,
+            config.app_secret,
+            config.encrypt_key,
+            config.verification_token,
+            config.chat_id,
+            config.project_path,
+            config.open_id,
+            config.hook_events_filter,
+            now
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 单独更新 open_id 到 SQLite（供 WebSocket 回调使用）
+fn save_open_id_to_db(open_id: &str) -> Result<(), String> {
+    let conn = open_db()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+    conn.execute(
+        "UPDATE app_config_feishu SET open_id = ?1, updated_at = ?2 WHERE id = 1",
+        params![open_id, now],
+    )
+    .map_err(|e| e.to_string())?;
+    log::info!("[db] open_id saved to SQLite: {}", open_id);
+    Ok(())
+}
+
+#[tauri::command]
+fn record_terminal_input(project_path: String, input: String) -> Result<(), String> {
+    let conn = open_db()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+
+    conn.execute(
+        "INSERT INTO terminal_history (project_path, kind, content, created_at) VALUES (?1, 'input', ?2, ?3)",
+        params![project_path, input, now],
+    )
+    .map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "DELETE FROM terminal_history
+         WHERE id NOT IN (
+           SELECT id FROM terminal_history
+           WHERE project_path = ?1 AND kind = 'input'
+           ORDER BY id DESC
+           LIMIT 50
+         ) AND project_path = ?1 AND kind = 'input'",
+        params![project_path],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn record_terminal_output(project_path: String, output: String) -> Result<(), String> {
+    let conn = open_db()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+
+    conn.execute(
+        "INSERT INTO terminal_history (project_path, kind, content, created_at) VALUES (?1, 'output', ?2, ?3)",
+        params![project_path, output, now],
+    )
+    .map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "DELETE FROM terminal_history
+         WHERE id NOT IN (
+           SELECT id FROM terminal_history
+           WHERE project_path = ?1 AND kind = 'output'
+           ORDER BY id DESC
+           LIMIT 500
+         ) AND project_path = ?1 AND kind = 'output'",
+        params![project_path],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn get_terminal_history(project_path: String) -> Result<Vec<String>, String> {
+    let conn = open_db()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT content FROM terminal_history
+             WHERE project_path = ?1
+             ORDER BY id DESC
+             LIMIT 500",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query(params![project_path]).map_err(|e| e.to_string())?;
+    let mut items = Vec::new();
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        items.push(row.get::<_, String>(0).map_err(|e| e.to_string())?);
+    }
+    items.reverse();
+    Ok(items)
 }
 
 #[tauri::command]
@@ -214,14 +553,9 @@ fn get_wss_status() -> Result<WssStatus, String> {
 }
 
 #[tauri::command]
-fn get_config(app_handle: tauri::AppHandle) -> Result<AppConfig, String> {
-    let config_path = get_config_path(&app_handle);
-    
-    if config_path.exists() {
-        let config_str = fs::read_to_string(&config_path)
-            .map_err(|e| format!("Failed to read config: {}", e))?;
-        let config: AppConfig = serde_json::from_str(&config_str)
-            .map_err(|e| format!("Failed to parse config: {}", e))?;
+fn get_config() -> Result<AppConfig, String> {
+    let conn = open_db()?;
+    if let Some(config) = load_config_from_db(&conn)? {
         Ok(config)
     } else {
         Ok(AppConfig::default())
@@ -229,12 +563,9 @@ fn get_config(app_handle: tauri::AppHandle) -> Result<AppConfig, String> {
 }
 
 #[tauri::command]
-fn save_config(app_handle: tauri::AppHandle, config: AppConfig) -> Result<(), String> {
-    let config_path = get_config_path(&app_handle);
-    let config_str = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    fs::write(&config_path, config_str)
-        .map_err(|e| format!("Failed to write config: {}", e))?;
+fn save_config(config: AppConfig) -> Result<(), String> {
+    let conn = open_db()?;
+    upsert_config(&conn, &config)?;
     Ok(())
 }
 
@@ -243,8 +574,50 @@ fn get_claude_settings_path() -> Result<std::path::PathBuf, String> {
     Ok(home.join(".claude").join("settings.local.json"))
 }
 
+fn build_hook_command() -> Result<String, String> {
+    if let Ok(cmd) = std::env::var("CLAUDE_MONITOR_HOOK_COMMAND") {
+        if !cmd.trim().is_empty() {
+            return Ok(cmd);
+        }
+    }
+
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("Failed to get executable path: {}", e))?;
+
+    // CLI 二进制名固定为 "sparky"（与根目录 Cargo.toml 的 package name 一致）
+    let cli_bin_name = "sparky";
+
+    let mut current = exe_path.parent();
+    let mut repo_root: Option<std::path::PathBuf> = None;
+    while let Some(dir) = current {
+        if dir.file_name().map(|name| name == "src-tauri").unwrap_or(false) {
+            repo_root = dir.parent().map(|p| p.to_path_buf());
+            break;
+        }
+        current = dir.parent();
+    }
+
+    if let Some(root) = repo_root {
+        let debug_path = root.join("target").join("debug").join(cli_bin_name);
+        if debug_path.exists() {
+            return Ok(format!("{} hook", debug_path.to_string_lossy()));
+        }
+        let release_path = root.join("target").join("release").join(cli_bin_name);
+        if release_path.exists() {
+            return Ok(format!("{} hook", release_path.to_string_lossy()));
+        }
+    }
+
+    // fallback: 尝试全局 PATH 中查找
+    Ok(format!("{} hook", cli_bin_name))
+}
+
 #[tauri::command]
 fn check_hooks_installed(project_path: String) -> Result<bool, String> {
+    check_hooks_installed_for_path(&project_path)
+}
+
+fn check_hooks_installed_for_path(project_path: &str) -> Result<bool, String> {
     let settings_path = std::path::Path::new(&project_path)
         .join(".claude")
         .join("settings.local.json");
@@ -259,17 +632,49 @@ fn check_hooks_installed(project_path: String) -> Result<bool, String> {
     let settings: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse settings: {}", e))?;
 
-    if let Some(hooks) = settings.get("hooks") {
-        if let Some(hook_obj) = hooks.as_object() {
-            // Check for our hooks
-            let has_notification = hook_obj.contains_key("Notification");
-            let has_permission = hook_obj.contains_key("PermissionRequest");
-            let has_stop = hook_obj.contains_key("Stop");
-            return Ok(has_notification || has_permission || has_stop);
+    Ok(is_hooks_config_complete(&settings))
+}
+
+fn is_hooks_config_complete(settings: &serde_json::Value) -> bool {
+    let required = ["Notification", "PermissionRequest", "Stop", "UserPromptSubmit"];
+    if let Some(obj) = settings.as_object() {
+        if required.iter().all(|key| obj.contains_key(*key)) {
+            if required.iter().all(|key| is_hooks_event_complete(&obj[*key])) {
+                return true;
+            }
         }
     }
+    if let Some(hooks) = settings.get("hooks") {
+        if let Some(hook_obj) = hooks.as_object() {
+            if required.iter().all(|key| hook_obj.contains_key(*key)) {
+                if required.iter().all(|key| is_hooks_event_complete(&hook_obj[*key])) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
 
-    Ok(false)
+fn is_hooks_event_complete(value: &serde_json::Value) -> bool {
+    let entries = match value.as_array() {
+        Some(items) if !items.is_empty() => items,
+        _ => return false,
+    };
+    for entry in entries {
+        let hooks = match entry.get("hooks").and_then(|v| v.as_array()) {
+            Some(items) if !items.is_empty() => items,
+            _ => return false,
+        };
+        for hook in hooks {
+            let kind = hook.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            let command = hook.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            if kind != "command" || command.trim().is_empty() {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 #[tauri::command]
@@ -284,17 +689,53 @@ fn install_hooks(project_path: String) -> Result<(), String> {
             .map_err(|e| format!("Failed to create .claude directory: {}", e))?;
     }
 
-    // Get the hook executable path
-    let exe_path = std::env::current_exe()
-        .map_err(|e| format!("Failed to get executable path: {}", e))?;
+    let hook_command = build_hook_command()?;
+    let hooks_events = serde_json::json!({
+        "Notification": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": hook_command.clone()
+                    }
+                ]
+            }
+        ],
+        "PermissionRequest": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": hook_command.clone()
+                    }
+                ]
+            }
+        ],
+        "Stop": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": hook_command.clone()
+                    }
+                ]
+            }
+        ],
+        "UserPromptSubmit": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": hook_command
+                    }
+                ]
+            }
+        ]
+    });
 
+    // Claude Code 要求 hooks 放在 "hooks" key 下
     let hooks_config = serde_json::json!({
-        "hooks": {
-            "Notification": exe_path.to_string_lossy().to_string(),
-            "PermissionRequest": exe_path.to_string_lossy().to_string(),
-            "Stop": exe_path.to_string_lossy().to_string(),
-            "UserPromptSubmit": exe_path.to_string_lossy().to_string()
-        }
+        "hooks": hooks_events
     });
 
     if settings_path.exists() {
@@ -305,9 +746,13 @@ fn install_hooks(project_path: String) -> Result<(), String> {
         let mut settings: serde_json::Value = serde_json::from_str(&content)
             .map_err(|e| format!("Failed to parse settings: {}", e))?;
 
-        // Merge hooks
         if let Some(obj) = settings.as_object_mut() {
-            obj.insert("hooks".to_string(), hooks_config["hooks"].clone());
+            // 移除旧的顶层 hook 事件 key（兼容旧格式）
+            for key in ["Notification", "PermissionRequest", "Stop", "UserPromptSubmit"] {
+                obj.remove(key);
+            }
+            // 设置/覆盖 "hooks" key
+            obj.insert("hooks".to_string(), hooks_events);
         }
 
         let new_content = serde_json::to_string_pretty(&settings)
@@ -344,8 +789,11 @@ fn uninstall_hooks(project_path: String) -> Result<(), String> {
     let mut settings: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse settings: {}", e))?;
 
-    // Remove hooks
     if let Some(obj) = settings.as_object_mut() {
+        obj.remove("Notification");
+        obj.remove("PermissionRequest");
+        obj.remove("Stop");
+        obj.remove("UserPromptSubmit");
         obj.remove("hooks");
     }
 
@@ -459,26 +907,26 @@ pub struct HookRecordsResponse {
 }
 
 #[tauri::command]
-fn get_hook_records(page: Option<u32>, page_size: Option<u32>) -> Result<HookRecordsResponse, String> {
+fn get_hook_records(project_path: String, page: Option<u32>, page_size: Option<u32>) -> Result<HookRecordsResponse, String> {
     let conn = open_db()?;
+    let table_name = project_hooks_table_name(&project_path);
+    ensure_project_hooks_table(&conn, &table_name)?;
 
-    // 获取总数
-    let total: i64 = conn
-        .query_row("SELECT COUNT(*) FROM hook_records", [], |row| row.get(0))
-        .unwrap_or(0);
+    let total_sql = format!("SELECT COUNT(*) FROM {}", table_name);
+    let total: i64 = conn.query_row(&total_sql, [], |row| row.get(0)).unwrap_or(0);
 
     let page = page.unwrap_or(1).max(1);
     let page_size = page_size.unwrap_or(20).min(100);
     let offset = (page - 1) * page_size;
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, event_name, session_id, notification_text, transcript_path, content, result, created_at
-             FROM hook_records
-             ORDER BY created_at DESC
-             LIMIT ?1 OFFSET ?2",
-        )
-        .map_err(|e| e.to_string())?;
+    let query_sql = format!(
+        "SELECT id, event_name, session_id, notification_text, transcript_path, content, result, created_at
+         FROM {}
+         ORDER BY created_at DESC
+         LIMIT ?1 OFFSET ?2",
+        table_name
+    );
+    let mut stmt = conn.prepare(&query_sql).map_err(|e| e.to_string())?;
 
     let rows = stmt
         .query_map(params![page_size as i64, offset as i64], |row| {
@@ -508,34 +956,40 @@ fn get_hook_records(page: Option<u32>, page_size: Option<u32>) -> Result<HookRec
 }
 
 #[tauri::command]
-fn delete_hook_record(id: i64) -> Result<(), String> {
+fn delete_hook_record(project_path: String, id: i64) -> Result<(), String> {
     let conn = open_db()?;
-    conn.execute("DELETE FROM hook_records WHERE id = ?1", params![id])
-        .map_err(|e| e.to_string())?;
+    let table_name = project_hooks_table_name(&project_path);
+    ensure_project_hooks_table(&conn, &table_name)?;
+    let delete_sql = format!("DELETE FROM {} WHERE id = ?1", table_name);
+    conn.execute(&delete_sql, params![id]).map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
-fn delete_hook_records(ids: Vec<i64>) -> Result<(), String> {
+fn delete_hook_records(project_path: String, ids: Vec<i64>) -> Result<(), String> {
     let conn = open_db()?;
+    let table_name = project_hooks_table_name(&project_path);
+    ensure_project_hooks_table(&conn, &table_name)?;
+    let delete_sql = format!("DELETE FROM {} WHERE id = ?1", table_name);
     for id in ids {
-        conn.execute("DELETE FROM hook_records WHERE id = ?1", params![id])
-            .map_err(|e| e.to_string())?;
+        conn.execute(&delete_sql, params![id]).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 #[tauri::command]
-fn get_hook_status() -> Result<HookStatus, String> {
+fn get_hook_status(project_path: String) -> Result<HookStatus, String> {
     let conn = open_db()?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT event_name, result, created_at
-             FROM hook_records
-             ORDER BY created_at DESC
-             LIMIT 1",
-        )
-        .map_err(|e| e.to_string())?;
+    let table_name = project_hooks_table_name(&project_path);
+    ensure_project_hooks_table(&conn, &table_name)?;
+    let query_sql = format!(
+        "SELECT event_name, result, created_at
+         FROM {}
+         ORDER BY created_at DESC
+         LIMIT 1",
+        table_name
+    );
+    let mut stmt = conn.prepare(&query_sql).map_err(|e| e.to_string())?;
 
     let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
     if let Some(row) = rows.next().map_err(|e| e.to_string())? {
@@ -558,7 +1012,7 @@ fn get_projects() -> Result<Vec<Project>, String> {
     let conn = open_db()?;
 
     let mut stmt = conn
-        .prepare("SELECT id, name, path, hooks_installed, created_at, updated_at FROM projects ORDER BY updated_at DESC")
+        .prepare("SELECT id, name, path, hooks_installed, created_at, updated_at FROM projects ORDER BY created_at DESC")
         .map_err(|e| e.to_string())?;
 
     let rows = stmt
@@ -576,7 +1030,23 @@ fn get_projects() -> Result<Vec<Project>, String> {
 
     let mut projects = Vec::new();
     for project in rows {
-        projects.push(project.map_err(|e| e.to_string())?);
+        let mut item = project.map_err(|e| e.to_string())?;
+        if let Ok(actual) = check_hooks_installed_for_path(&item.path) {
+            if actual != item.hooks_installed {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| e.to_string())?
+                    .as_secs() as i64;
+                conn.execute(
+                    "UPDATE projects SET hooks_installed = ?1, updated_at = ?2 WHERE id = ?3",
+                    params![actual as i64, now, item.id],
+                )
+                .map_err(|e| e.to_string())?;
+                item.hooks_installed = actual;
+                item.updated_at = now;
+            }
+        }
+        projects.push(item);
     }
 
     Ok(projects)
@@ -590,9 +1060,10 @@ fn add_project(name: String, path: String) -> Result<Project, String> {
         .map_err(|e| e.to_string())?
         .as_secs() as i64;
 
+    let hooks_installed = check_hooks_installed_for_path(&path).unwrap_or(false);
     conn.execute(
-        "INSERT INTO projects (name, path, hooks_installed, created_at, updated_at) VALUES (?1, ?2, 0, ?3, ?4)",
-        params![name, path, now, now],
+        "INSERT INTO projects (name, path, hooks_installed, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![name, path, hooks_installed as i64, now, now],
     )
     .map_err(|e| e.to_string())?;
 
@@ -602,7 +1073,7 @@ fn add_project(name: String, path: String) -> Result<Project, String> {
         id,
         name,
         path,
-        hooks_installed: false,
+        hooks_installed,
         created_at: now,
         updated_at: now,
     })
@@ -672,46 +1143,37 @@ pub fn run() {
             }
 
             // 启动时自动连接飞书 WSS
-            let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 // 等待一小段时间让应用完全启动
                 tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-                // 读取配置文件获取 app_id 和 app_secret
-                let config_path = app_handle.path().app_data_dir()
-                    .map(|p| p.join("config.json"))
-                    .ok();
+                let config = get_config().ok();
 
-                if let Some(path) = config_path {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        if let Ok(config) = serde_json::from_str::<AppConfig>(&content) {
-                            if !config.app_id.is_empty() && !config.app_secret.is_empty() {
-                                log::info!("Starting Feishu WebSocket connection...");
-                                let client = FeishuWsClient::new(
-                                    config.app_id.clone(),
-                                    config.app_secret.clone(),
-                                );
+                if let Some(config) = config {
+                    if !config.app_id.is_empty() && !config.app_secret.is_empty() {
+                        log::info!("Starting Feishu WebSocket connection...");
+                        let client = FeishuWsClient::new(
+                            config.app_id.clone(),
+                            config.app_secret.clone(),
+                        );
 
-                                // 带重连机制的连接循环
-                                loop {
-                                    match client.connect().await {
-                                        Ok(_) => {
-                                            log::info!("WebSocket connection closed normally");
-                                        }
-                                        Err(e) => {
-                                            log::error!("WebSocket connection error: {}", e);
-                                        }
-                                    }
-                                    log::info!("Reconnecting in 5 seconds...");
-                                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                        loop {
+                            match client.connect().await {
+                                Ok(_) => {
+                                    log::info!("WebSocket connection closed normally");
                                 }
-                            } else {
-                                log::warn!("Feishu app_id or app_secret not configured");
+                                Err(e) => {
+                                    log::error!("WebSocket connection error: {}", e);
+                                }
                             }
+                            log::info!("Reconnecting in 5 seconds...");
+                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                         }
+                    } else {
+                        log::warn!("Feishu app_id or app_secret not configured");
                     }
                 } else {
-                    log::warn!("Config file not found, skipping WSS connection");
+                    log::warn!("Config not found, skipping WSS connection");
                 }
             });
 
@@ -732,6 +1194,9 @@ pub fn run() {
             pty_kill,
             pty_resize,
             pty_exists,
+            record_terminal_input,
+            record_terminal_output,
+            get_terminal_history,
             check_hooks_installed,
             install_hooks,
             uninstall_hooks,

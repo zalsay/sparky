@@ -384,37 +384,13 @@ impl FeishuWsClient {
             .and_then(|value| value.as_str())
             .unwrap_or("unknown");
 
-        // 保存用户的 open_id，用于后续发送消息
+        // 保存用户的 open_id 到 SQLite，供 CLI hook 命令使用
         if open_id != "unknown" {
             let _ = self.last_open_id.set(open_id.to_string());
-            log::info!("Saved user open_id: {}", open_id);
 
-            // 保存消息接收时间
-            let receive_time = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64;
-
-            // 同时保存到文件，供 CLI hook 命令使用
-            if let Some(config_dir) = dirs::config_dir() {
-                let base_path = config_dir.join("com.claude.monitor");
-                if let Ok(_) = std::fs::create_dir_all(&base_path) {
-                    // 保存 open_id
-                    let open_id_path = base_path.join("last_open_id.txt");
-                    if let Err(e) = std::fs::write(&open_id_path, open_id) {
-                        log::error!("Failed to save open_id to file: {}", e);
-                    } else {
-                        log::info!("Saved open_id to file: {:?}", open_id_path);
-                    }
-
-                    // 保存最后收到消息的时间
-                    let receive_time_path = base_path.join("last_receive_time.txt");
-                    if let Err(e) = std::fs::write(&receive_time_path, receive_time.to_string()) {
-                        log::error!("Failed to save receive_time to file: {}", e);
-                    } else {
-                        log::info!("Saved receive_time to file: {:?}", receive_time_path);
-                    }
-                }
+            // 保存到 SQLite app_config_feishu 表
+            if let Err(e) = crate::save_open_id_to_db(open_id) {
+                log::error!("Failed to save open_id to SQLite: {}", e);
             }
         }
 

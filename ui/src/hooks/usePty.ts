@@ -1,5 +1,5 @@
 import { useRef, useCallback, useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 
 interface PtyInfo {
@@ -10,82 +10,85 @@ interface PtyInfo {
 
 export function usePty(onData?: (data: string, projectPath: string) => void) {
   const [isRunning, setIsRunning] = useState(false);
-  const isResumedRef = useRef(false);
   const ptyRef = useRef<PtyInfo | null>(null);
+  const currentProjectRef = useRef<string | null>(null);
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const onDataRef = useRef(onData);
+  const tauriAvailable = isTauri();
 
-  // 获取 isResumed 的当前值
-  const getIsResumed = useCallback(() => isResumedRef.current, []);
-
-  // 更新 ref 当 onData 变化时
   useEffect(() => {
     onDataRef.current = onData;
   }, [onData]);
 
-  // 清理监听器
-  useEffect(() => {
-    return () => {
-      if (unlistenRef.current) {
-        unlistenRef.current();
-      }
-    };
+  // 清理事件监听器
+  const cleanupListener = useCallback(() => {
+    if (unlistenRef.current) {
+      unlistenRef.current();
+      unlistenRef.current = null;
+    }
   }, []);
 
+  useEffect(() => {
+    return () => {
+      cleanupListener();
+    };
+  }, [cleanupListener]);
+
+  const setupListener = useCallback(async (projectPath: string) => {
+    if (!tauriAvailable) {
+      return;
+    }
+    cleanupListener();
+
+    const unlisten = await listen<{ projectPath: string; data: string }>('pty-data', (event) => {
+      if (event.payload.projectPath === projectPath) {
+        console.log('PTY data received:', event.payload.data);
+        if ((window as any).__terminalWrite) {
+          (window as any).__terminalWrite(event.payload.data);
+        }
+        if (onDataRef.current) {
+          onDataRef.current(event.payload.data, event.payload.projectPath);
+        }
+      }
+    });
+
+    unlistenRef.current = unlisten;
+  }, [cleanupListener]);
+
   const startPty = useCallback(async (projectPath?: string) => {
+    if (!tauriAvailable) {
+      return null;
+    }
     if (!projectPath) {
       console.error('Project path is required');
       return null;
     }
 
-    // 如果已经有该项目的 PTY，直接返回
-    if (ptyRef.current?.projectPath === projectPath && isRunning) {
-      console.log('PTY already running for project:', projectPath);
-      isResumedRef.current = true;
+    // 如果当前项目相同且正在运行，直接设置监听器
+    if (currentProjectRef.current === projectPath && isRunning) {
+      console.log('Same project, setting up listener');
+      await setupListener(projectPath);
       return ptyRef.current;
     }
 
     try {
       console.log('Checking if PTY exists for project:', projectPath);
 
-      // 检查是否已存在 PTY
       const exists = await invoke<boolean>('pty_exists', { projectPath });
       console.log('PTY exists:', exists);
 
-      // 同步设置 isResumed
-      isResumedRef.current = exists;
+      currentProjectRef.current = projectPath;
 
       if (exists) {
         console.log('Reconnecting to existing PTY for project:', projectPath);
         ptyRef.current = { projectPath, cols: 100, rows: 30 };
         setIsRunning(true);
-
-        // 监听已存在 PTY 的数据
-        if (unlistenRef.current) {
-          unlistenRef.current();
-        }
-
-        const unlisten = await listen<{ projectPath: string; data: string }>('pty-data', (event) => {
-          if (event.payload.projectPath === ptyRef.current?.projectPath) {
-            console.log('PTY data received:', event.payload.data);
-            // 写入终端显示
-            if ((window as any).__terminalWrite) {
-              (window as any).__terminalWrite(event.payload.data);
-            }
-            // 调用回调
-            if (onDataRef.current) {
-              onDataRef.current(event.payload.data, event.payload.projectPath);
-            }
-          }
-        });
-
-        unlistenRef.current = unlisten;
+        await setupListener(projectPath);
         return ptyRef.current;
       }
 
       console.log('Creating new PTY for project:', projectPath);
 
-      // 创建新的 PTY
       const result = await invoke<string>('pty_spawn', {
         program: 'zsh',
         args: [],
@@ -101,34 +104,20 @@ export function usePty(onData?: (data: string, projectPath: string) => void) {
       console.log('PTY spawned for project:', result);
       ptyRef.current = { projectPath: result, cols: 100, rows: 30 };
       setIsRunning(true);
-
-      // 监听 PTY 数据
-      const unlisten = await listen<{ projectPath: string; data: string }>('pty-data', (event) => {
-        if (event.payload.projectPath === ptyRef.current?.projectPath) {
-          console.log('PTY data received:', event.payload.data);
-          // 写入终端显示
-          if ((window as any).__terminalWrite) {
-            (window as any).__terminalWrite(event.payload.data);
-          }
-          // 调用回调
-          if (onDataRef.current) {
-            onDataRef.current(event.payload.data, event.payload.projectPath);
-          }
-        }
-      });
-
-      unlistenRef.current = unlisten;
+      await setupListener(projectPath);
       return ptyRef.current;
     } catch (error) {
       console.error('Failed to start PTY:', error);
       return null;
     }
-  }, [isRunning]);
+  }, [isRunning, setupListener]);
 
   const write = useCallback(async (data: string) => {
+    if (!tauriAvailable) {
+      return;
+    }
     if (ptyRef.current) {
       try {
-        console.log('Writing to PTY:', data);
         await invoke('pty_write', {
           projectPath: ptyRef.current.projectPath,
           data,
@@ -139,30 +128,9 @@ export function usePty(onData?: (data: string, projectPath: string) => void) {
     }
   }, []);
 
-  const kill = useCallback(async () => {
-    if (ptyRef.current) {
-      try {
-        await invoke('pty_kill', {
-          projectPath: ptyRef.current.projectPath,
-        });
-      } catch (error) {
-        console.error('Failed to kill PTY:', error);
-      }
-      ptyRef.current = null;
-      setIsRunning(false);
-      isResumedRef.current = false;
-    }
-    if (unlistenRef.current) {
-      unlistenRef.current();
-      unlistenRef.current = null;
-    }
-  }, []);
-
   return {
     startPty,
     write,
-    kill,
     isRunning,
-    getIsResumed,
   };
 }

@@ -1,27 +1,35 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use rusqlite::{params, Connection};
 use std::fs;
 use std::path::PathBuf;
+use tracing::error;
 
-/// 获取保存的 open_id 文件路径
-fn get_open_id_path() -> PathBuf {
-    let config_dir = dirs::config_dir()
-        .expect("Failed to get config directory")
-        .join("com.claude.monitor");
-    std::fs::create_dir_all(&config_dir).expect("Failed to create config directory");
-    config_dir.join("last_open_id.txt")
+/// 打开 SQLite 数据库连接
+fn open_db() -> Result<Connection, String> {
+    let home = dirs::home_dir().ok_or("Failed to get home dir".to_string())?;
+    // CLI 和 GUI 使用相同的数据库路径
+    let db_path = home.join("sparky/hooks.db");
+    if let Some(parent) = db_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    Connection::open(&db_path).map_err(|e| e.to_string())
 }
 
-/// 从文件读取上次保存的 open_id
-pub fn get_last_open_id() -> Option<String> {
-    let path = get_open_id_path();
-    fs::read_to_string(path).ok().map(|s| s.trim().to_string())
-}
-
-/// 保存 open_id 到文件（供 Tauri 应用调用）
-pub fn save_open_id(open_id: &str) -> Result<(), std::io::Error> {
-    let path = get_open_id_path();
-    fs::write(path, open_id)
+/// 保存 open_id 到 SQLite（供 WebSocket 回调使用）
+pub fn save_open_id_to_db(open_id: &str) -> Result<(), String> {
+    let conn = open_db()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+    conn.execute(
+        "UPDATE app_config_feishu SET open_id = ?1, updated_at = ?2 WHERE id = 1",
+        params![open_id, now],
+    )
+    .map_err(|e| e.to_string())?;
+    tracing::info!("[db] open_id saved to SQLite: {}", open_id);
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +113,13 @@ impl FeishuClient {
 
     async fn get_tenant_access_token(&self) -> Result<String, anyhow::Error> {
         let token_url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal";
+        let masked_id = if self.app_id.len() > 8 {
+            format!("{}...", &self.app_id[..8])
+        } else {
+            self.app_id.clone()
+        };
+        tracing::info!("[feishu:token] requesting token for app_id={}", masked_id);
+
         let token_body = serde_json::json!({
             "app_id": self.app_id,
             "app_secret": self.app_secret
@@ -117,16 +132,28 @@ impl FeishuClient {
             .send()
             .await?;
 
-        let result: serde_json::Value = response.json().await?;
+        let status = response.status();
+        let text = response.text().await?;
+        let result: serde_json::Value = serde_json::from_str(&text)?;
+        let code = result["code"].as_i64().unwrap_or(-1);
+        let msg = result["msg"].as_str().unwrap_or("Unknown error");
+        tracing::info!("[feishu:token] response: status={}, code={}, msg={}", status, code, msg);
         
-        if result["code"].as_i64().unwrap_or(-1) != 0 {
-            anyhow::bail!("Failed to get token: {}", result["msg"].as_str().unwrap_or("Unknown error"));
+        if code != 0 {
+            let body_preview = if text.len() > 2000 { &text[..2000] } else { &text };
+            error!(
+                "[feishu:token] FAILED: status={}, code={}, msg={}, body={}",
+                status, code, msg, body_preview
+            );
+            anyhow::bail!("Failed to get token: {}", msg);
         }
 
-        Ok(result["tenant_access_token"]
+        let token = result["tenant_access_token"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("No tenant_access_token in response"))?
-            .to_string())
+            .to_string();
+        tracing::info!("[feishu:token] obtained token (len={})", token.len());
+        Ok(token)
     }
 
     pub async fn send_notification(
@@ -284,6 +311,12 @@ impl FeishuClient {
             });
         }
 
+        let has_actions = actions.as_ref().map(|a| !a.is_empty()).unwrap_or(false);
+        tracing::info!(
+            "[feishu:send] building card: elements={}, has_actions={}",
+            elements.len(), has_actions
+        );
+
         if let Some(actions) = actions {
             if !actions.is_empty() {
                 elements.push(CardElement {
@@ -303,11 +336,22 @@ impl FeishuClient {
         };
 
         let message_url = "https://open.feishu.cn/open-apis/im/v1/messages";
+        let card_json = serde_json::to_string(&card)?;
+        tracing::info!("[feishu:send] card JSON length={}", card_json.len());
+
         let message_body = serde_json::json!({
             "receive_id": receive_id,
             "msg_type": "interactive",
-            "content": serde_json::to_string(&card)?
+            "content": card_json
         });
+
+        tracing::info!(
+            "[feishu:send] POST {}: receive_id_type={}, receive_id={}, body_len={}",
+            message_url,
+            receive_id_type,
+            receive_id,
+            message_body.to_string().len()
+        );
 
         let response = self
             .client
@@ -318,12 +362,23 @@ impl FeishuClient {
             .send()
             .await?;
 
-        let result: serde_json::Value = response.json().await?;
+        let status = response.status();
+        let text = response.text().await?;
+        let result: serde_json::Value = serde_json::from_str(&text)?;
+        let code = result["code"].as_i64().unwrap_or(-1);
+        let msg = result["msg"].as_str().unwrap_or("Unknown error");
+        tracing::info!("[feishu:send] response: status={}, code={}, msg={}", status, code, msg);
 
-        if result["code"].as_i64().unwrap_or(-1) != 0 {
-            anyhow::bail!("Failed to send message: {}", result["msg"].as_str().unwrap_or("Unknown error"));
+        if code != 0 {
+            let body_preview = if text.len() > 2000 { &text[..2000] } else { &text };
+            error!(
+                "[feishu:send] FAILED: status={}, code={}, msg={}, body={}",
+                status, code, msg, body_preview
+            );
+            anyhow::bail!("Failed to send message: {}", msg);
         }
 
+        tracing::info!("[feishu:send] message sent successfully");
         Ok(())
     }
 }

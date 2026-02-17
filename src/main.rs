@@ -8,6 +8,9 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use rusqlite::{params, Connection};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::io::{Write, Read, Seek, SeekFrom};
+use std::fs::File;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "claude-monitor")]
@@ -33,8 +36,10 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(env_filter)
         .init();
 
     let cli = Cli::parse();
@@ -50,8 +55,44 @@ async fn main() -> Result<()> {
 }
 
 async fn run_hook(config: &config::Config) -> Result<()> {
+    tracing::info!("[run_hook] starting hook processing");
     let hook_input = hooks::read_hook_input()?;
-    tracing::info!("Received hook event: {:?}", hook_input);
+    tracing::info!(
+        "[run_hook] event={}, session={}, cwd={}, notification_len={}, final_response_len={}, tool={:?}",
+        hook_input.hook_event_name,
+        hook_input.session_id,
+        hook_input.cwd,
+        hook_input.notification_text.as_ref().map(|s| s.len()).unwrap_or(0),
+        hook_input.final_response.as_ref().map(|s| s.len()).unwrap_or(0),
+        hook_input.tool_name
+    );
+    append_hook_log(&format!(
+        "📥 Hook触发: event={}, tool={:?}, cwd={}",
+        hook_input.hook_event_name,
+        hook_input.tool_name.as_deref().unwrap_or("-"),
+        hook_input.cwd
+    ));
+
+    // 检查事件类型是否在过滤列表中
+    if let Some(ref filter) = config.hook_events_filter {
+        if !filter.is_empty() {
+            let allowed: Vec<&str> = filter.split(',').map(|s| s.trim()).collect();
+            if !allowed.contains(&hook_input.hook_event_name.as_str()) {
+                tracing::info!(
+                    "[run_hook] event={} not in filter [{}], skipping",
+                    hook_input.hook_event_name, filter
+                );
+                append_hook_log(&format!(
+                    "⏭️ 事件已过滤: event={} (允许: {})",
+                    hook_input.hook_event_name, filter
+                ));
+                // 输出 continue 让 Claude Code 继续
+                let output = hooks::HookOutput::success();
+                println!("{}", serde_json::to_string(&output).unwrap_or_default());
+                return Ok(());
+            }
+        }
+    }
 
     let notification_text = hook_input.notification_text.clone().unwrap_or_default();
     let final_response = hook_input.final_response.clone().unwrap_or_default();
@@ -163,10 +204,29 @@ async fn run_hook(config: &config::Config) -> Result<()> {
         content.push_str(&notification_text);
     }
 
-    // PermissionRequest - 显示工具信息
+        // PermissionRequest - 显示工具信息
     if !permission_summary.is_empty() {
         content.push_str("\n\n**权限请求**\n");
         content.push_str(&permission_summary);
+
+        // 尝试从终端日志中捕获提示
+        let mut prompt_captured = false;
+        if let Some(project_path) = config.project_path.as_ref() {
+            if let Some(prompt) = read_terminal_prompt(project_path) {
+                content.push_str("\n\n❓ **Terminal Output**\n");
+                content.push_str("```\n");
+                content.push_str(&prompt);
+                content.push_str("\n```");
+                prompt_captured = true;
+            }
+        }
+
+        if !prompt_captured {
+            content.push_str("\n\n❓ **Do you want to proceed?**\n");
+            content.push_str("❯ 1. Yes\n");
+            content.push_str("  2. Yes, and always allow access\n");
+            content.push_str("  3. No");
+        }
     }
 
     // Stop hook - 显示 Claude 的输出内容
@@ -290,6 +350,7 @@ async fn run_hook(config: &config::Config) -> Result<()> {
 
     // 先保存记录到数据库
     let record_id = match save_hook_record(
+        &hook_input.cwd,
         &event_name,
         &hook_input.session_id,
         &notification_for_record,
@@ -306,21 +367,32 @@ async fn run_hook(config: &config::Config) -> Result<()> {
 
     // 获取接收者ID，发送飞书通知（可选）
     // 优先级：chat_id > open_id
-    let (receive_id, receive_id_type) = std::env::var("FEISHU_CHAT_ID")
-        .ok()
-        .or_else(|| std::env::var("CLAUDE_MONITOR_CHAT_ID").ok())
-        .or_else(|| config.chat_id.clone())
+    let env_chat_id = std::env::var("FEISHU_CHAT_ID").ok();
+    let env_cm_chat_id = std::env::var("CLAUDE_MONITOR_CHAT_ID").ok();
+    let config_chat_id = config.chat_id.clone();
+    let config_open_id = config.open_id.clone();
+    tracing::info!(
+        "[run_hook] receive_id candidates: FEISHU_CHAT_ID={:?}, CLAUDE_MONITOR_CHAT_ID={:?}, config.chat_id={:?}, config.open_id={:?}",
+        env_chat_id, env_cm_chat_id, config_chat_id, config_open_id
+    );
+
+    let (receive_id, receive_id_type) = env_chat_id
+        .or(env_cm_chat_id)
+        .or(config_chat_id)
         .map(|id| (id, "chat_id"))
         .unwrap_or_else(|| {
-            // 尝试使用保存的 open_id
-            feishu::get_last_open_id()
+            config_open_id
+                .filter(|id| !id.is_empty())
                 .map(|id| (id, "open_id"))
                 .unwrap_or((String::new(), ""))
         });
 
+    tracing::info!("[run_hook] resolved receive_id_type={}, receive_id={}", receive_id_type, receive_id);
+
     // 如果没有配置接收者ID，只保存记录并退出
     if receive_id.is_empty() {
-        tracing::warn!("No chat_id or open_id configured, hook record saved but no notification sent");
+        tracing::warn!("[run_hook] No chat_id or open_id configured, hook record saved but no notification sent");
+        append_hook_log(&format!("⚠️ 无接收者ID，跳过通知: event={}", event_name));
         return Ok(());
     }
 
@@ -338,6 +410,11 @@ async fn run_hook(config: &config::Config) -> Result<()> {
             || action_text.contains("❯ 1. Yes")
             || action_text.contains("❯ 2. No")
             || action_text.contains("AskUserQuestion"));
+
+    tracing::info!(
+        "[run_hook] allow_actions={}, need_action={}, action_text_len={}",
+        allow_actions, need_action, action_text.len()
+    );
 
     let actions = if need_action {
         Some(vec![
@@ -380,6 +457,18 @@ async fn run_hook(config: &config::Config) -> Result<()> {
         .send_message(&receive_id, send_content, actions, receive_id_type)
         .await;
 
+    if let Err(err) = &send_result {
+        tracing::error!(
+            "Failed to send hook message: receive_id_type={}, receive_id={}, error={}",
+            receive_id_type,
+            receive_id,
+            err
+        );
+        append_hook_log(&format!("❌ 飞书发送失败: {}", err));
+    } else {
+        append_hook_log(&format!("✅ 飞书发送成功: event={}, receive_id_type={}", event_name, receive_id_type));
+    }
+
     // 更新记录状态
     let record_result = match &send_result {
         Ok(_) => "sent".to_string(),
@@ -389,6 +478,7 @@ async fn run_hook(config: &config::Config) -> Result<()> {
     // 如果有 record_id，使用 UPDATE；否则创建新记录
     if let Some(id) = record_id {
         if let Err(err) = update_hook_record(
+            &hook_input.cwd,
             id,
             &event_name,
             &hook_input.session_id,
@@ -402,6 +492,7 @@ async fn run_hook(config: &config::Config) -> Result<()> {
     } else {
         // 如果没有 ID，创建一个新记录
         if let Err(err) = save_hook_record(
+            &hook_input.cwd,
             &event_name,
             &hook_input.session_id,
             &notification_for_record,
@@ -432,16 +523,25 @@ async fn run_hook(config: &config::Config) -> Result<()> {
 }
 
 fn get_db_path() -> std::path::PathBuf {
-    let config_dir = dirs::config_dir()
-        .expect("Failed to get config directory")
-        .join("com.claude.monitor");
-    std::fs::create_dir_all(&config_dir).expect("Failed to create config directory");
-    config_dir.join("hooks.db")
+    let base_dir = dirs::home_dir()
+        .expect("Failed to get home directory")
+        .join("sparky");
+    std::fs::create_dir_all(&base_dir).expect("Failed to create base directory");
+    base_dir.join("hooks.db")
 }
 
-fn init_db(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS hook_records (
+fn project_hooks_table_name(project_path: &str) -> String {
+    let mut hash: u64 = 14695981039346656037;
+    for byte in project_path.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    format!("hook_records_{:x}", hash)
+}
+
+fn ensure_project_hooks_table(conn: &Connection, table_name: &str) -> Result<()> {
+    let sql = format!(
+        "CREATE TABLE IF NOT EXISTS {} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_name TEXT NOT NULL,
             session_id TEXT NOT NULL,
@@ -451,12 +551,41 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
             result TEXT NOT NULL,
             created_at INTEGER NOT NULL
         )",
-        [],
-    )?;
+        table_name
+    );
+    conn.execute(&sql, [])?;
+    ensure_session_id_column(conn, table_name)?;
+    Ok(())
+}
+
+fn ensure_session_id_column(conn: &Connection, table_name: &str) -> Result<()> {
+    let pragma_sql = format!("PRAGMA table_info({})", table_name);
+    let mut stmt = conn.prepare(&pragma_sql)?;
+    let mut has_session = false;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for row in rows {
+        if row? == "session_id" {
+            has_session = true;
+            break;
+        }
+    }
+    if !has_session {
+        let alter_sql = format!(
+            "ALTER TABLE {} ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+            table_name
+        );
+        conn.execute(&alter_sql, [])?;
+    }
+    Ok(())
+}
+
+fn cleanup_legacy_hook_records(conn: &Connection) -> Result<()> {
+    conn.execute("DROP TABLE IF EXISTS hook_records", [])?;
     Ok(())
 }
 
 fn save_hook_record(
+    project_path: &str,
     event_name: &str,
     session_id: &str,
     notification_text: &str,
@@ -464,15 +593,31 @@ fn save_hook_record(
     content: &str,
     result: &str,
 ) -> Result<i64> {
-    let conn = Connection::open(get_db_path())?;
-    init_db(&conn)?;
+    let db_path = get_db_path();
+    tracing::info!(
+        "[db:save] opening DB: {:?}, project_path={}, event={}",
+        db_path, project_path, event_name
+    );
+    let conn = Connection::open(&db_path)?;
+    cleanup_legacy_hook_records(&conn)?;
+    let table_name = project_hooks_table_name(project_path);
+    tracing::info!("[db:save] table_name={}", table_name);
+    ensure_project_hooks_table(&conn, &table_name)?;
     let created_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
-    conn.execute(
-        "INSERT INTO hook_records (event_name, session_id, notification_text, transcript_path, content, result, created_at)
+    let insert_sql = format!(
+        "INSERT INTO {} (event_name, session_id, notification_text, transcript_path, content, result, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        table_name
+    );
+    tracing::info!(
+        "[db:save] inserting: event={}, session={}, content_len={}, result={}",
+        event_name, session_id, content.len(), result
+    );
+    match conn.execute(
+        &insert_sql,
         params![
             event_name,
             session_id,
@@ -482,11 +627,30 @@ fn save_hook_record(
             result,
             created_at
         ],
-    )?;
-    Ok(conn.last_insert_rowid())
+    ) {
+        Ok(rows) => tracing::info!("[db:save] INSERT affected {} rows", rows),
+        Err(e) => {
+            tracing::error!("[db:save] INSERT failed: {}", e);
+            return Err(e.into());
+        }
+    }
+    let row_id = conn.last_insert_rowid();
+    tracing::info!("[db:save] last_insert_rowid={}", row_id);
+    let trim_sql = format!(
+        "DELETE FROM {table}
+         WHERE id NOT IN (
+           SELECT id FROM {table}
+           ORDER BY id DESC
+           LIMIT 1000
+         )",
+        table = table_name
+    );
+    conn.execute(&trim_sql, [])?;
+    Ok(row_id)
 }
 
 fn update_hook_record(
+    project_path: &str,
     id: i64,
     event_name: &str,
     session_id: &str,
@@ -495,9 +659,19 @@ fn update_hook_record(
     content: &str,
     result: &str,
 ) -> Result<()> {
-    let conn = Connection::open(get_db_path())?;
-    conn.execute(
-        "UPDATE hook_records SET event_name = ?1, session_id = ?2, notification_text = ?3, transcript_path = ?4, content = ?5, result = ?6 WHERE id = ?7",
+    let db_path = get_db_path();
+    tracing::info!("[db:update] opening DB: {:?}, id={}, event={}", db_path, id, event_name);
+    let conn = Connection::open(&db_path)?;
+    cleanup_legacy_hook_records(&conn)?;
+    let table_name = project_hooks_table_name(project_path);
+    tracing::info!("[db:update] table_name={}", table_name);
+    ensure_project_hooks_table(&conn, &table_name)?;
+    let update_sql = format!(
+        "UPDATE {} SET event_name = ?1, session_id = ?2, notification_text = ?3, transcript_path = ?4, content = ?5, result = ?6 WHERE id = ?7",
+        table_name
+    );
+    match conn.execute(
+        &update_sql,
         params![
             event_name,
             session_id,
@@ -507,7 +681,13 @@ fn update_hook_record(
             result,
             id
         ],
-    )?;
+    ) {
+        Ok(rows) => tracing::info!("[db:update] UPDATE affected {} rows for id={}", rows, id),
+        Err(e) => {
+            tracing::error!("[db:update] UPDATE failed for id={}: {}", id, e);
+            return Err(e.into());
+        }
+    }
     Ok(())
 }
 
@@ -541,6 +721,13 @@ async fn run_test(config: &config::Config, chat_id: Option<String>) -> Result<()
 async fn run_connect(config: &config::Config) -> Result<()> {
     tracing::info!("Starting Feishu WebSocket long connection...");
     tracing::info!("App ID: {}", config.app_id);
+
+    // 启动 hook.log tail 监视任务
+    tokio::spawn(async {
+        if let Err(e) = tail_hook_log().await {
+            tracing::error!("Hook log watcher error: {}", e);
+        }
+    });
     
     let client = websocket::FeishuWsClient::new(
         config.app_id.clone(),
@@ -562,4 +749,104 @@ async fn run_connect(config: &config::Config) -> Result<()> {
         tracing::info!("Reconnecting in 5 seconds...");
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
+}
+
+/// 获取 hook.log 路径
+fn get_hook_log_path() -> std::path::PathBuf {
+    dirs::home_dir()
+        .expect("Failed to get home directory")
+        .join("sparky")
+        .join("hook.log")
+}
+
+/// Hook 进程调用：追加一行日志到 ~/sparky/hook.log
+fn append_hook_log(message: &str) {
+    let log_path = get_hook_log_path();
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let _ = writeln!(file, "[{}] {}", now, message);
+    }
+}
+
+/// Connect 进程调用：监视 ~/sparky/hook.log，打印新增内容
+async fn tail_hook_log() -> Result<()> {
+    let log_path = get_hook_log_path();
+    tracing::info!("Watching hook log: {:?}", log_path);
+
+    // 如果文件已存在，跳过已有内容
+    let mut last_pos = if log_path.exists() {
+        std::fs::metadata(&log_path)?.len()
+    } else {
+        0
+    };
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        if !log_path.exists() {
+            continue;
+        }
+
+        let metadata = std::fs::metadata(&log_path)?;
+        let current_len = metadata.len();
+
+        if current_len > last_pos {
+            // 读取新增内容
+            use std::io::{Read, Seek, SeekFrom};
+            let mut file = std::fs::File::open(&log_path)?;
+            file.seek(SeekFrom::Start(last_pos))?;
+            let mut new_content = String::new();
+            file.read_to_string(&mut new_content)?;
+            last_pos = current_len;
+
+            // 逐行打印
+            for line in new_content.lines() {
+                if !line.is_empty() {
+                    println!("🪝 {}", line);
+                }
+            }
+        } else if current_len < last_pos {
+            // 文件被截断（日志轮转），重置
+            last_pos = 0;
+        }
+    }
+}
+
+fn get_pty_log_path(project_path: &str) -> PathBuf {
+    let home = dirs::home_dir().expect("Failed to get home dir");
+    let safe_name = project_path.replace("/", "_").replace(":", "_");
+    home.join("sparky/pty_logs").join(format!("{}.log", safe_name))
+}
+
+fn read_terminal_prompt(project_path: &str) -> Option<String> {
+    let log_path = get_pty_log_path(project_path);
+    let mut file = File::open(log_path).ok()?;
+    let metadata = file.metadata().ok()?;
+    let len = metadata.len();
+    
+    // Read last 4KB to be safe
+    let read_len = if len > 4096 { 4096 } else { len };
+    let mut buf = vec![0; read_len as usize];
+    
+    if len > 4096 {
+        file.seek(SeekFrom::End(-4096)).ok()?;
+    }
+    file.read_exact(&mut buf).ok()?;
+    
+    let content = String::from_utf8_lossy(&buf);
+    
+    // Look for "Do you want to proceed?"
+    if let Some(pos) = content.rfind("Do you want to proceed?") {
+        let prompt_part = &content[pos..];
+        // Only take lines up to some reasonable limit or until next prompt?
+        // Prompt ends with user input.
+        // Assuming we just want to show the prompt and options.
+        return Some(prompt_part.trim().to_string());
+    }
+    
+    None
 }

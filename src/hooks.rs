@@ -54,11 +54,39 @@ pub fn read_hook_input() -> Result<HookInput, anyhow::Error> {
         let line = line?;
         input.push_str(&line);
     }
+
+    let preview = if input.len() > 500 { &input[..500] } else { &input };
+    tracing::info!(
+        "[hook:stdin] read {} bytes, preview: {}",
+        input.len(),
+        preview
+    );
     
-    let hook_input: HookInput = serde_json::from_str(&input)?;
+    let hook_input: HookInput = match serde_json::from_str(&input) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            tracing::error!(
+                "[hook:stdin] JSON parse failed: {}, raw input ({} bytes): {}",
+                e,
+                input.len(),
+                input
+            );
+            return Err(e.into());
+        }
+    };
+
+    tracing::info!(
+        "[hook:stdin] parsed OK: event={}, session={}, cwd={}",
+        hook_input.hook_event_name,
+        hook_input.session_id,
+        hook_input.cwd
+    );
+
     Ok(hook_input)
 }
 
 pub fn send_hook_output(output: &HookOutput) {
-    println!("{}", serde_json::to_string(output).unwrap());
+    let json = serde_json::to_string(output).unwrap();
+    tracing::info!("[hook:stdout] sending output: {}", json);
+    println!("{}", json);
 }
