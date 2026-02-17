@@ -20,7 +20,7 @@ build_target() {
     
     # Run tauri build
     if [ "$bundle_format" != "" ]; then
-        cargo tauri build --target $target --bundle $bundle_format
+        cargo tauri build --target $target --bundles $bundle_format
     else
         cargo tauri build --target $target
     fi

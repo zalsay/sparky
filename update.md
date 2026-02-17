@@ -99,3 +99,5 @@
   - 项目详情卡片 (div) 背景色调整为与 Tab 激活态背景色一致 (#1e1e1e)，消除视觉割裂。
   - 项目详情卡片 (`.project-detail-card`) 移除背景和阴影，使其透明，消除外层边框。
   - 将阴影移至 Tab 内容容器 (`.ant-tabs-content-holder`)，优化视觉层级与 Tab 一体感。
+- 2026-02-17 构建脚本修复：
+  - 修复 build.sh 中 cargo tauri build 参数，使用 --bundles 替换 --bundle，避免构建失败。
