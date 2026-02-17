@@ -1,15 +1,16 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
-use std::path::PathBuf;
 use tracing::error;
+use rand::Rng;
 
 /// 打开 SQLite 数据库连接
 fn open_db() -> Result<Connection, String> {
     let home = dirs::home_dir().ok_or("Failed to get home dir".to_string())?;
     // CLI 和 GUI 使用相同的数据库路径
     let db_path = home.join("sparky/hooks.db");
+    tracing::info!("[feishu] open_db path: {:?}", db_path);
     if let Some(parent) = db_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -29,6 +30,88 @@ pub fn save_open_id_to_db(open_id: &str) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     tracing::info!("[db] open_id saved to SQLite: {}", open_id);
+    Ok(())
+}
+
+/// 创建一个新的权限请求（Pending 状态），返回 4 位随机配对码
+pub fn create_permission_request(project_path: &str) -> Result<String, String> {
+    let conn = open_db()?;
+    let db_path = dirs::home_dir().unwrap().join("sparky/hooks.db");
+    
+    // 生成 4 位随机码
+    let code: u16 = rand::rng().random_range(1000..10000);
+    let code_str = code.to_string();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+    
+    match conn.execute(
+        "INSERT INTO permission_requests (project_path, status, code, created_at) VALUES (?1, 'pending', ?2, ?3)",
+        params![project_path, code_str, now],
+    ) {
+        Ok(_) => {
+            let row_id = conn.last_insert_rowid();
+            tracing::info!("[db:perm] Created permission request (id={}, code={}) for project: {} at {:?}", row_id, code_str, project_path, db_path);
+        }
+        Err(e) => {
+            let err_msg = e.to_string();
+            tracing::error!("[db:perm] Failed to insert permission request: {} (db={:?})", err_msg, db_path);
+            return Err(err_msg);
+        }
+    }
+    
+    Ok(code_str)
+}
+
+/// 验证并执行命令（通过 code 匹配 pending 请求）
+pub fn verify_and_execute_command(code: &str, choice: &str) -> Result<(), String> {
+    let mut conn = open_db()?;
+    let db_path = dirs::home_dir().unwrap().join("sparky/hooks.db");
+    
+    // 通过 code 查找 pending 请求
+    let result: Option<(i64, String)> = conn.query_row(
+        "SELECT id, project_path FROM permission_requests 
+         WHERE code = ?1 AND status = 'pending' 
+         LIMIT 1",
+        params![code],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional().map_err(|e| format!("Failed to query pending requests: {}", e))?;
+
+    let (req_id, project_path) = match result {
+        Some((id, path)) => {
+            tracing::info!("[db:verify] Found pending request id={}, code={}, project='{}'", id, code, path);
+            (id, path)
+        }
+        None => {
+            tracing::warn!("[db:verify] No pending request found for code={}", code);
+            return Err(format!("No pending permission request found for code {}", code));
+        }
+    };
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+
+    // Mark request as completed
+    tx.execute(
+        "UPDATE permission_requests SET status = 'completed', choice = ?1 WHERE id = ?2",
+        params![choice, req_id],
+    ).map_err(|e| e.to_string())?;
+
+    // Insert command
+    tx.execute(
+        "INSERT INTO pty_commands (project_path, command, created_at) VALUES (?1, ?2, ?3)",
+        params![project_path, choice, now],
+    ).map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    
+    tracing::info!("[db:verify] Verified and queued choice='{}' for code={}, project='{}' (req_id={})", choice, code, project_path, req_id);
     Ok(())
 }
 

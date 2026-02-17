@@ -397,10 +397,26 @@ impl FeishuWsClient {
         // 解析消息内容
         let text_content = if message_type == "text" {
             // 尝试解析 JSON 格式的 text 消息
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(content) {
-                json.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string()
-            } else {
-                content.to_string()
+            match serde_json::from_str::<serde_json::Value>(content) {
+                Ok(json) => {
+                    tracing::debug!("Content JSON parsed: {:?}", json);
+                    if let Some(text_val) = json.get("text") {
+                        if let Some(s) = text_val.as_str() {
+                            s.to_string()
+                        } else if let Some(i) = text_val.as_i64() {
+                            i.to_string()
+                        } else {
+                            text_val.to_string()
+                        }
+                    } else {
+                        // JSON valid but no "text" field?
+                        content.to_string()
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Content JSON parse failed: {} (content={})", e, content);
+                    content.to_string()
+                }
             }
         } else {
             content.to_string()
@@ -408,45 +424,31 @@ impl FeishuWsClient {
 
         tracing::info!("Message parsed: sender={}, type={}, content={}", sender, message_type, text_content);
 
-        // 检查是否是权限确认回复（1 或 2）
+        // 检查是否是权限确认回复（格式: XXXX-N, 例如 1234-1）
         let trimmed = text_content.trim();
-        if trimmed == "1" || trimmed == "2" {
-            tracing::info!("Received permission response: {}", trimmed);
-            self.send_permission_response(trimmed).await?;
+        // 匹配 4位数字-1/2/3 格式
+        if let Some(dash_pos) = trimmed.find('-') {
+            let code_part = &trimmed[..dash_pos];
+            let choice_part = &trimmed[dash_pos+1..];
+            if code_part.len() == 4 
+                && code_part.chars().all(|c| c.is_ascii_digit())
+                && (choice_part == "1" || choice_part == "2" || choice_part == "3") 
+            {
+                tracing::info!("Received permission response: code={}, choice={}", code_part, choice_part);
+                self.send_permission_response(code_part, choice_part).await?;
+            }
         }
 
         Ok(())
     }
 
-    async fn send_permission_response(&self, choice: &str) -> Result<()> {
-        // 使用 AppleScript 模拟按键
-        let script = format!(
-            r#"tell application "System Events"
-    tell process "Claude"
-        set frontmost to true
-        delay 0.1
-        keystroke "{}"
-        delay 0.1
-        keystroke return
-    end tell
-end tell"#,
-            choice
-        );
-
-        tracing::info!("Executing AppleScript to send: {}", choice);
-
-        let output = std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(&script)
-            .output()?;
-
-        if output.status.success() {
-            tracing::info!("AppleScript executed successfully");
+    async fn send_permission_response(&self, code: &str, choice: &str) -> Result<()> {
+        // 验证是否有 pending 请求，并执行命令
+        if let Err(e) = crate::feishu::verify_and_execute_command(code, choice) {
+            tracing::error!("Failed to verify and execute pty command: {}", e);
         } else {
-            let error = String::from_utf8_lossy(&output.stderr);
-            tracing::error!("AppleScript failed: {}", error);
+            tracing::info!("PTY command verified and queued for code={}, choice={}", code, choice);
         }
-
         Ok(())
     }
 

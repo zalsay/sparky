@@ -4,6 +4,7 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize, PtyPair, Child};
 use std::io::{Read, Write};
 use std::thread;
 use tauri::{Emitter, Manager};
+use rusqlite::params;
 
 pub struct PtyManager {
     pty_pairs: Mutex<HashMap<String, PtyPair>>,
@@ -192,6 +193,69 @@ pub async fn pty_spawn(
             }
         }
         log::info!("PTY reader thread exiting for project: {}", project_path_clone);
+    });
+
+    // Spawn a task to poll for remote commands from DB
+    let app_handle_for_poll = app.clone();
+    let project_path_for_poll = project_path.clone();
+    
+    thread::spawn(move || {
+        log::info!("PTY command poller started for project: {}", project_path_for_poll);
+        loop {
+            thread::sleep(std::time::Duration::from_millis(500));
+            
+            // Check if PTY still exists
+            let manager = app_handle_for_poll.state::<PtyManager>();
+            if !manager.has_pty(&project_path_for_poll) {
+                log::info!("PTY closed, stopping command poller for: {}", project_path_for_poll);
+                break;
+            }
+
+            // Open DB connection
+            let conn = match crate::open_db() {
+                Ok(c) => c,
+                Err(e) => {
+                    log::error!("Failed to open DB in poller: {}", e);
+                    continue;
+                }
+            };
+
+            // Query unprocessed commands
+            let mut stmt = match conn.prepare(
+                "SELECT id, command FROM pty_commands WHERE project_path = ?1 AND processed = 0 ORDER BY created_at ASC"
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("Failed to prepare polling statement: {}", e);
+                    continue;
+                }
+            };
+
+            let commands: Vec<(i64, String)> = stmt.query_map(params![project_path_for_poll], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .and_then(|mapped_rows| mapped_rows.collect())
+            .unwrap_or_default();
+
+            for (id, cmd) in commands {
+                log::info!("Executing remote command: {} (id={})", cmd, id);
+                
+                // Construct input (do not append newline as per user request)
+                let input = cmd.to_string();
+                
+                // Write to PTY
+                if let Err(e) = manager.write(&project_path_for_poll, &input) {
+                    log::error!("Failed to write to PTY: {}", e);
+                } else {
+                    log::info!("Successfully wrote '{}' to PTY for project: {}", input, project_path_for_poll);
+                    // Mark as processed
+                    let _ = conn.execute(
+                        "UPDATE pty_commands SET processed = 1 WHERE id = ?1",
+                        params![id],
+                    );
+                }
+            }
+        }
     });
 
     Ok(project_path)

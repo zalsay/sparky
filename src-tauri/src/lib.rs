@@ -168,6 +168,28 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     )?;
 
     conn.execute(
+        "CREATE TABLE IF NOT EXISTS pty_commands (
+            id INTEGER PRIMARY KEY,
+            project_path TEXT NOT NULL,
+            command TEXT NOT NULL,
+            processed INTEGER DEFAULT 0,
+            created_at INTEGER
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS permission_requests (
+            id INTEGER PRIMARY KEY,
+            project_path TEXT NOT NULL,
+            status TEXT NOT NULL,
+            choice TEXT,
+            created_at INTEGER
+        )",
+        [],
+    )?;
+
+    conn.execute(
         "CREATE TABLE IF NOT EXISTS terminal_input_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_path TEXT NOT NULL,
@@ -1140,6 +1162,18 @@ pub fn run() {
                         .level(log::LevelFilter::Info)
                         .build(),
                 )?;
+            }
+            
+            // App 重启时，将所有 pending 的权限请求标记为已过期
+            if let Ok(conn) = open_db() {
+                if let Err(e) = conn.execute(
+                    "UPDATE permission_requests SET status = 'expired' WHERE status = 'pending'",
+                    [],
+                ) {
+                    log::error!("Failed to mark pending requests as expired: {}", e);
+                } else {
+                    log::info!("Successfully marked all pending permission requests as expired on app start.");
+                }
             }
 
             // 启动时自动连接飞书 WSS

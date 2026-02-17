@@ -36,17 +36,56 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
+
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
+
+    // File appender: ~/sparky/sparky.YYYY-MM-DD.log
+    let home = dirs::home_dir().expect("Failed to get HOME");
+    let log_dir = home.join("sparky");
+    let file_appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("sparky")
+        .filename_suffix("log")
+        .build(log_dir)
+        .expect("Failed to create rolling file appender");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    let stdout_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(env_filter);
+    
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(non_blocking)
+        .with_ansi(false)
+        .with_filter(tracing_subscriber::EnvFilter::new("debug"));
+
+    tracing_subscriber::registry()
+        .with(stdout_layer)
+        .with(file_layer)
         .init();
+
+    // Log startup info
+    if let Ok(exe) = std::env::current_exe() {
+        tracing::info!("[main] Starting sparky: {:?}", exe);
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        tracing::info!("[main] CWD: {:?}", cwd);
+    }
+    let args: Vec<String> = std::env::args().collect();
+    tracing::info!("[main] Args: {:?}", args);
 
     let cli = Cli::parse();
     let config = config::Config::load()?;
 
     match cli.command {
-        Commands::Hook => run_hook(&config).await?,
+        Commands::Hook => {
+            if let Err(e) = run_hook(&config).await {
+                tracing::error!("[main] run_hook failed: {:?}", e);
+                return Err(e);
+            }
+        }
         Commands::Test { chat_id } => run_test(&config, chat_id).await?,
         Commands::Connect => run_connect(&config).await?,
     }
@@ -196,7 +235,7 @@ async fn run_hook(config: &config::Config) -> Result<()> {
         content.push_str(&format!("**Event**: {}\n", event_name));
         content.push_str(&format!("**Session**: {}\n", hook_input.session_id));
         content.push_str(&format!("**CWD**: {}\n", hook_input.cwd));
-        content.push_str(&format!("**Permission**: {}\n", hook_input.permission_mode));
+        content.push_str(&format!("\n**Permission**: {}\n", hook_input.permission_mode.clone().unwrap_or("ask".to_string())));
     }
 
     if !notification_text.is_empty() {
@@ -206,6 +245,20 @@ async fn run_hook(config: &config::Config) -> Result<()> {
 
         // PermissionRequest - 显示工具信息
     if !permission_summary.is_empty() {
+        // Record pending permission request in DB using CWD
+        let project_path = &hook_input.cwd;
+        tracing::info!("[main] Creating permission request for project: {}", project_path);
+        let req_code = match feishu::create_permission_request(project_path) {
+            Ok(code) => {
+                tracing::info!("[main] Permission request created with code: {}", code);
+                Some(code)
+            }
+            Err(e) => {
+                tracing::error!("Failed to create permission request: {}", e);
+                None
+            }
+        };
+
         content.push_str("\n\n**权限请求**\n");
         content.push_str(&permission_summary);
 
@@ -221,7 +274,12 @@ async fn run_hook(config: &config::Config) -> Result<()> {
             }
         }
 
-        if !prompt_captured {
+        if let Some(code) = &req_code {
+            content.push_str(&format!("\n\n🔑 **配对码: {}**\n", code));
+            content.push_str(&format!("❯ 回复 `{}-1` 允许\n", code));
+            content.push_str(&format!("  回复 `{}-2` 始终允许\n", code));
+            content.push_str(&format!("  回复 `{}-3` 拒绝", code));
+        } else if !prompt_captured {
             content.push_str("\n\n❓ **Do you want to proceed?**\n");
             content.push_str("❯ 1. Yes\n");
             content.push_str("  2. Yes, and always allow access\n");

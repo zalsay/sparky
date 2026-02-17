@@ -61,6 +61,23 @@ impl Config {
             [],
         );
 
+        // create permission_requests table
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS permission_requests (
+                id INTEGER PRIMARY KEY,
+                project_path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                code TEXT,
+                choice TEXT,
+                created_at INTEGER
+            )",
+            [],
+        );
+        // migration: add code column if missing
+        let _ = conn.execute("ALTER TABLE permission_requests ADD COLUMN code TEXT", []);
+            
+        // project_path 应该是已存在的列
+
         // project_path 应该是已存在的列 (由 Tauri 端负责创建/更新)
         // 但如果 CLI 独立运行且 DB 刚创建，可能没有?
         // src-tauri/src/lib.rs 中 upsert_config 更新 project_path。

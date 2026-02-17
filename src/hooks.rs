@@ -6,7 +6,9 @@ pub struct HookInput {
     pub session_id: String,
     pub transcript_path: String,
     pub cwd: String,
-    pub permission_mode: String,
+    #[serde(default)]
+    pub permission_mode: Option<String>,
+    #[serde(alias = "type")]
     pub hook_event_name: String,
     #[serde(default)]
     pub notification_text: Option<String>,
@@ -14,7 +16,7 @@ pub struct HookInput {
     pub final_response: Option<String>,
     #[serde(default)]
     pub tool_name: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "tools")]
     pub tool_input: Option<serde_json::Value>,
 }
 
