@@ -1,8 +1,16 @@
 // Module B: Dual-Mode Execution Engine (v2.1)
-// B-1: Local Worker - stub for now
+// B-1: Local Worker - Core Scheduler Implementation
 
 use serde::{Deserialize, Serialize};
+use std::process::Stdio;
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::process::{Child, Command};
+use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
+use futures_util::StreamExt;
 
+// ============== Message Types ==============
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessagePayload {
     pub sender: String,
@@ -10,7 +18,7 @@ pub struct MessagePayload {
     #[serde(rename = "type")]
     pub msg_type: String,
     pub action: Option<String>,
-    pub data: serde_json::Value,
+    pub data: MessageData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -30,6 +38,7 @@ pub struct MessageData {
     pub decision: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExecutionMode {
     Local,
     Remote,
@@ -44,11 +53,243 @@ impl ExecutionMode {
     }
 }
 
+// ============== Local Worker ==============
+pub struct LocalWorker {
+    task_id: String,
+    relay_url: String,
+    child: Arc<Mutex<Option<Child>>>,
+    stdin: Arc<Mutex<Option<tokio::process::ChildStdin>>>,
+    ws_sender: mpsc::Sender<String>,
+}
+
+impl LocalWorker {
+    pub fn new(task_id: String, relay_url: String) -> Self {
+        let (ws_sender, _) = mpsc::channel(200);
+        
+        Self {
+            task_id,
+            relay_url,
+            child: Arc::new(Mutex::new(None)),
+            stdin: Arc::new(Mutex::new(None)),
+            ws_sender,
+        }
+    }
+
+    /// Run the worker
+    pub async fn run(&self) {
+        let url = format!("{}/ws/{}", self.relay_url, self.task_id);
+        println!("[LocalWorker] Connecting to {}", url);
+
+        match connect_async(&url).await {
+            Ok((ws_stream, _)) => {
+                println!("[LocalWorker] Connected!");
+                self.send_status("connected").await;
+                self.handle_connection(ws_stream).await;
+            }
+            Err(e) => {
+                println!("[LocalWorker] Connect failed: {}", e);
+            }
+        }
+
+        self.kill_process().await;
+    }
+
+    async fn handle_connection(&self, ws_stream: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>) {
+        let (_write, mut read) = ws_stream.split();
+
+        loop {
+            tokio::select! {
+                msg = read.next() => {
+                    match msg {
+                        Some(Ok(WsMessage::Text(text))) => {
+                            if let Err(e) = self.handle_message(&text).await {
+                                println!("[LocalWorker] Error: {}", e);
+                            }
+                        }
+                        Some(Ok(WsMessage::Close(_))) | None => break,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    async fn handle_message(&self, text: &str) -> Result<(), String> {
+        let payload: MessagePayload = serde_json::from_str(text)
+            .map_err(|e| e.to_string())?;
+
+        match payload.msg_type.as_str() {
+            "command" => {
+                match payload.action.as_deref() {
+                    Some("start_task") => {
+                        let prompt = payload.data.prompt.as_deref().unwrap_or("");
+                        self.spawn_claude(prompt).await?;
+                    }
+                    Some("stop_task") => self.kill_process().await,
+                    _ => {}
+                }
+            }
+            "permission_response" => {
+                let decision = payload.data.decision.as_deref().unwrap_or("reject");
+                self.handle_permission_response(decision).await;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn spawn_claude(&self, prompt: &str) -> Result<(), String> {
+        self.kill_process().await;
+        
+        println!("[LocalWorker] Spawning Claude: {}", prompt);
+
+        let mut cmd = Command::new("claude");
+        cmd.arg("--print")
+           .arg(prompt)
+           .stdout(Stdio::piped())
+           .stderr(Stdio::piped())
+           .stdin(Stdio::piped());
+
+        let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+        
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let stdin = child.stdin.take();
+
+        *self.child.lock().await = Some(child);
+        *self.stdin.lock().await = stdin;
+
+        self.send_status("running").await;
+
+        // Stdout reader
+        let sender1 = self.ws_sender.clone();
+        let task_id1 = self.task_id.clone();
+        tokio::spawn(async move {
+            if let Some(out) = stdout {
+                let mut lines = tokio::io::BufReader::new(out).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let msg = MessagePayload {
+                        sender: "local_worker".to_string(),
+                        task_id: task_id1.clone(),
+                        msg_type: "chat_log_stream".to_string(),
+                        action: None,
+                        data: MessageData {
+                            stream: Some("stdout".to_string()),
+                            content: Some(line),
+                            ..Default::default()
+                        },
+                    };
+                    if let Ok(t) = serde_json::to_string(&msg) { let _ = sender1.send(t).await; }
+                }
+            }
+        });
+
+        // Stderr reader
+        let sender2 = self.ws_sender.clone();
+        let task_id2 = self.task_id.clone();
+        tokio::spawn(async move {
+            if let Some(err) = stderr {
+                let mut lines = tokio::io::BufReader::new(err).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let (msg_type, data) = Self::check_permission(&line);
+                    let msg = MessagePayload {
+                        sender: "local_worker".to_string(),
+                        task_id: task_id2.clone(),
+                        msg_type,
+                        action: None,
+                        data,
+                    };
+                    if let Ok(t) = serde_json::to_string(&msg) { let _ = sender2.send(t).await; }
+                }
+            }
+        });
+
+        // Wait for completion
+        let sender3 = self.ws_sender.clone();
+        let task_id3 = self.task_id.clone();
+        let child_ref = self.child.clone();
+        tokio::spawn(async move {
+            let mut c = child_ref.lock().await;
+            if let Some(ref mut child) = *c {
+                let status = child.wait().await;
+                let final_status = if status.unwrap().success() { "success" } else { "failed" };
+                let msg = MessagePayload {
+                    sender: "local_worker".to_string(),
+                    task_id: task_id3,
+                    msg_type: "status".to_string(),
+                    action: None,
+                    data: MessageData { status: Some(final_status.to_string()), ..Default::default() },
+                };
+                if let Ok(t) = serde_json::to_string(&msg) { let _ = sender3.send(t).await; }
+                *c = None;
+            }
+        });
+
+        Ok(())
+    }
+
+    fn check_permission(line: &str) -> (String, MessageData) {
+        let lower = line.to_lowercase();
+        if lower.contains("permission") || lower.contains("allow") || lower.contains("approve") || lower.contains("continue") {
+            let id = format!("req_{}", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap()
+                .as_nanos());
+            return ("permission_request".to_string(), MessageData {
+                request_id: Some(id),
+                hook_type: Some("shell".to_string()),
+                raw_command: Some(line.chars().take(200).collect()),
+                description: Some("Requires approval".to_string()),
+                ..Default::default()
+            });
+        }
+        ("chat_log_stream".to_string(), MessageData {
+            stream: Some("stderr".to_string()),
+            content: Some(line.to_string()),
+            ..Default::default()
+        })
+    }
+
+    async fn handle_permission_response(&self, decision: &str) {
+        println!("[LocalWorker] Permission: {}", decision);
+        let mut s = self.stdin.lock().await;
+        if let Some(ref mut stdin) = *s {
+            let input = if decision == "approve" { "y\n" } else { "\n" };
+            let _ = stdin.write_all(input.as_bytes()).await;
+        }
+    }
+
+    async fn kill_process(&self) {
+        let mut c = self.child.lock().await;
+        if let Some(ref mut child) = *c { let _ = child.kill().await; *c = None; }
+        let mut s = self.stdin.lock().await;
+        *s = None;
+    }
+
+    async fn send_status(&self, status: &str) {
+        let msg = MessagePayload {
+            sender: "local_worker".to_string(),
+            task_id: self.task_id.clone(),
+            msg_type: "status".to_string(),
+            action: None,
+            data: MessageData { status: Some(status.to_string()), ..Default::default() },
+        };
+        if let Ok(t) = serde_json::to_string(&msg) { let _ = self.ws_sender.send(t).await; }
+    }
+}
+
 // ============== Tauri Commands ==============
 #[tauri::command]
 pub async fn start_local_worker(task_id: String, relay_url: String) -> Result<String, String> {
-    println!("Starting LocalWorker for task: {} at {}", task_id, relay_url);
-    // TODO: Implement full WebSocket + Claude process management
+    println!("Starting LocalWorker: {} @ {}", task_id, relay_url);
+    
+    let worker = LocalWorker::new(task_id.clone(), relay_url);
+    let w = Arc::new(worker);
+    
+    let ww = w.clone();
+    tokio::spawn(async move {
+        ww.run().await;
+    });
+
     Ok(task_id)
 }
 
