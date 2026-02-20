@@ -37,7 +37,7 @@ Sparky 采用读写分离的现代化架构：
 graph TD
     subgraph "Claude Code Environment"
         Claude[Claude Code CLI]
-        Hook[Sparky Hook (Rust CLI)]
+        Hook["Sparky Hook (Rust CLI)"]
     end
 
     subgraph "Sparky Desktop App"
