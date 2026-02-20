@@ -13,7 +13,7 @@ mod pty;
 use pty::{PtyManager, pty_spawn, pty_write, pty_kill, pty_resize, pty_exists};
 
 mod relay_client;
-pub use relay_client::{start_relay_client, stop_relay_client};
+pub use relay_client::{start_local_worker, stop_local_worker};
 
 pub struct WsConnectionState(pub Arc<AtomicBool>);
 
