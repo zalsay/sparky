@@ -103,3 +103,4 @@
   - 修复 build.sh 中 cargo tauri build 参数，使用 --bundles 替换 --bundle，避免构建失败。
 - 2026-02-20 文档修复：
   - 修正 README Mermaid 架构图节点文本，避免 GitHub 渲染报错。
+  - 继续修正 Mermaid 节点文本中的括号写法，修复 Tauri/SQLite 节点解析错误。

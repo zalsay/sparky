@@ -41,8 +41,8 @@ graph TD
     end
 
     subgraph "Sparky Desktop App"
-        Tauri[Tauri Core (Rust)]
-        DB[(SQLite Database)]
+        Tauri["Tauri Core (Rust)"]
+        DB[("SQLite Database")]
         WS[WebSocket Client]
         UI[React Frontend]
     end
