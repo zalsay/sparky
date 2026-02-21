@@ -7,14 +7,18 @@ logging:
   # 是否输出到文件
   file_output: false
   # 日志文件路径
-  file_path: logs/sp# 服务端口配置arky.log
+  file_path: logs/sparky.log
 
-
+# 服务端口配置
 server:
   # Relay 服务端口
-  relay_port: 8765
+  relay_port: 8005
   # WebSocket 端口
-  websocket_port: 8766
+  websocket_port: 8005
+  # 服务器域名 (客户端连接用)
+  server_host: ts.meetlife.top
+  # 服务器协议 (http 或 https)
+  server_scheme: https
 
 # 数据库配置
 database:
