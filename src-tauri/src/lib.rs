@@ -6,7 +6,6 @@ use std::sync::atomic::AtomicBool;
 use tokio::sync::{mpsc, Mutex};
 use rusqlite::{params, Connection};
 use tracing::{info, warn, error, debug};
-use tracing_subscriber::{fmt, EnvFilter};
 
 mod websocket;
 use websocket::FeishuWsClient;
@@ -1194,15 +1193,6 @@ fn set_project_hooks_status(id: i64, hooks_installed: bool) -> Result<(), String
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // 初始化 tracing
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-    
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(true)
-        .init();
-
     // 加载配置
     let config = load_config(None);
     info!(level = %config.logging.level, "Configuration loaded");
