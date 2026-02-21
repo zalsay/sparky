@@ -1,0 +1,29 @@
+# Sparky 应用配置文件
+
+# 日志配置
+logging:
+  # 日志级别: trace, debug, info, warn, error
+  level: info
+  # 是否输出到文件
+  file_output: false
+  # 日志文件路径
+  file_path: logs/sp# 服务端口配置arky.log
+
+
+server:
+  # Relay 服务端口
+  relay_port: 8765
+  # WebSocket 端口
+  websocket_port: 8766
+
+# 数据库配置
+database:
+  # 数据库文件路径 (留空使用默认)
+  path: ""
+
+# Worker 配置
+worker:
+  # 默认超时时间 (秒)
+  timeout: 300
+  # 最大并发任务数
+  max_concurrent: 5

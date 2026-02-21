@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useChatStore } from '../store/chatStore';
-import { MessagePayload } from '../types';
+import { MessagePayload, ExecutionMode } from '../types';
 
 const RECONNECT_INTERVAL = 3000;
 const MAX_RECONNECT_ATTEMPTS = 10;
@@ -8,12 +8,19 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 interface UseWebSocketOptions {
   url: string;
   taskId: string;
+  executionMode?: ExecutionMode;
 }
 
-export function useWebSocket({ url, taskId }: UseWebSocketOptions) {
+export function useWebSocket({ url, taskId, executionMode = 'local' }: UseWebSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttempts = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const executionModeRef = useRef<ExecutionMode>(executionMode);
+
+  // Update ref when executionMode changes
+  useEffect(() => {
+    executionModeRef.current = executionMode;
+  }, [executionMode]);
 
   const {
     setConnectionStatus,
@@ -26,7 +33,7 @@ export function useWebSocket({ url, taskId }: UseWebSocketOptions) {
     if (!taskId) return;
 
     const wsUrl = `${url}/ws/${taskId}`;
-    console.log('Connecting to:', wsUrl);
+    console.log('Connecting to:', wsUrl, 'with execution_mode:', executionModeRef.current);
 
     try {
       const ws = new WebSocket(wsUrl);
@@ -37,6 +44,17 @@ export function useWebSocket({ url, taskId }: UseWebSocketOptions) {
         console.log('WebSocket connected');
         setConnectionStatus('connected');
         reconnectAttempts.current = 0;
+        
+        // Send initial handshake with execution_mode
+        const handshake: MessagePayload = {
+          sender: 'web_ui',
+          task_id: taskId,
+          type: 'command',
+          action: 'handshake',
+          data: {},
+          execution_mode: executionModeRef.current,
+        };
+        ws.send(JSON.stringify(handshake));
       };
 
       ws.onmessage = (event) => {
@@ -139,6 +157,7 @@ export function useWebSocket({ url, taskId }: UseWebSocketOptions) {
         type: message.type || 'command',
         action: message.action,
         data: message.data || {},
+        execution_mode: executionModeRef.current,
       };
       wsRef.current.send(JSON.stringify(payload));
       return true;

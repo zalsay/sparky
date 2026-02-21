@@ -5,6 +5,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tokio::sync::{mpsc, Mutex};
 use rusqlite::{params, Connection};
+use tracing::{info, warn, error, debug};
+use tracing_subscriber::{fmt, EnvFilter};
 
 mod websocket;
 use websocket::FeishuWsClient;
@@ -14,6 +16,12 @@ use pty::{PtyManager, pty_spawn, pty_write, pty_kill, pty_resize, pty_exists};
 
 mod relay_client;
 pub use relay_client::{start_local_worker, stop_local_worker};
+
+mod remote_worker;
+pub use remote_worker::{start_remote_worker, stop_remote_worker, configure_sandbox, VfsMapping, SandboxConfig};
+
+mod config;
+pub use config::{Config, load_config};
 
 pub struct WsConnectionState(pub Arc<AtomicBool>);
 
@@ -158,12 +166,13 @@ pub struct WssStatus {
     pub last_open_id: Option<String>,
 }
 
-fn get_db_path() -> PathBuf {
+fn get_db_path() -> Result<PathBuf, String> {
     let base_dir = dirs::home_dir()
-        .expect("Failed to get home directory")
+        .ok_or_else(|| "Failed to get home directory".to_string())?
         .join("sparky");
-    fs::create_dir_all(&base_dir).expect("Failed to create base directory");
-    base_dir.join("hooks.db")
+    fs::create_dir_all(&base_dir)
+        .map_err(|e| format!("Failed to create base directory: {}", e))?;
+    Ok(base_dir.join("hooks.db"))
 }
 
 fn init_db(conn: &Connection) -> rusqlite::Result<()> {
@@ -284,7 +293,7 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 pub(crate) fn open_db() -> Result<Connection, String> {
-    let conn = Connection::open(get_db_path()).map_err(|e| e.to_string())?;
+    let conn = Connection::open(get_db_path()?).map_err(|e| e.to_string())?;
     init_db(&conn).map_err(|e| e.to_string())?;
     cleanup_legacy_data(&conn)?;
     migrate_app_config_table(&conn)?;
@@ -1185,6 +1194,19 @@ fn set_project_hooks_status(id: i64, hooks_installed: bool) -> Result<(), String
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 初始化 tracing
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+    
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .init();
+
+    // 加载配置
+    let config = load_config(None);
+    info!(level = %config.logging.level, "Configuration loaded");
+
     let (event_tx, _event_rx) = mpsc::channel::<String>(100);
     let state = Arc::new(AppState {
         config: Arc::new(Mutex::new(None)),
@@ -1287,5 +1309,7 @@ pub fn run() {
             get_ws_connected
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|e| {
+            error!("Error while running tauri application: {}", e);
+        });
 }

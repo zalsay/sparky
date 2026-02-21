@@ -1372,3 +1372,45 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* ==================== Worker Status Animation ==================== */
+@keyframes pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.dev-env-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.worker-status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.worker-status-indicator.online {
+  background-color: rgba(82, 196, 26, 0.1);
+  color: #52c41a;
+}
+
+.worker-status-indicator.offline {
+  background-color: rgba(255, 77, 79, 0.1);
+  color: #ff4d4f;
+}
+
+.worker-status-indicator.checking {
+  background-color: rgba(250, 173, 20, 0.1);
+  color: #faad14;
+}

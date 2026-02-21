@@ -6,9 +6,11 @@ use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
-use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex};
+use tokio::time::{timeout, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 use futures_util::StreamExt;
+use tracing::{info, warn, error, debug};
 
 // ============== Message Types ==============
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,16 +80,16 @@ impl LocalWorker {
     /// Run the worker
     pub async fn run(&self) {
         let url = format!("{}/ws/{}", self.relay_url, self.task_id);
-        println!("[LocalWorker] Connecting to {}", url);
+        info!("[LocalWorker] Connecting to {}", url);
 
         match connect_async(&url).await {
             Ok((ws_stream, _)) => {
-                println!("[LocalWorker] Connected!");
+                info!("[LocalWorker] Connected!");
                 self.send_status("connected").await;
                 self.handle_connection(ws_stream).await;
             }
             Err(e) => {
-                println!("[LocalWorker] Connect failed: {}", e);
+                info!("[LocalWorker] Connect failed: {}", e);
             }
         }
 
@@ -103,7 +105,7 @@ impl LocalWorker {
                     match msg {
                         Some(Ok(WsMessage::Text(text))) => {
                             if let Err(e) = self.handle_message(&text).await {
-                                println!("[LocalWorker] Error: {}", e);
+                                info!("[LocalWorker] Error: {}", e);
                             }
                         }
                         Some(Ok(WsMessage::Close(_))) | None => break,
@@ -141,7 +143,7 @@ impl LocalWorker {
     async fn spawn_claude(&self, prompt: &str) -> Result<(), String> {
         self.kill_process().await;
         
-        println!("[LocalWorker] Spawning Claude: {}", prompt);
+        info!("[LocalWorker] Spawning Claude: {}", prompt);
 
         let mut cmd = Command::new("claude");
         cmd.arg("--print")
@@ -204,15 +206,20 @@ impl LocalWorker {
             }
         });
 
-        // Wait for completion
+        // Wait for completion (with 5 minute timeout)
         let sender3 = self.ws_sender.clone();
         let task_id3 = self.task_id.clone();
         let child_ref = self.child.clone();
         tokio::spawn(async move {
             let mut c = child_ref.lock().await;
             if let Some(ref mut child) = *c {
-                let status = child.wait().await;
-                let final_status = if status.unwrap().success() { "success" } else { "failed" };
+                let timeout_result = timeout(Duration::from_secs(300), child.wait()).await;
+                let final_status = match timeout_result {
+                    Ok(Ok(s)) if s.success() => "success",
+                    Ok(Ok(_)) => "failed",
+                    Ok(Err(_)) => "error",
+                    Err(_) => "timeout",
+                };
                 let msg = MessagePayload {
                     sender: "local_worker".to_string(),
                     task_id: task_id3,
@@ -230,7 +237,13 @@ impl LocalWorker {
 
     fn check_permission(line: &str) -> (String, MessageData) {
         let lower = line.to_lowercase();
-        if lower.contains("permission") || lower.contains("allow") || lower.contains("approve") || lower.contains("continue") {
+        // 改进权限检测：使用更精确的匹配模式
+        let is_permission = lower.contains("permission") 
+            || (lower.contains("allow") && (lower.contains("continue?") || lower.contains("run this command") || lower.contains("proceed")))
+            || lower.contains("approve")
+            || (lower.contains("continue") && (lower.contains("?") || lower.contains("action")));
+        
+        if is_permission {
             let id = format!("req_{}", std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH).unwrap()
                 .as_nanos());
@@ -250,7 +263,7 @@ impl LocalWorker {
     }
 
     async fn handle_permission_response(&self, decision: &str) {
-        println!("[LocalWorker] Permission: {}", decision);
+        info!("[LocalWorker] Permission: {}", decision);
         let mut s = self.stdin.lock().await;
         if let Some(ref mut stdin) = *s {
             let input = if decision == "approve" { "y\n" } else { "\n" };
@@ -297,4 +310,84 @@ pub async fn start_local_worker(task_id: String, relay_url: String) -> Result<St
 pub async fn stop_local_worker() -> Result<(), String> {
     println!("Stopping LocalWorker");
     Ok(())
+}
+
+// ============== Unit Tests ==============
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_execution_mode_from_str() {
+        assert_eq!(ExecutionMode::from_str("remote"), ExecutionMode::Remote);
+        assert_eq!(ExecutionMode::from_str("local"), ExecutionMode::Local);
+        assert_eq!(ExecutionMode::from_str(""), ExecutionMode::Local);
+        assert_eq!(ExecutionMode::from_str("unknown"), ExecutionMode::Local);
+    }
+
+    #[test]
+    fn test_execution_mode_equality() {
+        assert_eq!(ExecutionMode::Local, ExecutionMode::Local);
+        assert_eq!(ExecutionMode::Remote, ExecutionMode::Remote);
+        assert_ne!(ExecutionMode::Local, ExecutionMode::Remote);
+    }
+
+    #[test]
+    fn test_message_data_default() {
+        let data = MessageData::default();
+        assert!(data.execution_mode.is_none());
+        assert!(data.prompt.is_none());
+        assert!(data.status.is_none());
+        assert!(data.stream.is_none());
+        assert!(data.content.is_none());
+        assert!(data.request_id.is_none());
+        assert!(data.hook_type.is_none());
+        assert!(data.raw_command.is_none());
+        assert!(data.description.is_none());
+        assert!(data.decision.is_none());
+    }
+
+    #[test]
+    fn test_message_payload_serialize() {
+        let payload = MessagePayload {
+            sender: "test_sender".to_string(),
+            task_id: "task_123".to_string(),
+            msg_type: "request".to_string(),
+            action: Some("execute".to_string()),
+            data: MessageData {
+                prompt: Some("hello".to_string()),
+                ..Default::default()
+            },
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        assert!(json.contains("test_sender"));
+        assert!(json.contains("task_123"));
+        assert!(json.contains("\"type\":\"request\""));
+    }
+
+    #[test]
+    fn test_message_payload_deserialize() {
+        let json = r#"{
+            "sender": "worker",
+            "task_id": "t1",
+            "type": "response",
+            "action": null,
+            "data": {"status": "ok"}
+        }"#;
+
+        let payload: MessagePayload = serde_json::from_str(json).unwrap();
+        assert_eq!(payload.sender, "worker");
+        assert_eq!(payload.task_id, "t1");
+        assert_eq!(payload.msg_type, "response");
+        assert!(payload.action.is_none());
+        assert_eq!(payload.data.status, Some("ok".to_string()));
+    }
+
+    #[test]
+    fn test_local_worker_new() {
+        let worker = LocalWorker::new("task_001".to_string(), "ws://localhost:8080".to_string());
+        assert_eq!(worker.task_id, "task_001");
+        assert_eq!(worker.relay_url, "ws://localhost:8080");
+    }
 }
