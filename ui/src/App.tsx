@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, MessageOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { usePty } from './hooks/usePty';
 import TerminalComponent from './components/Terminal';
+import WebApp from './WebApp';
 import logo from '../../logo.png';
 import './App.css';
 
@@ -443,6 +444,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                 style={{ height: '100%', borderRight: 0 }}
                 items={[
                   { key: 'project', icon: <ProjectOutlined />, label: '项目' },
+                  { key: 'web-chat', icon: <MessageOutlined />, label: 'Web Chat' },
                   { key: 'settings', icon: <SettingOutlined />, label: '设置' },
                   { key: 'help', icon: <EyeOutlined />, label: '帮助' },
                 ]}
@@ -706,6 +708,11 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                       ]}
                     />
                   </Card>
+                </div>
+              )}
+              {activeMenu === 'web-chat' && (
+                <div className="web-chat-page">
+                  <WebApp />
                 </div>
               )}
 

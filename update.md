@@ -104,3 +104,10 @@
 - 2026-02-20 文档修复：
   - 修正 README Mermaid 架构图节点文本，避免 GitHub 渲染报错。
   - 继续修正 Mermaid 节点文本中的括号写法，修复 Tauri/SQLite 节点解析错误。
+- 2026-02-21 依赖安装修复：
+  - 移除锁文件中旧镜像源解析并重新生成 package-lock.json。
+  - 使用项目级 npm registry 解决 tencentyun 镜像不可达导致的安装失败。
+- 2026-02-21 主页恢复：
+  - Web 环境默认渲染桌面主页，Web Chat 仅在 /web 或 ?view=web 时显示。
+- 2026-02-21 菜单增强：
+  - 左侧菜单新增 Web Chat 入口，右侧区域嵌入聊天界面。

@@ -16,9 +16,17 @@ async function main() {
     const module = await import('./App.tsx');
     App = module.default;
   } else {
-    // Web mode - use the Chat UI
-    const module = await import('./WebApp.tsx');
-    App = module.default;
+    const webViewParam = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('view') : null;
+    const isWebChat = typeof window !== 'undefined'
+      ? webViewParam === 'web' || window.location.pathname.startsWith('/web')
+      : false;
+    if (isWebChat) {
+      const module = await import('./WebApp.tsx');
+      App = module.default;
+    } else {
+      const module = await import('./App.tsx');
+      App = module.default;
+    }
   }
 
   createRoot(document.getElementById('root')!).render(
