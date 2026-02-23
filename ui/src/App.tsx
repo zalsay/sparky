@@ -15,6 +15,7 @@ interface AppConfig {
   encrypt_key?: string;
   verification_token?: string;
   chat_id?: string;
+  open_id?: string;
   hook_events_filter?: string;
 }
 
@@ -65,6 +66,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const inputBufferRef = useRef('');
   const [lastCommand, setLastCommand] = useState('');
   const [wsConnected, setWsConnected] = useState(false);
+  const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
 
   // Poll WebSocket connection status
   useEffect(() => {
@@ -175,6 +177,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const handleEnterProject = (project: Project) => {
     setSelectedProject(project);
     setActiveMenu('project-detail');
+    if (tauriAvailable) {
+      invoke('notify_project_active', { projectName: project.name }).catch(() => {});
+    }
   };
 
   const handleBackToProjects = () => {
@@ -189,6 +194,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     try {
       const config = await invoke<AppConfig>('get_config');
       form.setFieldsValue(config);
+      setAppConfig(config);
     } catch (error) {
       messageApi.error(`加载配置失败: ${error}`);
     }
@@ -292,6 +298,24 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       messageApi.error(`保存配置失败: ${error}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+
+  const handleUploadAnthropicLogo = async () => {
+    if (!tauriAvailable) {
+      messageApi.warning('请在桌面应用中使用此功能');
+      return;
+    }
+    setUploadingLogo(true);
+    try {
+      const imgKey = await invoke<string>('upload_anthropic_logo');
+      messageApi.success(`Logo 上传成功: ${imgKey}`);
+    } catch (error) {
+      messageApi.error(`上传失败: ${error}`);
+    } finally {
+      setUploadingLogo(false);
     }
   };
 
@@ -749,6 +773,11 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                       <Form.Item label="默认群聊 ID" name="chat_id" extra="可选">
                                         <Input placeholder="oc_xxxxxxxxxxxxxxxxxxxxxxxx" size="large" className="input-field" />
                                       </Form.Item>
+                                      {tauriAvailable && appConfig && !appConfig.chat_id && !appConfig.open_id && (
+                                        <div style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--ant-color-warning-bg, #fffbe6)', border: '1px solid var(--ant-color-warning-border, #ffe58f)', borderRadius: 6, fontSize: 13 }}>
+                                          💡 未配置群聊 ID 也未绑定个人账号。请在飞书中向 <strong>{appConfig.app_name || 'Sparky'}</strong> 机器人发送任意消息，系统将自动绑定你的账号用于消息推送。
+                                        </div>
+                                      )}
                                       <Form.Item label="Encrypt Key" name="encrypt_key" extra="可选">
                                         <Input.Password placeholder="加密密钥" size="large" className="input-field" />
                                       </Form.Item>
@@ -776,6 +805,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                       </Form.Item>
                                       <div className="action-buttons">
                                         <Button type="default" icon={<ApiOutlined />} onClick={handleTestConnection} loading={testingConnection} size="large">测试连接</Button>
+                                        <Button type="default" onClick={handleUploadAnthropicLogo} loading={uploadingLogo} size="large">上传 Anthropic Logo</Button>
                                         <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={loading} size="large">保存配置</Button>
                                       </div>
                                     </Form>

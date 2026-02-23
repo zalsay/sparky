@@ -304,10 +304,11 @@ body {
 /* ==================== Card Styles ==================== */
 
 .config-card {
-  background: var(--card-bg);
+  background: transparent !important;
   color: var(--text-primary);
   border-radius: 8px;
-  box-shadow: 0 1px 3px var(--shadow-color);
+  box-shadow: none !important;
+  border: none !important;
   padding: 32px;
   transition: box-shadow 0.3s ease, background 0.3s;
   min-height: 200px;
@@ -356,8 +357,8 @@ body {
   color: var(--text-primary);
 }
 
-/* Adapt secondary text for dark background ONLY for config-card */
-.config-card .card-description,
+/* Removed forced white text for config-card as background is now transparent */
+/* .config-card .card-description,
 .config-card .status-label,
 .config-form .ant-form-item-label>label,
 .config-form .ant-form-item-explain-error,
@@ -365,12 +366,12 @@ body {
 .config-card .permission-item span,
 .config-card .step-text {
   color: rgba(255, 255, 255, 0.85) !important;
-}
+} */
 
 /* Ensure primary buttons are visible on potentially same-color background */
-.config-card .ant-btn-primary {
+/* .config-card .ant-btn-primary {
   border: 1px solid rgba(255, 255, 255, 0.3);
-}
+} */
 
 
 /* Ensure Tabs fill height */

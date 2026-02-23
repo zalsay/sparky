@@ -152,7 +152,24 @@ pub fn verify_and_execute_command(code: &str, choice: &str) -> Result<(), String
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Card {
     pub config: CardConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<CardHeader>,
     pub elements: Vec<CardElement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CardHeader {
+    pub title: CardText,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<CardHeaderIcon>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CardHeaderIcon {
+    pub tag: String,
+    pub img_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -288,6 +305,18 @@ impl FeishuClient {
     pub async fn send_message(
         &self,
         receive_id: &str,
+        content: String,
+        actions: Option<Vec<CardAction>>,
+        receive_id_type: &str,
+    ) -> Result<(), anyhow::Error> {
+        self.send_message_with_title(receive_id, None, None, content, actions, receive_id_type).await
+    }
+
+    pub async fn send_message_with_title(
+        &self,
+        receive_id: &str,
+        title: Option<&str>,
+        img_key: Option<&str>,
         content: String,
         actions: Option<Vec<CardAction>>,
         receive_id_type: &str,
@@ -445,10 +474,23 @@ impl FeishuClient {
             }
         }
 
+        let card_header = title.map(|t| CardHeader {
+            title: CardText {
+                content: t.to_string(),
+                tag: "plain_text".to_string(),
+            },
+            icon: img_key.map(|k| CardHeaderIcon {
+                tag: "img".to_string(),
+                img_key: k.to_string(),
+            }),
+            template: Some("blue".to_string()),
+        });
+
         let card = Card {
             config: CardConfig {
                 wide_screen_mode: true,
             },
+            header: card_header,
             elements,
         };
 

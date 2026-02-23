@@ -407,6 +407,23 @@ impl FeishuWsClient {
 
         log::info!("Message parsed: sender={}, type={}, content={}", open_id, message_type, content);
 
+        // 解析权限决策回复，格式: {code}-{choice}，例如 "26-1", "26-2", "26-3"
+        let text = if message_type == "text" {
+            serde_json::from_str::<serde_json::Value>(content)
+                .ok()
+                .and_then(|v| v["text"].as_str().map(|s| s.trim().to_string()))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        if let Some((code, choice)) = parse_permission_reply(&text) {
+            match crate::handle_permission_decision(&code, &choice) {
+                Ok(_) => log::info!("Permission decision handled: code={}, choice={}", code, choice),
+                Err(e) => log::warn!("Permission decision failed: {}", e),
+            }
+        }
+
         Ok(())
     }
 
@@ -516,4 +533,18 @@ impl FeishuWsClient {
 
         Ok(())
     }
+}
+
+/// 解析权限回复格式 "{code}-{choice}"，例如 "26-1", "26-2", "26-3"
+fn parse_permission_reply(text: &str) -> Option<(String, String)> {
+    let text = text.trim();
+    let parts: Vec<&str> = text.splitn(2, '-').collect();
+    if parts.len() == 2 {
+        let code = parts[0].trim();
+        let choice = parts[1].trim();
+        if !code.is_empty() && !choice.is_empty() && choice.chars().all(|c| c.is_ascii_digit()) {
+            return Some((code.to_string(), choice.to_string()));
+        }
+    }
+    None
 }

@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tokio::sync::{mpsc, Mutex};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
+use base64::Engine as _;
 
 mod websocket;
 use websocket::FeishuWsClient;
@@ -30,6 +31,7 @@ pub struct AppConfig {
     pub project_path: Option<String>,
     pub open_id: Option<String>,
     pub hook_events_filter: Option<String>,
+    pub anthropic_logo_img_key: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -44,6 +46,7 @@ impl Default for AppConfig {
             project_path: None,
             open_id: None,
             hook_events_filter: None,
+            anthropic_logo_img_key: None,
         }
     }
 }
@@ -240,6 +243,7 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN open_id TEXT", []);
     let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN hook_events_filter TEXT", []);
     let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN app_name TEXT", []);
+    let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN anthropic_logo_img_key TEXT", []);
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS app_config_dingtalk (
@@ -394,6 +398,7 @@ fn load_config_from_table(conn: &Connection, table_name: &str) -> Result<Option<
             open_id: None,
             hook_events_filter: None,
             app_name: None,
+            anthropic_logo_img_key: None,
         }))
     } else {
         Ok(None)
@@ -417,7 +422,7 @@ fn migrate_app_config_table(conn: &Connection) -> Result<(), String> {
 fn load_config_from_db(conn: &Connection) -> Result<Option<AppConfig>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name
+            "SELECT app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name, anthropic_logo_img_key
              FROM app_config_feishu WHERE id = 1",
         )
         .map_err(|e| e.to_string())?;
@@ -433,6 +438,7 @@ fn load_config_from_db(conn: &Connection) -> Result<Option<AppConfig>, String> {
             open_id: row.get(6).map_err(|e| e.to_string())?,
             hook_events_filter: row.get(7).map_err(|e| e.to_string())?,
             app_name: row.get(8).map_err(|e| e.to_string())?,
+            anthropic_logo_img_key: row.get(9).map_err(|e| e.to_string())?,
         }))
     } else {
         Ok(None)
@@ -475,7 +481,37 @@ fn upsert_config(conn: &Connection, config: &AppConfig) -> Result<(), String> {
     Ok(())
 }
 
-/// 单独更新 open_id 到 SQLite（供 WebSocket 回调使用）
+/// 处理来自飞书的权限决策回复，写入 SQLite 供 CLI hook 读取
+pub fn handle_permission_decision(code: &str, choice: &str) -> Result<(), String> {
+    let conn = open_db()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+
+    let result: Option<(i64, String)> = conn.query_row(
+        "SELECT id, project_path FROM permission_requests WHERE code = ?1 AND status = 'pending' LIMIT 1",
+        rusqlite::params![code],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional().map_err(|e| e.to_string())?;
+
+    let (req_id, project_path) = result.ok_or_else(|| format!("No pending request for code {}", code))?;
+
+    conn.execute(
+        "UPDATE permission_requests SET status = 'completed', choice = ?1 WHERE id = ?2",
+        rusqlite::params![choice, req_id],
+    ).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "INSERT INTO pty_commands (project_path, command, created_at) VALUES (?1, ?2, ?3)",
+        rusqlite::params![project_path, choice, now],
+    ).map_err(|e| e.to_string())?;
+
+    log::info!("Permission decision: code={}, choice={}, project={}", code, choice, project_path);
+    Ok(())
+}
+
+
 fn save_open_id_to_db(open_id: &str) -> Result<(), String> {
     let conn = open_db()?;
     let now = std::time::SystemTime::now()
@@ -489,6 +525,64 @@ fn save_open_id_to_db(open_id: &str) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     log::info!("[db] open_id saved to SQLite: {}", open_id);
     Ok(())
+}
+
+/// 上传 Anthropic logo 到飞书，获取 img_key 并保存到 SQLite
+#[tauri::command]
+async fn upload_anthropic_logo() -> Result<String, String> {
+    let config = get_config()?;
+
+    // 获取 token
+    let client = reqwest::Client::new();
+    let token_result: serde_json::Value = client
+        .post("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal")
+        .json(&serde_json::json!({ "app_id": config.app_id, "app_secret": config.app_secret }))
+        .send().await.map_err(|e| e.to_string())?
+        .json().await.map_err(|e| e.to_string())?;
+    let token = token_result["tenant_access_token"].as_str()
+        .ok_or("Failed to get tenant_access_token")?;
+
+    // Anthropic logo PNG (32x32, base64 encoded)
+    let logo_b64 = "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";
+    let logo_bytes = base64::engine::general_purpose::STANDARD.decode(logo_b64)
+        .map_err(|e| e.to_string())?;
+
+    // 上传到飞书
+    let part = reqwest::multipart::Part::bytes(logo_bytes)
+        .file_name("anthropic_logo.png")
+        .mime_str("image/png").map_err(|e| e.to_string())?;
+    let form = reqwest::multipart::Form::new()
+        .text("image_type", "message")
+        .part("image", part);
+
+    let upload_result: serde_json::Value = client
+        .post("https://open.feishu.cn/open-apis/im/v1/images")
+        .header("Authorization", format!("Bearer {}", token))
+        .multipart(form)
+        .send().await.map_err(|e| e.to_string())?
+        .json().await.map_err(|e| e.to_string())?;
+
+    if upload_result["code"].as_i64().unwrap_or(-1) != 0 {
+        return Err(format!("Upload failed: {}", upload_result["msg"].as_str().unwrap_or("unknown")));
+    }
+
+    let img_key = upload_result["data"]["image_key"].as_str()
+        .ok_or("No image_key in response")?
+        .to_string();
+
+    // 保存到 SQLite
+    let conn = open_db()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+    conn.execute(
+        "UPDATE app_config_feishu SET anthropic_logo_img_key = ?1, updated_at = ?2 WHERE id = 1",
+        params![img_key, now],
+    ).map_err(|e| e.to_string())?;
+
+    log::info!("[feishu] Anthropic logo uploaded, img_key={}", img_key);
+    Ok(img_key)
 }
 
 #[tauri::command]
@@ -640,34 +734,40 @@ fn build_hook_command() -> Result<String, String> {
         }
     }
 
-    let exe_path = std::env::current_exe()
-        .map_err(|e| format!("Failed to get executable path: {}", e))?;
-
-    // CLI 二进制名固定为 "sparky"（与根目录 Cargo.toml 的 package name 一致）
     let cli_bin_name = "sparky";
 
-    let mut current = exe_path.parent();
-    let mut repo_root: Option<std::path::PathBuf> = None;
-    while let Some(dir) = current {
-        if dir.file_name().map(|name| name == "src-tauri").unwrap_or(false) {
-            repo_root = dir.parent().map(|p| p.to_path_buf());
-            break;
-        }
-        current = dir.parent();
-    }
-
-    if let Some(root) = repo_root {
-        let debug_path = root.join("target").join("debug").join(cli_bin_name);
-        if debug_path.exists() {
-            return Ok(format!("{} hook", debug_path.to_string_lossy()));
-        }
-        let release_path = root.join("target").join("release").join(cli_bin_name);
-        if release_path.exists() {
-            return Ok(format!("{} hook", release_path.to_string_lossy()));
+    // 1. ~/sparky/sparky（release 安装路径）
+    if let Some(home) = dirs::home_dir() {
+        let installed = home.join("sparky").join(cli_bin_name);
+        if installed.exists() {
+            return Ok(format!("{} hook", installed.to_string_lossy()));
         }
     }
 
-    // fallback: 尝试全局 PATH 中查找
+    // 2. 从 Tauri exe 向上找 src-tauri（开发模式）
+    if let Ok(exe_path) = std::env::current_exe() {
+        let mut current = exe_path.parent();
+        let mut repo_root: Option<std::path::PathBuf> = None;
+        while let Some(dir) = current {
+            if dir.file_name().map(|name| name == "src-tauri").unwrap_or(false) {
+                repo_root = dir.parent().map(|p| p.to_path_buf());
+                break;
+            }
+            current = dir.parent();
+        }
+        if let Some(root) = repo_root {
+            let debug_path = root.join("target").join("debug").join(cli_bin_name);
+            if debug_path.exists() {
+                return Ok(format!("{} hook", debug_path.to_string_lossy()));
+            }
+            let release_path = root.join("target").join("release").join(cli_bin_name);
+            if release_path.exists() {
+                return Ok(format!("{} hook", release_path.to_string_lossy()));
+            }
+        }
+    }
+
+    // 3. fallback: PATH
     Ok(format!("{} hook", cli_bin_name))
 }
 
@@ -966,6 +1066,49 @@ pub struct HookRecordsResponse {
 }
 
 #[tauri::command]
+async fn notify_project_active(project_name: String) -> Result<(), String> {
+    let config = get_config()?;
+    let (receive_id, receive_id_type) = if let Some(id) = config.chat_id.filter(|id| !id.is_empty()) {
+        (id, "chat_id")
+    } else if let Some(id) = config.open_id.filter(|id| !id.is_empty()) {
+        (id, "open_id")
+    } else {
+        return Err("No chat_id or open_id configured".to_string());
+    };
+
+    let client = reqwest::Client::new();
+    let token_url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal";
+    let token_result: serde_json::Value = client
+        .post(token_url)
+        .json(&serde_json::json!({ "app_id": config.app_id, "app_secret": config.app_secret }))
+        .send().await.map_err(|e| e.to_string())?
+        .json().await.map_err(|e| e.to_string())?;
+    let token = token_result["tenant_access_token"].as_str()
+        .ok_or("Failed to get tenant_access_token")?;
+
+    let content = serde_json::json!({
+        "config": { "wide_screen_mode": true },
+        "elements": [{ "tag": "div", "text": { "content": format!("🚀 **{}** 项目进入开发状态～", project_name), "tag": "lark_md" } }]
+    });
+    let result: serde_json::Value = client
+        .post("https://open.feishu.cn/open-apis/im/v1/messages")
+        .header("Authorization", format!("Bearer {}", token))
+        .query(&[("receive_id_type", receive_id_type)])
+        .json(&serde_json::json!({
+            "receive_id": receive_id,
+            "msg_type": "interactive",
+            "content": content.to_string()
+        }))
+        .send().await.map_err(|e| e.to_string())?
+        .json().await.map_err(|e| e.to_string())?;
+
+    if result["code"].as_i64().unwrap_or(-1) != 0 {
+        return Err(format!("Feishu error: {}", result["msg"].as_str().unwrap_or("unknown")));
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn get_hook_records(project_path: String, page: Option<u32>, page_size: Option<u32>) -> Result<HookRecordsResponse, String> {
     let conn = open_db()?;
     let table_name = project_hooks_table_name(&project_path);
@@ -1204,6 +1347,33 @@ pub fn run() {
                 )?;
             }
             
+            // 将 sparky 二进制复制到 ~/sparky/ 供 hooks 使用
+            if let Ok(exe_path) = std::env::current_exe() {
+                // 在 .app bundle 里，sparky CLI 与 Tauri exe 同目录
+                let sparky_src = exe_path.parent().map(|p| p.join("sparky"));
+                if let Some(src) = sparky_src {
+                    if src.exists() {
+                        if let Some(home) = dirs::home_dir() {
+                            let dest_dir = home.join("sparky");
+                            let dest = dest_dir.join("sparky");
+                            if let Err(e) = std::fs::create_dir_all(&dest_dir) {
+                                log::error!("Failed to create ~/sparky dir: {}", e);
+                            } else if let Err(e) = std::fs::copy(&src, &dest) {
+                                log::error!("Failed to copy sparky binary: {}", e);
+                            } else {
+                                // 确保可执行权限
+                                #[cfg(unix)]
+                                {
+                                    use std::os::unix::fs::PermissionsExt;
+                                    let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
+                                }
+                                log::info!("sparky binary installed to {:?}", dest);
+                            }
+                        }
+                    }
+                }
+            }
+
             // App 重启时，将所有 pending 的权限请求标记为已过期
             if let Ok(conn) = open_db() {
                 if let Err(e) = conn.execute(
@@ -1259,6 +1429,7 @@ pub fn run() {
             save_config,
             test_feishu_connection,
             send_feishu_message,
+            upload_anthropic_logo,
             get_hook_records,
             get_hook_status,
             delete_hook_record,
@@ -1281,7 +1452,8 @@ pub fn run() {
             delete_project,
             set_project_hooks_status,
             open_folder,
-            get_ws_connected
+            get_ws_connected,
+            notify_project_active
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

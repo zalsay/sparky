@@ -14,6 +14,7 @@ pub struct Config {
     pub open_id: Option<String>,
     pub hook_events_filter: Option<String>,
     pub project_path: Option<String>,
+    pub anthropic_logo_img_key: Option<String>,
 }
 
 impl Default for Config {
@@ -27,6 +28,7 @@ impl Default for Config {
             open_id: None,
             hook_events_filter: None,
             project_path: None,
+            anthropic_logo_img_key: None,
         }
     }
 }
@@ -48,6 +50,7 @@ impl Config {
         // 迁移：确保新列存在
         let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN open_id TEXT", []);
         let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN hook_events_filter TEXT", []);
+        let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN anthropic_logo_img_key TEXT", []);
 
         // 创建 PTY 命令表
         let _ = conn.execute(
@@ -87,7 +90,7 @@ impl Config {
 
         let config = conn
             .query_row(
-                "SELECT app_id, app_secret, encrypt_key, verification_token, chat_id, open_id, hook_events_filter, project_path
+                "SELECT app_id, app_secret, encrypt_key, verification_token, chat_id, open_id, hook_events_filter, project_path, anthropic_logo_img_key
                  FROM app_config_feishu WHERE id = 1",
                 [],
                 |row| {
@@ -100,6 +103,7 @@ impl Config {
                         open_id: row.get(5)?,
                         hook_events_filter: row.get(6)?,
                         project_path: row.get(7)?,
+                        anthropic_logo_img_key: row.get(8)?,
                     })
                 },
             )

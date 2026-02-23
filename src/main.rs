@@ -228,7 +228,7 @@ async fn run_hook(config: &config::Config) -> Result<()> {
         _ => ("📌 通知", false),
     };
 
-    let mut content = format!("{}\n\n", title);
+    let mut content = String::new();
 
     // Stop 和 PermissionRequest 简化内容，不显示 Event、Session、CWD、Permission
     if event_name != "Stop" && event_name != "PermissionRequest" {
@@ -361,15 +361,14 @@ async fn run_hook(config: &config::Config) -> Result<()> {
                 }
 
                 if !session_elements.is_empty() {
-                    content.push_str("\n\n**Claude 回复**\n");
                     // 整体反转回正序（从前到后）
                     for el in session_elements.iter().rev() {
                         content.push_str(el);
-                        content.push_str("\n\n");
+                        content.push('\n');
                     }
                 } else {
                     // 如果没有提取到，显示最后 3 行作为保底
-                    content.push_str("\n\n**Claude 回复**\n（无法解析转录）\n");
+                    content.push_str("（无法解析转录）\n");
                     let last_lines: Vec<&str> = lines.iter().rev().take(3).cloned().collect();
                     for line in last_lines.iter().rev() {
                         content.push_str(line);
@@ -378,7 +377,7 @@ async fn run_hook(config: &config::Config) -> Result<()> {
                 }
             }
             Err(err) => {
-                content.push_str("\n\n**Claude 回复**\n读取失败: ");
+                content.push_str("读取失败: ");
                 content.push_str(&err.to_string());
             }
         }
@@ -525,7 +524,7 @@ async fn run_hook(config: &config::Config) -> Result<()> {
     );
 
     let send_result = feishu_client
-        .send_message(&receive_id, send_content, actions, receive_id_type)
+        .send_message_with_title(&receive_id, Some(title), config.anthropic_logo_img_key.as_deref(), send_content, actions, receive_id_type)
         .await;
 
     if let Err(err) = &send_result {
