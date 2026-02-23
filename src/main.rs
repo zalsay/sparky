@@ -235,7 +235,7 @@ async fn run_hook(config: &config::Config) -> Result<()> {
         .unwrap_or("Unknown");
         
     let dynamic_title = if let Some(index) = feishu::get_project_index(project_path) {
-        format!("{}:: 【{}】{}", index, project_name, base_title)
+        format!("【项目::{}】【{}】{}", index, project_name, base_title)
     } else {
         format!("【{}】{}", project_name, base_title)
     };

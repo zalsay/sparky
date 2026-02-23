@@ -1255,7 +1255,7 @@ async fn notify_project_active(
         .ok_or("Failed to get tenant_access_token")?;
 
     let index_prefix = if let Some(idx) = manager.get_active_projects().iter().position(|p| p == &project_path) {
-        format!("{}:: ", idx + 1)
+        format!("【项目::{}】", idx + 1)
     } else {
         String::new()
     };
