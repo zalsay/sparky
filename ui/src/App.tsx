@@ -66,15 +66,18 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const inputBufferRef = useRef('');
   const [lastCommand, setLastCommand] = useState('');
   const [wsConnected, setWsConnected] = useState(false);
+  const [activeProjects, setActiveProjects] = useState<string[]>([]);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
 
-  // Poll WebSocket connection status
+  // Poll WebSocket connection status and active projects
   useEffect(() => {
     if (!tauriAvailable) return;
     const poll = async () => {
       try {
         const connected = await invoke<boolean>('get_ws_connected');
         setWsConnected(connected);
+        const active = await invoke<string[]>('get_active_projects');
+        setActiveProjects(active);
       } catch { /* ignore */ }
     };
     poll();
@@ -178,7 +181,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     setSelectedProject(project);
     setActiveMenu('project-detail');
     if (tauriAvailable) {
-      invoke('notify_project_active', { projectName: project.name }).catch(() => {});
+      invoke('notify_project_active', { projectName: project.name, projectPath: project.path }).catch(() => { });
     }
   };
 
@@ -444,6 +447,18 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
               <div className="logo">
                 <img src={logo} alt="logo" className="logo-img" />
                 <h1>Sparky</h1>
+                {activeProjects.length > 0 && (
+                  <div className="header-active-projects-inline">
+                    {activeProjects.map(path => {
+                      const name = path.split('/').pop() || path;
+                      return (
+                        <Tag key={path} className="active-project-tag">
+                          {name}
+                        </Tag>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
               <p className="subtitle">多渠道集成 · 随时随地链接 Claude Code</p>
             </div>

@@ -92,6 +92,7 @@ pub struct FeishuWsClient {
     ping_interval_secs: Arc<AtomicU64>,
     // 保存最后联系的用户 open_id，用于发送消息
     last_open_id: Arc<OnceLock<String>>,
+    app_handle: Option<tauri::AppHandle>,
 }
 
 impl FeishuWsClient {
@@ -103,16 +104,18 @@ impl FeishuWsClient {
             connected: Arc::new(AtomicBool::new(false)),
             ping_interval_secs: Arc::new(AtomicU64::new(30)),
             last_open_id: Arc::new(OnceLock::new()),
+            app_handle: None,
         }
     }
 
-    pub fn new_with_connected(app_id: String, app_secret: String, connected: Arc<AtomicBool>) -> Self {
+    pub fn new_with_connected(app_id: String, app_secret: String, connected: Arc<AtomicBool>, app_handle: Option<tauri::AppHandle>) -> Self {
         FeishuWsClient {
             app_id,
             app_secret,
             connected,
             ping_interval_secs: Arc::new(AtomicU64::new(30)),
             last_open_id: Arc::new(OnceLock::new()),
+            app_handle,
         }
     }
 
@@ -388,6 +391,11 @@ impl FeishuWsClient {
             .and_then(|message| message.get("content"))
             .and_then(|value| value.as_str())
             .unwrap_or("");
+        let message_id = event_data
+            .get("message")
+            .and_then(|message| message.get("message_id"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
         let open_id = event_data
             .get("sender")
             .and_then(|sender| sender.get("sender_id"))
@@ -418,9 +426,24 @@ impl FeishuWsClient {
         };
 
         if let Some((code, choice)) = parse_permission_reply(&text) {
-            match crate::handle_permission_decision(&code, &choice) {
+            match crate::handle_permission_decision(&code, &choice, message_id) {
                 Ok(_) => log::info!("Permission decision handled: code={}, choice={}", code, choice),
                 Err(e) => log::warn!("Permission decision failed: {}", e),
+            }
+        } else if !text.is_empty() {
+            // 如果不是权限回复，则作为普通消息转发到终端
+            log::info!("Received general text message. Forwarding to PTY...");
+            if let Some(app) = self.app_handle.as_ref() {
+                match crate::forward_message_to_pty(app.clone(), &text, message_id, open_id) {
+                    Ok(_) => {
+                        log::info!("PTY command queued from text message.");
+                    }
+                    Err(e) => {
+                        log::error!("Failed to forward message to pty: {}", e);
+                    }
+                }
+            } else {
+                log::warn!("No AppHandle available in FeishuWsClient to forward message.");
             }
         }
 

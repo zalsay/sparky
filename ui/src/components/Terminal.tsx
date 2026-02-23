@@ -3,6 +3,8 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 
+import { invoke } from '@tauri-apps/api/core';
+
 interface TerminalProps {
   projectPath: string;
   onData?: (data: string) => void;
@@ -81,6 +83,14 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
     onDataRef.current = onData;
   }, [onData]);
 
+  const notifyBackendActiveProject = async (path: string) => {
+    try {
+      await invoke('set_active_project', { projectPath: path });
+    } catch (e) {
+      console.error('Failed to set active project:', e);
+    }
+  };
+
   useEffect(() => {
     if (!globalWriterReady) {
       (window as any).__terminalWrite = (data: string) => {
@@ -100,6 +110,8 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
     if (!terminalRef.current) return;
 
     activeProjectPath = projectPath;
+    notifyBackendActiveProject(projectPath);
+
     const container = terminalRef.current;
     container.innerHTML = '';
 
@@ -124,7 +136,7 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
     fitRef.current = cached.fit;
 
     cached.term.attachCustomKeyEventHandler((event) => {
-      if (!onDataRef.current) {
+      if (!onDataRef.current || event.type !== 'keydown') {
         return true;
       }
       if (event.key === 'ArrowUp') {
@@ -197,6 +209,8 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
 
   const handleClick = () => {
     termRef.current?.focus();
+    activeProjectPath = projectPath;
+    notifyBackendActiveProject(projectPath);
   };
 
   return (

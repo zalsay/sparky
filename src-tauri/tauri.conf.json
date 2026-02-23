@@ -7,7 +7,7 @@
     "frontendDist": "../ui/dist",
     "devUrl": "http://localhost:5176",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "cargo build --release --bin sparky --manifest-path ../Cargo.toml && cp ../target/release/sparky ../target/release/sparky-aarch64-apple-darwin && npm run build"
+    "beforeBuildCommand": "cargo build --release --bin sparky --manifest-path Cargo.toml && cp -f target/release/sparky target/release/sparky-aarch64-apple-darwin || true && npm run build"
   },
   "app": {
     "windows": [

@@ -126,6 +126,42 @@ body {
   font-weight: 400;
 }
 
+.header-active-projects-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 12px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border-color);
+}
+
+.running-label {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 500;
+}
+
+.active-project-tag {
+  background: var(--tag-bg) !important;
+  border: 1px solid var(--tag-border) !important;
+  color: var(--text-primary) !important;
+  font-size: 11px !important;
+  border-radius: 4px !important;
+  padding: 0 8px !important;
+  height: 20px !important;
+  line-height: 18px !important;
+  cursor: default !important;
+  margin: 0 !important;
+  transition: all 0.2s ease !important;
+}
+
+.active-project-tag:hover {
+  background: var(--hover-bg) !important;
+  border-color: var(--text-secondary) !important;
+}
+
 /* ==================== Main Content ==================== */
 
 .app-main {
@@ -1291,12 +1327,18 @@ body {
 
 /* Action Button Text Style */
 .action-btn-text {
-  color: var(--text-tertiary) !important;
+  color: var(--text-secondary) !important;
   font-size: 13px;
+  border: 1px solid var(--border-color) !important;
+  padding: 2px 8px !important;
+  border-radius: 4px;
+  transition: all 0.3s ease;
 }
 
 .action-btn-text:hover {
   color: var(--text-primary) !important;
+  border-color: var(--text-primary) !important;
+  background: var(--hover-bg) !important;
 }
 
 /* Action Button Outline Style */

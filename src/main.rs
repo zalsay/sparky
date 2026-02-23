@@ -215,7 +215,7 @@ async fn run_hook(config: &config::Config) -> Result<()> {
         String::new()
     };
     let event_lower = event_name.to_lowercase();
-    let (title, allow_actions) = match event_lower.as_str() {
+    let (base_title, allow_actions) = match event_lower.as_str() {
         "notification" => ("🧭 需要确认", true),
         "permissionrequest" => ("🧭 权限确认", true),
         "stop" => ("Claude 回复", false),
@@ -226,6 +226,18 @@ async fn run_hook(config: &config::Config) -> Result<()> {
         "error" | "failed" => ("🔴 失败", false),
         "warning" => ("🟠 警告", false),
         _ => ("📌 通知", false),
+    };
+
+    let project_path = &hook_input.cwd;
+    let project_name = std::path::Path::new(project_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Unknown");
+        
+    let dynamic_title = if let Some(index) = feishu::get_project_index(project_path) {
+        format!("{}:: 【{}】{}", index, project_name, base_title)
+    } else {
+        format!("【{}】{}", project_name, base_title)
     };
 
     let mut content = String::new();
@@ -528,7 +540,7 @@ async fn run_hook(config: &config::Config) -> Result<()> {
     );
 
     let send_result = feishu_client
-        .send_message_with_title(&receive_id, Some(title), config.anthropic_logo_img_key.as_deref(), send_content, actions, receive_id_type)
+        .send_message_with_title(&receive_id, Some(&dynamic_title), config.anthropic_logo_img_key.as_deref(), send_content, actions, receive_id_type)
         .await;
 
     if let Err(err) = &send_result {

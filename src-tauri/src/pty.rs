@@ -31,6 +31,7 @@ impl PtyManager {
 
         self.pty_pairs.lock().unwrap().insert(project_path.clone(), pair);
         self.children.lock().unwrap().insert(project_path, child);
+        self.update_active_ptys_in_db();
     }
 
     pub fn write(&self, project_path: &str, data: &str) -> Result<(), String> {
@@ -48,14 +49,43 @@ impl PtyManager {
         let pair = self.pty_pairs.lock().unwrap().remove(project_path);
         let child = self.children.lock().unwrap().remove(project_path);
         let _writer = self.writers.lock().unwrap().remove(project_path);
-        match (pair, child) {
+        let removed = match (pair, child) {
             (Some(pair), Some(child)) => Some((pair, child)),
             _ => None,
+        };
+        if removed.is_some() {
+            self.update_active_ptys_in_db();
         }
+        removed
     }
 
     pub fn has_pty(&self, project_path: &str) -> bool {
         self.pty_pairs.lock().unwrap().contains_key(project_path)
+    }
+
+    pub fn get_active_projects(&self) -> Vec<String> {
+        let mut projects: Vec<String> = self.writers.lock().unwrap().keys().cloned().collect();
+        projects.sort();
+        projects
+    }
+
+    fn update_active_ptys_in_db(&self) {
+        let projects = self.get_active_projects();
+        std::thread::spawn(move || {
+            if let Ok(conn) = crate::open_db() {
+                let _ = conn.execute("DELETE FROM active_ptys", []);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                for path in projects {
+                    let _ = conn.execute(
+                        "INSERT INTO active_ptys (project_path, created_at) VALUES (?1, ?2)",
+                        params![path, now],
+                    );
+                }
+            }
+        });
     }
 }
 
@@ -245,7 +275,12 @@ pub async fn pty_spawn(
                 log::info!("Executing remote command: {} (id={})", cmd, id);
                 
                 // Construct input (do not append newline as per user request)
-                let input = cmd.to_string();
+                // However, for Feishu forwarded commands, we *do* need them to execute.
+                // We will append \r to simulate hitting the enter key.
+                let mut input = cmd.to_string();
+                if !input.ends_with('\r') && !input.ends_with('\n') {
+                    input.push('\r');
+                }
                 
                 // Write to PTY
                 if let Err(e) = manager.write(&project_path_for_poll, &input) {

@@ -380,6 +380,11 @@ impl FeishuWsClient {
             .and_then(|message| message.get("content"))
             .and_then(|value| value.as_str())
             .unwrap_or("");
+        let message_id = event_data
+            .get("message")
+            .and_then(|message| message.get("message_id"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
         let sender = event_data
             .get("sender")
             .and_then(|sender| sender.get("sender_id"))
@@ -426,6 +431,8 @@ impl FeishuWsClient {
 
         // 检查是否是权限确认回复（格式: XXXX-N, 例如 1234-1）
         let trimmed = text_content.trim();
+        let mut is_permission_response = false;
+
         // 匹配 4位数字-1/2/3 格式
         if let Some(dash_pos) = trimmed.find('-') {
             let code_part = &trimmed[..dash_pos];
@@ -434,17 +441,39 @@ impl FeishuWsClient {
                 && code_part.chars().all(|c| c.is_ascii_digit())
                 && (choice_part == "1" || choice_part == "2" || choice_part == "3") 
             {
+                is_permission_response = true;
                 tracing::info!("Received permission response: code={}, choice={}", code_part, choice_part);
-                self.send_permission_response(code_part, choice_part, sender).await?;
+                self.send_permission_response(code_part, choice_part, sender, message_id).await?;
+            }
+        }
+
+        // 如果不是权限回复，则转发给终端
+        if !is_permission_response && !text_content.is_empty() {
+            tracing::info!("Received general text message. Forwarding to PTY...");
+            match crate::feishu::forward_message_to_pty(&text_content, message_id) {
+                Ok(_) => {
+                    tracing::info!("PTY command queued from text message.");
+                    let feishu_client = crate::feishu::FeishuClient::new(self.app_id.clone(), self.app_secret.clone());
+                    let msg = "✅ 已转发到终端".to_string();
+                    if let Err(e) = feishu_client.send_message(sender, msg, None, "open_id").await {
+                        tracing::error!("Failed to send confirmation message to Feishu: {}", e);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to forward message to pty: {}", e);
+                    let feishu_client = crate::feishu::FeishuClient::new(self.app_id.clone(), self.app_secret.clone());
+                    let msg = format!("❌ 转发失败: {}", e);
+                    let _ = feishu_client.send_message(sender, msg, None, "open_id").await;
+                }
             }
         }
 
         Ok(())
     }
 
-    async fn send_permission_response(&self, code: &str, choice: &str, open_id: &str) -> Result<()> {
+    async fn send_permission_response(&self, code: &str, choice: &str, open_id: &str, message_id: &str) -> Result<()> {
         // 验证是否有 pending 请求，并执行命令
-        match crate::feishu::verify_and_execute_command(code, choice) {
+        match crate::feishu::verify_and_execute_command(code, choice, message_id) {
             Ok(_) => {
                 tracing::info!("PTY command verified and queued for code={}, choice={}", code, choice);
                 

@@ -88,10 +88,45 @@ pub fn create_permission_request(project_path: &str) -> Result<String, String> {
     Ok(code_str)
 }
 
+/// 获取活跃项目在列表中的从 1 开始的索引号
+pub fn get_project_index(project_path: &str) -> Option<usize> {
+    let conn = open_db().ok()?;
+    
+    // 获取所有的活跃项目并按路径排序
+    let mut stmt = conn.prepare("SELECT project_path FROM active_ptys ORDER BY project_path ASC").ok()?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0)).ok()?;
+    
+    let mut index = 1;
+    for row in rows {
+        if let Ok(path) = row {
+            if path == project_path {
+                return Some(index);
+            }
+            index += 1;
+        }
+    }
+    
+    None
+}
+
 /// 验证并执行命令（通过 code 匹配 pending 请求）
-pub fn verify_and_execute_command(code: &str, choice: &str) -> Result<(), String> {
+pub fn verify_and_execute_command(code: &str, choice: &str, message_id: &str) -> Result<(), String> {
     let mut conn = open_db()?;
     let db_path = dirs::home_dir().unwrap().join("sparky/hooks.db");
+
+    // 防止重复处理相同的权限决策消息
+    if !message_id.is_empty() {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM pty_commands WHERE message_id = ?1",
+            rusqlite::params![message_id],
+            |row| row.get(0)
+        ).unwrap_or(0);
+
+        if count > 0 {
+            tracing::info!("[db:verify] Permission message ID {} already processed, skipping duplicate.", message_id);
+            return Ok(());
+        }
+    }
     
     // 通过 code 查找 pending 请求
     let result: Option<(i64, String)> = conn.query_row(
@@ -139,8 +174,8 @@ pub fn verify_and_execute_command(code: &str, choice: &str) -> Result<(), String
 
     // Insert command
     tx.execute(
-        "INSERT INTO pty_commands (project_path, command, created_at) VALUES (?1, ?2, ?3)",
-        params![project_path, choice, now],
+        "INSERT INTO pty_commands (project_path, command, message_id, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![project_path, choice, message_id, now],
     ).map_err(|e| e.to_string())?;
 
     tx.commit().map_err(|e| e.to_string())?;
@@ -148,6 +183,73 @@ pub fn verify_and_execute_command(code: &str, choice: &str) -> Result<(), String
     tracing::info!("[db:verify] Verified and queued choice='{}' for code={}, project='{}' (req_id={})", choice, code, project_path, req_id);
     Ok(())
 }
+
+/// 将非权限确认的普通消息转发到终端
+pub fn forward_message_to_pty(message: &str, message_id: &str) -> Result<(), String> {
+    let mut conn = open_db()?;
+
+    // 防止重复转发同一消息
+    if !message_id.is_empty() {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM pty_commands WHERE message_id = ?1",
+            rusqlite::params![message_id],
+            |row| row.get(0)
+        ).unwrap_or(0);
+
+        if count > 0 {
+            tracing::info!("[db:forward] Message ID {} already forwarded, skipping duplicate.", message_id);
+            return Ok(());
+        }
+    }
+
+    // 尝试获取活跃的 project_path
+    // 首先从 app_config_feishu 读取
+    let project_path_res: Option<String> = conn.query_row(
+        "SELECT project_path FROM app_config_feishu WHERE id = 1 AND project_path IS NOT NULL AND project_path != '' LIMIT 1",
+        [],
+        |row| row.get(0),
+    ).optional().map_err(|e| format!("Failed to query app_config: {}", e))?;
+
+    let project_path = match project_path_res {
+        Some(path) => path,
+        None => {
+            // 回退: 尝试从最近的 permission_requests 中获取
+            let recent_path: Option<String> = conn.query_row(
+                "SELECT project_path FROM permission_requests ORDER BY created_at DESC LIMIT 1",
+                [],
+                |row| row.get(0)
+            ).optional().map_err(|e| format!("Failed to query recent permission request: {}", e))?;
+
+            match recent_path {
+                Some(path) => path,
+                None => {
+                    return Err("无法确定当前的 project_path 以转发消息。".to_string());
+                }
+            }
+        }
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+
+    // 确保命令以换行符结尾以便在终端中执行
+    let command = if message.ends_with('\n') {
+        message.to_string()
+    } else {
+        format!("{}\n", message)
+    };
+
+    conn.execute(
+        "INSERT INTO pty_commands (project_path, command, message_id, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![project_path, command, message_id, now],
+    ).map_err(|e| e.to_string())?;
+
+    tracing::info!("[db:forward] Forwarded message {} to pty for project='{}'", message_id, project_path);
+    Ok(())
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Card {

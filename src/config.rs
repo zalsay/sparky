@@ -58,11 +58,14 @@ impl Config {
                 id INTEGER PRIMARY KEY,
                 project_path TEXT NOT NULL,
                 command TEXT NOT NULL,
+                message_id TEXT,
                 processed INTEGER DEFAULT 0,
                 created_at INTEGER
             )",
             [],
         );
+        // migration: add message_id column if missing
+        let _ = conn.execute("ALTER TABLE pty_commands ADD COLUMN message_id TEXT", []);
 
         // create permission_requests table
         let _ = conn.execute(
@@ -78,6 +81,16 @@ impl Config {
         );
         // migration: add code column if missing
         let _ = conn.execute("ALTER TABLE permission_requests ADD COLUMN code TEXT", []);
+
+        // create active_ptys table
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS active_ptys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_path TEXT NOT NULL UNIQUE,
+                created_at INTEGER NOT NULL
+            )",
+            [],
+        );
             
         // project_path 应该是已存在的列
 
