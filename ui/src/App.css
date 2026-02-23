@@ -199,8 +199,8 @@ body {
 }
 
 .app-sidebar .ant-menu-item {
-  margin: 4px 8px !important;
-  width: calc(100% - 16px) !important;
+  margin: 4px 12px !important;
+  width: calc(100% - 24px) !important;
   border-radius: 6px;
   color: var(--text-primary);
   transition: all 0.3s cubic-bezier(0.645, 0.045, 0.355, 1) !important;
