@@ -86,6 +86,10 @@ pub async fn pty_spawn(
     let mut cmd = CommandBuilder::new(&program);
     cmd.args(&args);
     cmd.cwd(&cwd);
+    // 继承父进程环境变量，再覆盖指定的
+    for (key, value) in std::env::vars() {
+        cmd.env(&key, &value);
+    }
     for (key, value) in envs {
         cmd.env(&key, &value);
     }

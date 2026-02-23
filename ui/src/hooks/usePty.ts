@@ -90,10 +90,13 @@ export function usePty(onData?: (data: string, projectPath: string) => void) {
 
       const result = await invoke<string>('pty_spawn', {
         program: 'zsh',
-        args: ['-l'],
+        args: ['-l', '-i'],
         cwd: projectPath,
         envs: {
           TERM: 'xterm-256color',
+          COLORTERM: 'truecolor',
+          LANG: navigator.language.includes('zh') ? 'zh_CN.UTF-8' : 'en_US.UTF-8',
+          LC_ALL: navigator.language.includes('zh') ? 'zh_CN.UTF-8' : 'en_US.UTF-8',
         },
         cols: 100,
         rows: 30,

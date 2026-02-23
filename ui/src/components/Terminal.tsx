@@ -123,6 +123,29 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
     termRef.current = cached.term;
     fitRef.current = cached.fit;
 
+    cached.term.attachCustomKeyEventHandler((event) => {
+      if (!onDataRef.current) {
+        return true;
+      }
+      if (event.key === 'ArrowUp') {
+        onDataRef.current('\u001b[A');
+        return false;
+      }
+      if (event.key === 'ArrowDown') {
+        onDataRef.current('\u001b[B');
+        return false;
+      }
+      if (event.key === 'ArrowRight') {
+        onDataRef.current('\u001b[C');
+        return false;
+      }
+      if (event.key === 'ArrowLeft') {
+        onDataRef.current('\u001b[D');
+        return false;
+      }
+      return true;
+    });
+
     const dataDisposable = cached.term.onData((data) => {
       if (onDataRef.current) {
         onDataRef.current(data);

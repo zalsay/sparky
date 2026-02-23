@@ -218,7 +218,7 @@ async fn run_hook(config: &config::Config) -> Result<()> {
     let (title, allow_actions) = match event_lower.as_str() {
         "notification" => ("🧭 需要确认", true),
         "permissionrequest" => ("🧭 权限确认", true),
-        "stop" => ("💬 Claude 回复", false),
+        "stop" => ("Claude 回复", false),
         "status" => ("🟡 状态更新", false),
         "progress" => ("🔵 进度更新", false),
         "start" | "started" => ("🟢 开始", false),
@@ -324,7 +324,9 @@ async fn run_hook(config: &config::Config) -> Result<()> {
                                     if item_type == Some("text") {
                                         if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
                                             if !text.trim().is_empty() {
-                                                turn_elements.push(format!("⏺ {}", text));
+                                                turn_elements.push(format!("-- {}", text));
+                                            } else {
+                                                turn_elements.push(String::new());
                                             }
                                         }
                                     } else if item_type == Some("tool_use") {
@@ -332,7 +334,7 @@ async fn run_hook(config: &config::Config) -> Result<()> {
                                         let input = item.get("input").map(|v| v.to_string()).unwrap_or_default();
                                         // 简化 input 显示
                                         let input_display = if input.len() > 100 { format!("{}...", &input[..100]) } else { input };
-                                        turn_elements.push(format!("⏺ **{}**({})", name, input_display));
+                                        turn_elements.push(format!("-- **{}**({})", name, input_display));
                                     } else if item_type == Some("tool_result") {
                                         turn_has_tool_result = true;
                                         // 过滤掉 tool_result，不再添加 ⎿ 行
@@ -340,7 +342,9 @@ async fn run_hook(config: &config::Config) -> Result<()> {
                                 }
                             } else if let Some(text) = content_val.as_str() {
                                 if !text.trim().is_empty() {
-                                    turn_elements.push(format!("⏺ {}", text));
+                                    turn_elements.push(format!("-- {}", text));
+                                } else {
+                                    turn_elements.push(String::new());
                                 }
                             }
 

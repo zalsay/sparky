@@ -1086,10 +1086,23 @@ async fn notify_project_active(project_name: String) -> Result<(), String> {
     let token = token_result["tenant_access_token"].as_str()
         .ok_or("Failed to get tenant_access_token")?;
 
-    let content = serde_json::json!({
-        "config": { "wide_screen_mode": true },
-        "elements": [{ "tag": "div", "text": { "content": format!("🚀 **{}** 项目进入开发状态～", project_name), "tag": "lark_md" } }]
-    });
+    let img_key = config.anthropic_logo_img_key.as_deref().unwrap_or("");
+    let content = if img_key.is_empty() {
+        serde_json::json!({
+            "config": { "wide_screen_mode": true },
+            "elements": [{ "tag": "div", "text": { "content": format!("**{}** 项目进入开发状态～", project_name), "tag": "lark_md" } }]
+        })
+    } else {
+        serde_json::json!({
+            "config": { "wide_screen_mode": true },
+            "header": {
+                "title": { "content": format!("{} 项目进入开发状态～", project_name), "tag": "plain_text" },
+                "icon": { "tag": "img", "img_key": img_key },
+                "template": "blue"
+            },
+            "elements": []
+        })
+    };
     let result: serde_json::Value = client
         .post("https://open.feishu.cn/open-apis/im/v1/messages")
         .header("Authorization", format!("Bearer {}", token))
