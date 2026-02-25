@@ -305,9 +305,10 @@ async fn run_hook(config: &config::Config) -> Result<()> {
     // Stop hook - 显示 Claude 的输出内容
     if !final_response.is_empty() {
         content.push_str("\n\n**Claude 输出**\n");
-        // 限制长度
-        let truncated = if final_response.len() > 3000 {
-            format!("{}...\n\n（省略 {} 字符）", &final_response[..3000], final_response.len() - 3000)
+        // 安全截断 UTF-8 字符串
+        let char_count = final_response.chars().count();
+        let truncated = if char_count > 3000 {
+            format!("{}...\n\n（省略 {} 字符）", final_response.chars().take(3000).collect::<String>(), char_count - 3000)
         } else {
             final_response
         };
@@ -347,8 +348,12 @@ async fn run_hook(config: &config::Config) -> Result<()> {
                                     } else if item_type == Some("tool_use") {
                                         let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
                                         let input = item.get("input").map(|v| v.to_string()).unwrap_or_default();
-                                        // 简化 input 显示
-                                        let input_display = if input.len() > 100 { format!("{}...", &input[..100]) } else { input };
+                                        // 安全截断 input 显示
+                                        let input_display = if input.chars().count() > 100 { 
+                                            format!("{}...", input.chars().take(100).collect::<String>()) 
+                                        } else { 
+                                            input 
+                                        };
                                         turn_elements.push(format!("-- **{}**({})", name, input_display));
                                     } else if item_type == Some("tool_result") {
                                         turn_has_tool_result = true;
