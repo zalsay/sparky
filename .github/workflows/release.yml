@@ -1,4 +1,4 @@
-name: Build & Release (macOS)
+name: Build & Release (multi-platform)
 
 on:
   push:
@@ -7,8 +7,18 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-macos:
-    runs-on: macos-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+            label: mac-arm64
+          - os: macos-13
+            label: mac-x64
+          - os: windows-latest
+            label: windows-x64
+    runs-on: ${{ matrix.os }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,13 +31,23 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install protoc (protobuf)
-        run: brew install protobuf
+      - name: Install dependencies (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          brew install protobuf
+          cargo install tauri-cli --locked --version 2.10.0
 
-      - name: Install tauri-cli
-        run: cargo install tauri-cli --locked --version 2.10.0
+      - name: Install dependencies (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          choco install protoc -y
+          choco install nsis -y
+          rustup target add x86_64-pc-windows-msvc
+          cargo install tauri-cli --locked --version 2.10.0
 
       - name: Build
+        shell: bash
         run: |
           chmod +x build.sh
           ./build.sh
@@ -35,5 +55,5 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: sparky-macos
+          name: sparky-${{ matrix.label }}
           path: release/*
