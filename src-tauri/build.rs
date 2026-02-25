@@ -13,11 +13,11 @@ fn main() {
     }
 
     // 为 externalBin 创建带目标三元组后缀的 symlink
-    // Tauri 要求 ../target/release/sparky-<target_triple> 存在
+    // Tauri 要求 ../target/release/sparky-server-<target_triple> 存在
     if let Ok(target) = std::env::var("TARGET") {
         let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
-        let bin = root_dir.join("target").join(&profile).join("sparky");
-        let link = root_dir.join("target").join(&profile).join(format!("sparky-{}", target));
+        let bin = root_dir.join("target").join(&profile).join("sparky-server");
+        let link = root_dir.join("target").join(&profile).join(format!("sparky-server-{}", target));
         if bin.exists() && !link.exists() {
             #[cfg(unix)]
             let _ = std::os::unix::fs::symlink(&bin, &link);
