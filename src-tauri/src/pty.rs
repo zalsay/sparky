@@ -319,7 +319,10 @@ pub fn pty_kill(app: tauri::AppHandle, project_path: String) -> Result<(), Strin
     log::info!("PTY kill: project={}", project_path);
 
     let manager = app.state::<PtyManager>();
-    let _ = manager.remove_pty(&project_path);
+    if let Some((_pair, mut child)) = manager.remove_pty(&project_path) {
+        let _ = child.kill();
+        log::info!("PTY process killed for project: {}", project_path);
+    }
     Ok(())
 }
 

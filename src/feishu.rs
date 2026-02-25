@@ -88,21 +88,16 @@ pub fn create_permission_request(project_path: &str) -> Result<String, String> {
     Ok(code_str)
 }
 
-/// 获取活跃项目在列表中的从 1 开始的索引号
+/// 获取项目在数据库中的 ID
 pub fn get_project_index(project_path: &str) -> Option<usize> {
     let conn = open_db().ok()?;
     
-    // 获取所有的活跃项目并按路径排序
-    let mut stmt = conn.prepare("SELECT project_path FROM active_ptys ORDER BY project_path ASC").ok()?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(0)).ok()?;
+    let mut stmt = conn.prepare("SELECT id FROM projects WHERE path = ?1 LIMIT 1").ok()?;
+    let mut rows = stmt.query(params![project_path]).ok()?;
     
-    let mut index = 1;
-    for row in rows {
-        if let Ok(path) = row {
-            if path == project_path {
-                return Some(index);
-            }
-            index += 1;
+    if let Some(row) = rows.next().ok()? {
+        if let Ok(id) = row.get::<_, i64>(0) {
+            return Some(id as usize);
         }
     }
     
@@ -166,16 +161,28 @@ pub fn verify_and_execute_command(code: &str, choice: &str, message_id: &str) ->
         .map_err(|e| e.to_string())?
         .as_secs() as i64;
 
+    // Map choice to ANSI sequence for interactive menus in terminal
+    let ansi_command = if let Ok(n) = choice.parse::<usize>() {
+        if n > 0 && n <= 50 {
+            let arrows = "\x1b[B".repeat(n - 1);
+            format!("{}\r", arrows)
+        } else {
+            choice.to_string()
+        }
+    } else {
+        choice.to_string()
+    };
+
     // Mark request as completed
     tx.execute(
         "UPDATE permission_requests SET status = 'completed', choice = ?1 WHERE id = ?2",
-        params![choice, req_id],
+        params![ansi_command, req_id],
     ).map_err(|e| e.to_string())?;
 
     // Insert command
     tx.execute(
         "INSERT INTO pty_commands (project_path, command, message_id, created_at) VALUES (?1, ?2, ?3, ?4)",
-        params![project_path, choice, message_id, now],
+        params![project_path, ansi_command, message_id, now],
     ).map_err(|e| e.to_string())?;
 
     tx.commit().map_err(|e| e.to_string())?;

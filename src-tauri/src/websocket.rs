@@ -366,10 +366,31 @@ impl FeishuWsClient {
         // 获取用户选择的值
         if let Some(action) = event_data.get("action") {
             if let Some(value) = action.get("value") {
-                if let Some(choice) = value.get("choice") {
-                    if let Some(choice_str) = choice.as_str() {
-                        log::info!("User choice: {}", choice_str);
-                        self.save_user_choice(choice_str).await?;
+                let choice_opt = value.get("choice").and_then(|v| v.as_str());
+                let code_opt = value.get("code").and_then(|v| v.as_str());
+                
+                if let Some(choice_str) = choice_opt {
+                    log::info!("User choice: {}, code: {:?}", choice_str, code_opt);
+                    self.save_user_choice(choice_str).await?;
+                    
+                    if let Some(code_str) = code_opt {
+                        if !code_str.is_empty() {
+                            match crate::handle_permission_decision(code_str, choice_str, "") {
+                                Ok(_) => log::info!("Permission decision from card handled: code={}, choice={}", code_str, choice_str),
+                                Err(e) => log::warn!("Permission decision from card failed: {}", e),
+                            }
+                        }
+                    } else if let Some(app) = self.app_handle.as_ref() {
+                        // 降级：如果旧版卡片无 code，直接发送给 PTY 执行
+                        let open_id = event_data.get("operator")
+                            .and_then(|o| o.get("open_id"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                            
+                        match crate::forward_message_to_pty(app.clone(), choice_str, "", open_id) {
+                            Ok(_) => log::info!("PTY command queued from card action fallback."),
+                            Err(e) => log::error!("Failed to forward card action to pty: {}", e),
+                        }
                     }
                 }
             }

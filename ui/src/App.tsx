@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { usePty } from './hooks/usePty';
@@ -188,6 +188,20 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const handleBackToProjects = () => {
     setSelectedProject(null);
     setActiveMenu('project');
+  };
+
+  const handleCloseTerminal = async () => {
+    if (!selectedProject || !tauriAvailable) return;
+    try {
+      await invoke('pty_kill', { projectPath: selectedProject.path });
+      messageApi.success('终端已关闭');
+      // Update UI optimistically
+      setActiveProjects(activeProjects.filter(p => p !== selectedProject.path));
+      setActiveMenu('project');
+      setSelectedProject(null);
+    } catch (e) {
+      messageApi.error(`关闭终端失败: ${e}`);
+    }
   };
 
   const loadConfig = async () => {
@@ -390,7 +404,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
   const handleInstallHooks = async (project: Project) => {
     if (!tauriAvailable) {
-      messageApi.warning('请在桌面应用中安装 Hooks');
+      messageApi.warning('请在桌面应用中安装推送服务');
       return;
     }
     try {
@@ -399,13 +413,13 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       setProjects(projects.map(p => p.id === project.id ? { ...p, hooks_installed: true } : p));
       messageApi.success('Hooks 安装成功');
     } catch (error) {
-      messageApi.error(`安装Hooks失败: ${error}`);
+      messageApi.error(`安装推送服务失败: ${error}`);
     }
   };
 
   const handleUninstallHooks = async (project: Project) => {
     if (!tauriAvailable) {
-      messageApi.warning('请在桌面应用中卸载 Hooks');
+      messageApi.warning('请在桌面应用中卸载推送服务');
       return;
     }
     try {
@@ -414,7 +428,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       setProjects(projects.map(p => p.id === project.id ? { ...p, hooks_installed: false } : p));
       messageApi.success('Hooks 已卸载');
     } catch (error) {
-      messageApi.error(`卸载Hooks失败: ${error}`);
+      messageApi.error(`卸载推送服务失败: ${error}`);
     }
   };
 
@@ -449,6 +463,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                 <h1>Sparky</h1>
                 {activeProjects.length > 0 && (
                   <div className="header-active-projects-inline">
+                    <span style={{ fontSize: 12, color: 'var(--text-secondary)', marginRight: 4 }}>运行中:</span>
                     {activeProjects.map(path => {
                       const name = path.split('/').pop() || path;
                       return (
@@ -567,6 +582,15 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                         <span className="ws-status-dot" />
                         {wsConnected ? '已连接' : '未连接'}
                       </span>
+                      <Button
+                        type="text"
+                        size="small"
+                        danger
+                        icon={<PoweroffOutlined />}
+                        onClick={handleCloseTerminal}
+                        title="关闭并退出终端"
+                        style={{ marginLeft: 12 }}
+                      />
                     </div>
                     {lastCommand && (
                       <div className="last-input-bar">
@@ -630,7 +654,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   打开文件夹
                                 </Button>
                                 <Button icon={<SettingOutlined />} onClick={() => selectedProject.hooks_installed ? handleUninstallHooks(selectedProject) : handleInstallHooks(selectedProject)}>
-                                  {selectedProject.hooks_installed ? '卸载 Hooks' : '安装 Hooks'}
+                                  {selectedProject.hooks_installed ? '卸载推送服务' : '安装推送服务'}
                                 </Button>
                               </Space>
                               <Divider />
@@ -761,7 +785,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           <p className="card-description">应用相关的基础与功能配置</p>
                           <Divider />
                           <Form.Item
-                            label="Hook 事件过滤"
+                            label="推送 Hook 事件过滤"
                             name="hook_events_filter"
                             extra="选择需要推送的事件类型"
                             getValueFromEvent={(checkedValues: string[]) => checkedValues.length > 0 ? checkedValues.join(',') : undefined}
@@ -883,7 +907,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           <li><span className="step-number">2</span><span className="step-text">开启机器人能力并配置权限</span></li>
                           <li><span className="step-number">3</span><span className="step-text">复制应用凭证到设置页面</span></li>
                           <li><span className="step-number">4</span><span className="step-text">在项目管理中添加项目</span></li>
-                          <li><span className="step-number">5</span><span className="step-text">为项目安装 Hooks</span></li>
+                          <li><span className="step-number">5</span><span className="step-text">为项目安装消息推送服务</span></li>
                         </ol>
                       </Card>
                       <Card variant="borderless">

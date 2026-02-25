@@ -1,310 +1,85 @@
 # Sparky - Claude Code Monitor & Feishu Connector
 
-**Sparky** 是一个强大的 Claude Code 伴侣应用，旨在通过飞书（Feishu）实现对 Claude Code 的远程监控、权限管理和交互控制。它结合了 Rust 的高性能后端与 Tauri 的跨平台能力，为您提供无缝的 AI 辅助编码体验。
+**Sparky** 是一个强大的 Claude Code 伴侣应用，旨在通过**飞书（Feishu）WebSocket** 和**内置长连接终端 (PTY)** 实现对 Claude Code 的远程监控、权限管理和无缝交互控制。它结合了 Rust 的高性能后端与 Tauri 的跨平台桌面能力，彻底免去公网 IP 的烦恼，为您提供随叫随到的 AI 辅助编码体验。
 
 ## ✨ 核心特性
 
-- **🚀 实时监控与交互**：
-    - 自动捕获 Claude Code 的输出流。
-    - 智能识别 `Permission Request`（权限请求）和 `Stop`（任务结束）事件。
-    - 将关键信息实时推送到飞书群聊。
+- **🔌 内置 PTY 终端与项目管理**：
+    - 在桌面应用内直观管理多个代码项目。
+    - 一键为项目注入 Claude Code 监控 Hooks。
+    - 应用内置全功能终端（基于 `xterm.js` 和 Rust PTY），直接在应用内运行 Claude Code，支持日志回溯与快捷命令。
 
-- **🔐 远程权限管理**：
-    - 当 Claude Code 请求命令执行权限（如 `Do you want to proceed?`）时，自动发送飞书卡片。
-    - 支持在飞书中直接点击按钮（Yes/No）进行授权，无需切回终端。
-    - **[New]** 支持通过输入配对码（如 `1234-1`）进行远程命令选择。
+- **🚀 飞书 WebSocket 长连接 (无需公网 IP)**：
+    - 废弃了传统的 Webhook Server 模式。通过配置飞书 App ID / App Secret，Sparky 应用会自动与飞书建立加密的长连接 (WebSocket)。
+    - **极简部署**：无需配置 ngrok，不需要内网穿透或服务器部署。只要打开电脑上的桌面端，即可接收通知！
 
-- **💬 飞书深度集成**：
-    - **WebSocket 长连接**：无需公网 IP，无需内网穿透，配置 App ID/Secret 即可使用。
-    - **多环境支持**：支持配置“应用名称”（如 `Production`, `Dev`）以区分不同环境的通知。
-    - **消息防抖**：智能抑制重复的命令执行通知，保持群聊整洁。
+- **🔐 创新的远程交互与权限验证**：
+    - 当 Claude Code 在终端中卡在 `Do you want to proceed?` 或工具调用确认界面时，Sparky 会精准捕获，并向您的飞书发送包含上下文和**配对码**（如 `91`）的卡片。
+    - **快捷回复授权**：在飞书中直接回复 `91-1`（同意）、`91-2`（始终同意）或 `91-3`（拒绝） 等列表按键。
+    - 智能后端会自动转换这些回复为终端中的方向键和回车动作，精准操纵远端的互动命令行菜单，就如同您正在电脑前操作一样。
 
-- **🖥️ 现代化 UI 界面**：
-    - **Tauri + React + Ant Design** 构建的高性能桌面应用。
-    - **深色/浅色模式**：自动跟随系统，精心调优的对比度与阴影效果。
-    - **项目管理**：图形化管理多个 Claude Code 项目，一键安装/卸载 Hooks。
-    - **原生体验**：支持一键在 Finder/资源管理器中打开项目文件夹。
-
-- **💾 健壮的数据持久化**：
-    - 内置 **SQLite** 数据库，完整记录所有 Hook 事件、权限请求历史和终端交互日志。
-    - 自动保存应用配置，重启无忧。
-
-## 🛠️ 架构概览
-
-Sparky 采用读写分离的现代化架构：
-
-```mermaid
-graph TD
-    subgraph "Claude Code Environment"
-        Claude[Claude Code CLI]
-        Hook[Sparky Hook (Rust CLI)]
-    end
-
-    subgraph "Sparky Desktop App"
-        Tauri[Tauri Core (Rust)]
-        DB[(SQLite Database)]
-        WS[WebSocket Client]
-        UI[React Frontend]
-    end
-
-    subgraph "Feishu Cloud"
-        Feishu[Feishu Open Platform]
-    end
-
-    Claude -->|Stdout/Stdin| Hook
-    Hook -->|Write Events| DB
-    Tauri -->|Read/Poll| DB
-    Tauri <-->|WebSocket| Feishu
-    UI <-->|Tauri Invoke| Tauri
-```
-
-- **Hooks**: 轻量级 Rust CLI，注入到 Claude Code 进程中，负责捕获 I/O 并写入数据库。
-- **Desktop App**: 负责后台逻辑（WebSocket 连接、数据库轮询、PTY 控制）和前台交互。
+- **🖥️ 现代化专属 UI**：
+    - **Tauri + React + Ant Design**，带来极速的原生桌面体验。
+    - 支持深浅色主题自由切换，状态栏实时显示 WebSocket 连接健康度及后端项目活跃状态。
+    - 提供“退出终端”等一键进程管理功能，防止僵尸进程。
 
 ## 🚀 快速开始
 
 ### 1. 配置飞书机器人
-1. 前往 [飞书开放平台](https://open.feishu.cn/) 创建企业自建应用。
-2. 开启 **机器人** 能力。
-3. 获取 `App ID` 和 `App Secret`。
-4. (可选) 获取 `Encrypt Key` 和 `Verification Token`。
+1. 前往 [飞书开放平台](https://open.feishu.cn/) 创建一个 **企业自建应用**。
+2. 在应用功能中开启 **机器人** 能力，并申请接收消息相关权限。
+3. 进入应用的 **凭证与基础信息**，获取 `App ID` 和 `App Secret`。
 
-### 2. 安装与运行
-**开发模式启动**:
+### 2. 构建与运行 Sparky
+**开发模式调试**:
 ```bash
-# 启动前端与后端开发服务
+# 启动前端页面与 Rust 后端
 ./start-dev.sh
 ```
 
-**构建生产版本**:
+**构建分发版本**:
 ```bash
 ./build.sh
+# 产物将生成在 src-tauri/target/release/bundle/ 目录下
 ```
 
-### 3. 应用配置
+### 3. 连接飞书配置
 1. 打开 Sparky 桌面应用。
-2. 进入 **设置中心** -> **飞书应用配置**。
-3. 填写 `App ID`、`App Secret` 和 `应用名称`。
-4. 点击 **保存配置**，应用将自动建立 WebSocket 连接。
+2. 左侧导航栏进入 **设置**。
+3. 填入上面获取到的 `App ID` 和 `App Secret`。
+4. 选填接收消息的 `Chat ID` 或 `Open ID`（可选项，指定推送给个人还是群）。
+5. 保存配置。界面标题栏区域的“未连接”徽标会变为绿色的“已连接”。
 
-### 4. 项目接入
-1. 在 **项目管理** 页签中，点击 **添加项目**。
-2. 选择您的 Claude Code 项目根目录。
-3. 点击 **安装 Hooks**，Sparky 会自动配置 `.claude/config.json`。
-4. 此时，该项目下的 Claude Code 运行记录将被实时监控。
+### 4. 接入并运行您的代码项目
+1. 在 **项目** 选项卡下点击 **添加项目**，选择您的代码目录。
+2. 找到此项目，点击 **配置** 为其安装 `.claude/settings.local.json` 监控指令。
+3. 点击 **Go >** 进入此项目的独立监控终端。
+4. 在应用内集成的终端输入 `claude` (需全局安装过) 开始对话。发生确认事件即可在手机飞书上点击确认！
 
 ## 📦 目录结构
 
-```
+```text
 claude-monitor/
-├── src/                    # Hook CLI 源代码 (Rust)
-│   ├── main.rs             # CLI 入口
-│   ├── hooks.rs            # 核心 Hook 逻辑
-│   ├── feishu.rs           # 飞书消息构造
-│   └── websocket.rs        # WebSocket 客户端
-├── src-tauri/              # Tauri 桌面后端 (Rust)
-│   ├── src/lib.rs          # 数据库、配置与 PTY 管理
-│   ├── migrations/         # 数据库迁移脚本
-│   └── tauri.conf.json     # Tauri 配置
-├── ui/                     #前台界面 (React + TS)
-│   ├── src/App.tsx         # 主逻辑
-│   ├── src/App.css         # 样式 (包含深浅色模式适配)
-│   └── src/components/     # UI 组件
-├── Cargo.toml              # Rust 工作区依赖
-└── build.sh                # 自动化构建脚本
+├── src/                    # 专供 Claude 调用的 Hook CLI (Rust)
+│   ├── main.rs             # Hook 主程序，截取上下文
+│   ├── feishu.rs           # 数据库状态记录与飞书请求编码
+│   └── hooks.rs            # 数据流过滤与 I/O 捕捉
+├── src-tauri/              # Tauri 桌面应用核心守护后端 (Rust)
+│   ├── src/lib.rs          # 数据库轮询、飞书 WebSocket 管理、路由
+│   ├── src/pty.rs          # 终端 PTY 进程隔离控制台与生命周期管理
+│   └── tauri.conf.json     # Tauri 构建设定档
+├── ui/                     # 桌面应用前端大屏 (React + TS)
+│   ├── src/App.tsx         # 主窗体与路由
+│   ├── src/components/     # Xterm 终端组件等
+│   └── src/hooks/          # React PTY 通信状态挂载
+└── build.sh                # 全自动打包脚本
 ```
+
+## 🛠 技术栈
+- **核心引擎**: Rust + Tauri 2.0
+- **本地持久化**: SQLite (rusqlite)
+- **前端窗体**: React (Vite) + Ant Design + Xterm.js
+- **OS 进程交互**: Portable PTY
 
 ## 📜 License
-
-MIT License
-
-## 快速开始
-
-### 方式一：使用桌面应用（推荐）
-
-1. **启动开发模式**
-   ```bash
-   ./start-dev.sh
-   ```
-   
-   或手动启动：
-   ```bash
-   cd ui && npm install && cd ..
-   cargo tauri dev
-   ```
-
-2. **构建生产版本**
-   ```bash
-   ./build.sh
-   ```
-   
-   构建完成后，应用位于 `src-tauri/target/release/bundle/` 目录
-
-3. **使用应用配置**
-   - 在应用界面中填写飞书 Webhook URL
-   - 点击"测试 Webhook 连接"验证配置
-   - 点击"保存配置"
-   - 配置会自动保存到本地
-
-### 方式二：命令行模式
-
-#### 1. 配置飞书机器人
-
-1. 在飞书中创建自定义机器人
-2. 获取 Webhook URL
-3. 配置机器人消息卡片回调地址 (http://your-server:3000/feishu/callback)
-
-#### 2. 配置环境变量
-
-复制 `.env.example` 为 `.env` 并填写配置:
-
-```bash
-cp .env.example .env
-```
-
-编辑 `.env` 文件:
-
-```env
-FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/your-webhook-token
-SERVER_HOST=0.0.0.0
-SERVER_PORT=3000
-```
-
-#### 3. 构建项目
-
-```bash
-cargo build --release
-```
-
-#### 4. 配置 Claude Code Hooks
-
-在项目根目录创建 `.claude/settings.local.json`:
-
-```json
-{
-  "hooks": {
-    "Notification": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/claude-monitor hook"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-或在用户全局配置 `~/.claude/settings.json` 中添加上述配置。
-
-#### 5. 启动服务器模式 (可选)
-
-如果需要独立运行服务器:
-
-```bash
-./target/release/claude-monitor server
-```
-
-## 使用方式
-
-### Hook 模式
-
-当 Claude Code 需要用户确认时,会自动触发 Notification hook,监视器会:
-
-1. 读取 Claude Code 发送的通知内容
-2. 发送交互式卡片到飞书
-3. 等待用户在飞书中点击按钮
-4. 将用户的选择返回给 Claude Code
-
-### 服务器模式
-
-独立运行 HTTP 服务器,接收飞书的回调请求:
-
-```bash
-./target/release/claude-monitor server
-```
-
-## 架构说明
-
-```
-claude-monitor/
-├── src/                    # CLI 模式源代码
-│   ├── main.rs            # 主程序入口
-│   ├── config.rs          # 配置管理
-│   ├── hooks.rs           # Claude Code hooks 处理
-│   ├── feishu.rs          # 飞书机器人集成
-│   └── server.rs          # HTTP 服务器
-├── src-tauri/              # Tauri 桌面应用
-│   ├── src/
-│   │   └── lib.rs         # Tauri 后端逻辑
-│   ├── Cargo.toml
-│   └── tauri.conf.json    # Tauri 配置
-├── ui/                     # 前端界面
-│   ├── src/
-│   │   ├── App.tsx        # 主应用组件
-│   │   └── App.css        # 样式
-│   ├── package.json
-│   └── vite.config.ts
-├── Cargo.toml             # 项目依赖
-├── .env.example           # 环境变量示例
-├── start-dev.sh           # 开发启动脚本
-└── build.sh               # 构建脚本
-```
-
-## 工作流程
-
-1. Claude Code 触发 Notification 事件
-2. Hook 监听器读取 stdin 中的 JSON 数据
-3. 解析通知内容,判断是否需要用户交互
-4. 发送交互式卡片到飞书
-5. 启动临时 HTTP 服务器等待回调
-6. 用户在飞书中点击按钮
-7. 飞书发送回调到 HTTP 服务器
-8. 将用户选择返回给 Claude Code
-
-## 注意事项
-
-- 飞书机器人需要有消息卡片回调权限
-- HTTP 服务器需要公网可访问 (可使用 ngrok 等工具)
-- 飞书回调地址需要配置为: `http://your-server:3000/feishu/callback`
-
-## 开发
-
-### 开发模式
-
-```bash
-# Tauri 桌面应用开发模式
-./start-dev.sh
-
-# CLI 模式开发
-cargo run -- hook
-cargo run -- server
-```
-
-### 构建生产版本
-
-```bash
-# 构建 Tauri 应用
-./build.sh
-
-# 构建 CLI 版本
-cargo build --release
-```
-
-### 技术栈
-
-- **后端**: Rust + Tauri 2.0
-- **前端**: React + TypeScript + Vite
-- **UI 框架**: Ant Design
-- **功能**:
-  - Claude Code Hooks 集成
-  - 飞书机器人 API
-  - HTTP 服务器（Axum）
-  - 本地配置管理
-
-## License
-
 MIT

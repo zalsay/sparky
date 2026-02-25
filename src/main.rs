@@ -255,12 +255,12 @@ async fn run_hook(config: &config::Config) -> Result<()> {
         content.push_str(&notification_text);
     }
 
-        // PermissionRequest - 显示工具信息
-    if !permission_summary.is_empty() {
+    // PermissionRequest - 显示工具信息
+    let req_code: Option<String> = if !permission_summary.is_empty() {
         // Record pending permission request in DB using CWD
         let project_path = &hook_input.cwd;
         tracing::info!("[main] Creating permission request for project: {}", project_path);
-        let req_code = match feishu::create_permission_request(project_path) {
+        match feishu::create_permission_request(project_path) {
             Ok(code) => {
                 tracing::info!("[main] Permission request created with code: {}", code);
                 Some(code)
@@ -269,8 +269,11 @@ async fn run_hook(config: &config::Config) -> Result<()> {
                 tracing::error!("Failed to create permission request: {}", e);
                 None
             }
-        };
-
+        }
+    } else {
+        None
+    };
+    if !permission_summary.is_empty() {
         content.push_str("\n\n**权限请求**\n");
         content.push_str(&permission_summary);
 
@@ -502,30 +505,7 @@ async fn run_hook(config: &config::Config) -> Result<()> {
         allow_actions, need_action, action_text.len()
     );
 
-    let actions = if need_action {
-        Some(vec![
-            feishu::CardAction {
-                tag: "button".to_string(),
-                text: feishu::CardText {
-                    content: "✅ Yes (1)".to_string(),
-                    tag: "plain_text".to_string(),
-                },
-                action_type: "primary".to_string(),
-                value: serde_json::json!({"choice": "1"}),
-            },
-            feishu::CardAction {
-                tag: "button".to_string(),
-                text: feishu::CardText {
-                    content: "❌ No (2)".to_string(),
-                    tag: "plain_text".to_string(),
-                },
-                action_type: "danger".to_string(),
-                value: serde_json::json!({"choice": "2"}),
-            },
-        ])
-    } else {
-        None
-    };
+    let actions: Option<Vec<feishu::CardAction>> = None;
 
     // 限制消息长度，飞书单条消息最大 20000 字符
     const MAX_CONTENT_LEN: usize = 18000;

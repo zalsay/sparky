@@ -532,14 +532,26 @@ pub fn handle_permission_decision(code: &str, choice: &str, message_id: &str) ->
 
     let (req_id, project_path) = result.ok_or_else(|| format!("No pending request for code {}", code))?;
 
+    // Map choice to ANSI sequence for interactive menus in terminal
+    let ansi_command = if let Ok(n) = choice.parse::<usize>() {
+        if n > 0 && n <= 50 {
+            let arrows = "\x1b[B".repeat(n - 1);
+            format!("{}\r", arrows)
+        } else {
+            choice.to_string()
+        }
+    } else {
+        choice.to_string()
+    };
+
     conn.execute(
         "UPDATE permission_requests SET status = 'completed', choice = ?1 WHERE id = ?2",
-        rusqlite::params![choice, req_id],
+        rusqlite::params![ansi_command, req_id],
     ).map_err(|e| e.to_string())?;
 
     conn.execute(
         "INSERT INTO pty_commands (project_path, command, message_id, created_at) VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![project_path, choice, message_id, now],
+        rusqlite::params![project_path, ansi_command, message_id, now],
     ).map_err(|e| e.to_string())?;
 
     log::info!("Permission decision: code={}, choice={}, project={}", code, choice, project_path);
@@ -1254,11 +1266,18 @@ async fn notify_project_active(
     let token = token_result["tenant_access_token"].as_str()
         .ok_or("Failed to get tenant_access_token")?;
 
-    let index_prefix = if let Some(idx) = manager.get_active_projects().iter().position(|p| p == &project_path) {
-        format!("【项目::{}】", idx + 1)
-    } else {
-        String::new()
-    };
+    let mut index_prefix = String::new();
+    if let Ok(conn) = open_db() {
+        if let Ok(mut stmt) = conn.prepare("SELECT id FROM projects WHERE path = ?1 LIMIT 1") {
+            if let Ok(mut rows) = stmt.query(rusqlite::params![project_path]) {
+                if let Ok(Some(row)) = rows.next() {
+                    if let Ok(id) = row.get::<_, i64>(0) {
+                        index_prefix = format!("【项目::{}】", id);
+                    }
+                }
+            }
+        }
+    }
     
     let title_text = format!("{}【{}】项目进入开发状态～", index_prefix, project_name);
 

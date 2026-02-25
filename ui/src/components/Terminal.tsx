@@ -172,11 +172,21 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
       }
     };
 
+    const resizeDisposable = cached.term.onResize(async ({ cols, rows }) => {
+      try {
+        await invoke('pty_resize', { projectPath, cols, rows });
+      } catch (e) {
+        console.error('Failed to resize pty:', e);
+      }
+    });
+
+    // 监听窗口尺寸变化，并执行 fit 来刷新 term 行列
     window.addEventListener('resize', handleResize);
 
     return () => {
       window.removeEventListener('resize', handleResize);
       dataDisposable.dispose();
+      resizeDisposable.dispose();
       if (container) {
         container.innerHTML = '';
       }
@@ -232,6 +242,7 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
         backgroundColor: '#1e1e1e',
         padding: '12px',
         boxSizing: 'border-box',
+        overflow: 'hidden',
         cursor: 'text',
         borderRadius: fullscreen ? '0' : (mergeTop ? '0 0 8px 8px' : '8px'),
         boxShadow: 'inset 0 0 20px rgba(0, 0, 0, 0.5)',
