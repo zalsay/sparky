@@ -61,3 +61,27 @@ esac
 
 echo "✅ Build process complete!"
 echo "Check src-tauri/target/ for bundles."
+
+# Export artifacts to release directory
+echo "📂 Exporting artifacts to release directory..."
+mkdir -p release
+rm -rf release/*
+
+# Copy bundles (DMG, MSI, EXE, DEB, RPM, etc.)
+if [ -d "src-tauri/target" ]; then
+    find src-tauri/target -name "*.dmg" -o -name "*.msi" -o -name "*.exe" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" | xargs -I {} cp -f {} release/
+    # Copy app binaries (sparky-app or sparky-app.exe)
+    find src-tauri/target -name "sparky-app" -exec cp -f {} release/ \;
+    find src-tauri/target -name "sparky-app.exe" -exec cp -f {} release/ \;
+fi
+
+# Copy CLI binary (sparky-server or sparky-server.exe)
+if [ -f "target/release/sparky-server" ]; then
+    cp -f target/release/sparky-server release/
+fi
+if [ -f "target/release/sparky-server.exe" ]; then
+    cp -f target/release/sparky-server.exe release/
+fi
+
+echo "✨ Artifacts exported to $(pwd)/release:"
+ls -lh release/

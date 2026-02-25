@@ -1,13 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Sparky",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "identifier": "com.sparky.desktop",
   "build": {
     "frontendDist": "../ui/dist",
     "devUrl": "http://localhost:5176",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "cargo build --release --bin sparky --manifest-path Cargo.toml && cp -f target/release/sparky target/release/sparky-aarch64-apple-darwin || true && npm run build"
+    "beforeBuildCommand": "cargo build --release --bin sparky-server --manifest-path Cargo.toml && cp -f target/release/sparky-server target/release/sparky-server-aarch64-apple-darwin || true && npm run build"
   },
   "app": {
     "windows": [
@@ -35,7 +35,7 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "../target/release/sparky"
+      "../target/release/sparky-server"
     ]
   }
 }

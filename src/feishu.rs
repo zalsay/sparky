@@ -9,7 +9,7 @@ use rand::Rng;
 fn open_db() -> Result<Connection, String> {
     let home = dirs::home_dir().ok_or("Failed to get home dir".to_string())?;
     // CLI 和 GUI 使用相同的数据库路径
-    let db_path = home.join("sparky/hooks.db");
+    let db_path = home.join("sparky-server/hooks.db");
     tracing::info!("[feishu] open_db path: {:?}", db_path);
     if let Some(parent) = db_path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -36,7 +36,7 @@ pub fn save_open_id_to_db(open_id: &str) -> Result<(), String> {
 /// 创建一个新的权限请求（Pending 状态），返回 4 位随机配对码
 pub fn create_permission_request(project_path: &str) -> Result<String, String> {
     let conn = open_db()?;
-    let db_path = dirs::home_dir().unwrap().join("sparky/hooks.db");
+    let db_path = dirs::home_dir().unwrap().join("sparky-server/hooks.db");
     
     // 生成 2 位随机码，并确保不与当前 pending 的冲突
     let mut code_str = String::new();
@@ -107,7 +107,7 @@ pub fn get_project_index(project_path: &str) -> Option<usize> {
 /// 验证并执行命令（通过 code 匹配 pending 请求）
 pub fn verify_and_execute_command(code: &str, choice: &str, message_id: &str) -> Result<(), String> {
     let mut conn = open_db()?;
-    let db_path = dirs::home_dir().unwrap().join("sparky/hooks.db");
+    let db_path = dirs::home_dir().unwrap().join("sparky-server/hooks.db");
 
     // 防止重复处理相同的权限决策消息
     if !message_id.is_empty() {
@@ -368,35 +368,52 @@ impl FeishuClient {
             "app_secret": self.app_secret
         });
 
-        let response = self
-            .client
-            .post(token_url)
-            .json(&token_body)
-            .send()
-            .await?;
-
-        let status = response.status();
-        let text = response.text().await?;
-        let result: serde_json::Value = serde_json::from_str(&text)?;
-        let code = result["code"].as_i64().unwrap_or(-1);
-        let msg = result["msg"].as_str().unwrap_or("Unknown error");
-        tracing::info!("[feishu:token] response: status={}, code={}, msg={}", status, code, msg);
-        
-        if code != 0 {
-            let body_preview = if text.len() > 2000 { &text[..2000] } else { &text };
-            error!(
-                "[feishu:token] FAILED: status={}, code={}, msg={}, body={}",
-                status, code, msg, body_preview
-            );
-            anyhow::bail!("Failed to get token: {}", msg);
+        let mut attempts = 0;
+        let max_attempts = 3;
+        loop {
+            attempts += 1;
+            match self.client
+                .post(token_url)
+                .json(&token_body)
+                .send()
+                .await 
+            {
+                Ok(response) => {
+                    let status = response.status();
+                    let text = response.text().await?;
+                    let result: serde_json::Value = serde_json::from_str(&text)?;
+                    let code = result["code"].as_i64().unwrap_or(-1);
+                    let msg = result["msg"].as_str().unwrap_or("Unknown error");
+                    tracing::info!("[feishu:token] response: status={}, code={}, msg={}", status, code, msg);
+                    
+                    if code != 0 {
+                        let body_preview = if text.len() > 2000 { &text[..2000] } else { &text };
+                        error!(
+                            "[feishu:token] FAILED: status={}, code={}, msg={}, body={}",
+                            status, code, msg, body_preview
+                        );
+                        if attempts >= max_attempts {
+                            anyhow::bail!("Failed to get token: {}", msg);
+                        }
+                    } else {
+                        let token = result["tenant_access_token"]
+                            .as_str()
+                            .ok_or_else(|| anyhow::anyhow!("No tenant_access_token in response"))?
+                            .to_string();
+                        tracing::info!("[feishu:token] obtained token (len={})", token.len());
+                        return Ok(token);
+                    }
+                }
+                Err(e) => {
+                    error!("[feishu:token] Network error on attempt {}: {}", attempts, e);
+                    if attempts >= max_attempts {
+                        return Err(anyhow::anyhow!("Failed after {} attempts: {}", max_attempts, e));
+                    }
+                }
+            }
+            tracing::warn!("[feishu:token] Retrying in 2 seconds...");
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
-
-        let token = result["tenant_access_token"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("No tenant_access_token in response"))?
-            .to_string();
-        tracing::info!("[feishu:token] obtained token (len={})", token.len());
-        Ok(token)
     }
 
     pub async fn send_notification(
@@ -621,32 +638,49 @@ impl FeishuClient {
             message_body.to_string().len()
         );
 
-        let response = self
-            .client
-            .post(message_url)
-            .header("Authorization", format!("Bearer {}", token))
-            .query(&[("receive_id_type", receive_id_type)])
-            .json(&message_body)
-            .send()
-            .await?;
+        let mut attempts = 0;
+        let max_attempts = 3;
+        loop {
+            attempts += 1;
+            match self.client
+                .post(message_url)
+                .header("Authorization", format!("Bearer {}", token))
+                .query(&[("receive_id_type", receive_id_type)])
+                .json(&message_body)
+                .send()
+                .await 
+            {
+                Ok(response) => {
+                    let status = response.status();
+                    let text = response.text().await?;
+                    let result: serde_json::Value = serde_json::from_str(&text)?;
+                    let code = result["code"].as_i64().unwrap_or(-1);
+                    let msg = result["msg"].as_str().unwrap_or("Unknown error");
+                    tracing::info!("[feishu:send] response: status={}, code={}, msg={}", status, code, msg);
 
-        let status = response.status();
-        let text = response.text().await?;
-        let result: serde_json::Value = serde_json::from_str(&text)?;
-        let code = result["code"].as_i64().unwrap_or(-1);
-        let msg = result["msg"].as_str().unwrap_or("Unknown error");
-        tracing::info!("[feishu:send] response: status={}, code={}, msg={}", status, code, msg);
-
-        if code != 0 {
-            let body_preview = if text.len() > 2000 { &text[..2000] } else { &text };
-            error!(
-                "[feishu:send] FAILED: status={}, code={}, msg={}, body={}",
-                status, code, msg, body_preview
-            );
-            anyhow::bail!("Failed to send message: {}", msg);
+                    if code != 0 {
+                        let body_preview = if text.len() > 2000 { &text[..2000] } else { &text };
+                        error!(
+                            "[feishu:send] FAILED: status={}, code={}, msg={}, body={}",
+                            status, code, msg, body_preview
+                        );
+                        if attempts >= max_attempts {
+                            anyhow::bail!("Failed to send message: {}", msg);
+                        }
+                    } else {
+                        tracing::info!("[feishu:send] message sent successfully");
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    error!("[feishu:send] Network error on attempt {}: {}", attempts, e);
+                    if attempts >= max_attempts {
+                        return Err(anyhow::anyhow!("Failed after {} attempts: {}", max_attempts, e));
+                    }
+                }
+            }
+            tracing::warn!("[feishu:send] Retrying in 2 seconds...");
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
-
-        tracing::info!("[feishu:send] message sent successfully");
-        Ok(())
     }
 }

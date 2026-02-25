@@ -1,6 +1,6 @@
 [package]
 name = "sparky-app"
-version = "0.1.0"
+version = "1.0.0"
 description = "Sparky - Claude Code Monitor with Feishu Integration"
 authors = ["you"]
 license = ""

@@ -60,9 +60,9 @@
 
 ```text
 claude-monitor/
-├── src/                    # 专供 Claude 调用的 Hook CLI (Rust)
-│   ├── main.rs             # Hook 主程序，截取上下文
-│   ├── feishu.rs           # 数据库状态记录与飞书请求编码
+claude-monitor/
+├── src/                    # 专供 Claude 调用的 Hook CLI (sparky-server)
+├── src-tauri/              # Tauri 桌面应用核心守护后端 (sparky-app)
 │   └── hooks.rs            # 数据流过滤与 I/O 捕捉
 ├── src-tauri/              # Tauri 桌面应用核心守护后端 (Rust)
 │   ├── src/lib.rs          # 数据库轮询、飞书 WebSocket 管理、路由

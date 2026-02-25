@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { usePty } from './hooks/usePty';
@@ -68,6 +68,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [wsConnected, setWsConnected] = useState(false);
   const [activeProjects, setActiveProjects] = useState<string[]>([]);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    const saved = localStorage.getItem('sparky-sidebar-collapsed');
+    return saved === 'true';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('sparky-sidebar-collapsed', String(sidebarCollapsed));
+  }, [sidebarCollapsed]);
 
   // Poll WebSocket connection status and active projects
   useEffect(() => {
@@ -195,7 +203,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     try {
       await invoke('pty_kill', { projectPath: selectedProject.path });
       clearTerminalCache(selectedProject.path); // Free resources and clear unexecuted input
-      messageApi.success('终端已关闭');
+      messageApi.success(`项目 ${selectedProject.name} 已关闭`);
       // Update UI optimistically
       setActiveProjects(activeProjects.filter(p => p !== selectedProject.path));
       setActiveMenu('project');
@@ -476,6 +484,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                             const proj = projects.find(p => p.path === path);
                             if (proj) {
                               handleEnterProject(proj);
+                              messageApi.success(`已切换至 ${proj.name} 项目`);
                             }
                           }}
                         >
@@ -500,9 +509,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
         <main className="app-main">
           <div className="app-layout">
-            <aside className="app-sidebar">
+            <aside className={`app-sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
               <Menu
                 mode="inline"
+                inlineCollapsed={sidebarCollapsed}
                 selectedKeys={[activeMenu]}
                 onClick={(e) => setActiveMenu(e.key)}
                 style={{ height: '100%', borderRight: 0 }}
@@ -512,6 +522,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                   { key: 'help', icon: <EyeOutlined />, label: '帮助' },
                 ]}
               />
+              <div className="sidebar-toggle-container">
+                <Button
+                  type="text"
+                  icon={sidebarCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+                  onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                  className="sidebar-toggle-btn"
+                />
+              </div>
             </aside>
             <div className="app-content">
               {activeMenu === 'project' && (
@@ -796,24 +814,35 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           <p className="card-description">应用相关的基础与功能配置</p>
                           <Divider />
                           <Form.Item
-                            label="推送 Hook 事件过滤"
+                            label={
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                <span>推送 Hook 事件过滤</span>
+                                <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 'normal' }}>选择需要推送的事件类型</span>
+                              </div>
+                            }
                             name="hook_events_filter"
-                            extra="选择需要推送的事件类型"
                             getValueFromEvent={(checkedValues: string[]) => checkedValues.length > 0 ? checkedValues.join(',') : undefined}
                             getValueProps={(value: string | undefined) => ({
                               value: value ? value.split(',').map((s: string) => s.trim()) : [],
                             })}
+                            style={{ margin: 0 }}
                           >
-                            <Checkbox.Group
-                              options={[
-                                { label: '🛑 Stop（任务结束）', value: 'Stop' },
-                                { label: '🔐 PermissionRequest（权限确认）', value: 'PermissionRequest' },
-                                { label: '📌 Notification（通知）', value: 'Notification' }
-                              ]}
-                              style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}
-                            />
+                            <Checkbox.Group style={{ width: '100%' }}>
+                              <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '8px' }}>
+                                <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '0 8px', borderRadius: '8px' }}>
+                                  <Checkbox value="Stop">🛑 Stop（任务结束）</Checkbox>
+                                </Card>
+                                <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '0 8px', borderRadius: '8px' }}>
+                                  <Checkbox value="PermissionRequest">🔐 PermissionRequest（权限确认）</Checkbox>
+                                </Card>
+                                <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '0 8px', borderRadius: '8px' }}>
+                                  <Checkbox value="Notification">📌 Notification（通知）</Checkbox>
+                                </Card>
+                              </div>
+                            </Checkbox.Group>
                           </Form.Item>
-                          <div className="action-buttons" style={{ marginTop: 16 }}>
+                          <Divider style={{ margin: '24px 0 16px 0' }} />
+                          <div className="action-buttons" style={{ marginTop: 0 }}>
                             <Button type="default" onClick={async () => {
                               try {
                                 await invoke('save_window_size');

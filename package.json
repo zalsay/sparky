@@ -1,6 +1,6 @@
 {
-  "name": "sparky",
-  "version": "0.1.0",
+  "name": "sparky-server",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
     "dev": "cd ui && npm run dev",

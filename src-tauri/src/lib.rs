@@ -908,9 +908,9 @@ fn build_hook_command() -> Result<String, String> {
 
     // Windows 上可执行文件名带 .exe 后缀
     #[cfg(target_os = "windows")]
-    let cli_bin_name = "sparky.exe";
+    let cli_bin_name = "sparky-server.exe";
     #[cfg(not(target_os = "windows"))]
-    let cli_bin_name = "sparky";
+    let cli_bin_name = "sparky-server";
 
     // 1. ~/sparky/sparky（release 安装路径）
     if let Some(home) = dirs::home_dir() {
@@ -1596,22 +1596,22 @@ pub fn run() {
                 // 在 .app bundle 里，sparky CLI 与 Tauri exe 同目录
                 // Windows 上可执行文件名带 .exe 后缀
                 #[cfg(target_os = "windows")]
-                let sparky_src = exe_path.parent().map(|p| p.join("sparky.exe"));
+                let sparky_src = exe_path.parent().map(|p| p.join("sparky-server.exe"));
                 #[cfg(not(target_os = "windows"))]
-                let sparky_src = exe_path.parent().map(|p| p.join("sparky"));
+                let sparky_src = exe_path.parent().map(|p| p.join("sparky-server"));
                 if let Some(src) = sparky_src {
                     if src.exists() {
                         if let Some(home) = dirs::home_dir() {
                             let dest_dir = home.join("sparky");
                             // Windows 目标文件名也带 .exe 后缀
                             #[cfg(target_os = "windows")]
-                            let dest = dest_dir.join("sparky.exe");
+                            let dest = dest_dir.join("sparky-server.exe");
                             #[cfg(not(target_os = "windows"))]
-                            let dest = dest_dir.join("sparky");
+                            let dest = dest_dir.join("sparky-server");
                             if let Err(e) = std::fs::create_dir_all(&dest_dir) {
                                 log::error!("Failed to create ~/sparky dir: {}", e);
                             } else if let Err(e) = std::fs::copy(&src, &dest) {
-                                log::error!("Failed to copy sparky binary: {}", e);
+                                log::error!("Failed to copy sparky-server binary: {}", e);
                             } else {
                                 // 确保可执行权限
                                 #[cfg(unix)]

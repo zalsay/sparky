@@ -186,16 +186,24 @@ body {
   flex-shrink: 0;
   background: var(--sidebar-bg);
   border-radius: 8px;
-  overflow: hidden;
-  transition: background 0.3s;
+  transition: all 0.3s cubic-bezier(0.645, 0.045, 0.355, 1);
   display: flex;
   flex-direction: column;
 }
 
-.app-sidebar .ant-menu {
+.app-sidebar.collapsed {
+  width: 64px;
+  overflow: visible;
+}
+
+.app-sidebar .ant-menu,
+.app-sidebar .ant-menu-root,
+.app-sidebar .ant-menu-inline-collapsed,
+.app-sidebar .ant-menu-list {
   border-radius: 8px;
   background: transparent;
   color: var(--text-primary);
+  overflow: visible !important;
 }
 
 .app-sidebar .ant-menu-item {
@@ -204,10 +212,26 @@ body {
   border-radius: 6px;
   color: var(--text-primary);
   transition: all 0.3s cubic-bezier(0.645, 0.045, 0.355, 1) !important;
+  padding: 0 10px !important;
 }
 
-.app-sidebar .ant-menu-item:first-child {
-  margin-top: 12px !important;
+.app-sidebar.collapsed .ant-menu-item {
+  margin: 4px 0 !important;
+  width: 64px !important;
+  padding: 0 0 0 20px !important;
+  display: flex !important;
+  justify-content: flex-start !important;
+  align-items: center !important;
+  border-radius: 0 !important;
+  transition: all 0.3s cubic-bezier(0.645, 0.045, 0.355, 1) !important;
+}
+
+.app-sidebar.collapsed .ant-menu-item-icon,
+.app-sidebar.collapsed .anticon {
+  margin: 0 !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .app-sidebar .ant-menu-item:hover {
@@ -226,25 +250,38 @@ body {
   color: #f1f1f1 !important;
   font-weight: 600;
   border: none !important;
+  position: relative;
+  z-index: 2;
 }
 
-.app-sidebar .ant-menu-item:hover {
-  background-color: rgba(0, 0, 0, 0.04) !important;
-  color: var(--text-primary) !important;
-}
-
-.app-sidebar .ant-menu-item-selected::after {
-  display: none;
-}
-
-.app-sidebar .ant-menu-item-selected .ant-menu-title-content,
 .app-sidebar .ant-menu-item-selected .anticon {
   color: #f1f1f1 !important;
 }
 
-.app-sidebar .ant-menu-item:hover .ant-menu-title-content,
-.app-sidebar .ant-menu-item:hover .anticon {
-  color: var(--text-primary) !important;
+.app-sidebar.collapsed .ant-menu-item-selected,
+.app-sidebar.collapsed .ant-menu-item:hover {
+  margin: 4px 0 4px -12px !important;
+  width: 76px !important;
+  padding: 0 0 0 32px !important;
+  border-radius: 8px 0 0 8px !important;
+  box-shadow: -4px 0 12px rgba(0, 0, 0, 0.15) !important;
+  display: flex !important;
+  justify-content: flex-start !important;
+  align-items: center !important;
+  position: relative;
+  z-index: 2;
+  overflow: visible !important;
+  transform: none;
+  background-color: #000000 !important;
+  color: #f1f1f1 !important;
+}
+
+/* Cleanup old pseudo-element styles as we are using actual dimensions now */
+
+.app-sidebar.collapsed .ant-menu-item-selected .anticon,
+.app-sidebar.collapsed .ant-menu-item:hover .anticon {
+  margin-left: 0 !important;
+  color: #f1f1f1 !important;
 }
 
 .dark-mode .app-sidebar .ant-menu-item-selected {
@@ -252,37 +289,68 @@ body {
   color: #000000 !important;
 }
 
-.dark-mode .app-sidebar .ant-menu-item-selected .ant-menu-title-content,
 .dark-mode .app-sidebar .ant-menu-item-selected .anticon {
   color: #000000 !important;
 }
 
+.dark-mode .app-sidebar.collapsed .ant-menu-item-selected,
+.dark-mode .app-sidebar.collapsed .ant-menu-item:hover {
+  background-color: #f1f1f1 !important;
+  color: #000000 !important;
+  box-shadow: -4px 0 12px rgba(0, 0, 0, 0.6) !important;
+}
+
+.dark-mode .app-sidebar.collapsed .ant-menu-item-selected .anticon,
+.dark-mode .app-sidebar.collapsed .ant-menu-item:hover .anticon {
+  color: #000000 !important;
+}
+
+.app-sidebar .ant-menu-item:hover {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px var(--shadow-color);
+}
+
 .dark-mode .app-sidebar .ant-menu-item:hover {
   background-color: rgba(255, 255, 255, 0.08) !important;
-  color: var(--text-primary) !important;
 }
 
 .app-sidebar .ant-menu-item-selected::after {
   display: none;
 }
 
-.app-sidebar .ant-menu-item-selected .ant-menu-title-content,
-.app-sidebar .ant-menu-item-selected .anticon {
-  color: #f1f1f1 !important;
+/* Sidebar selected after/title overrides removed */
+
+/* ==================== Sidebar Toggle ==================== */
+
+.sidebar-toggle-container {
+  padding: 8px;
+  border-top: 1px solid var(--border-light);
+  display: flex;
+  justify-content: center;
+  transition: all 0.3s;
+  background: var(--sidebar-bg);
+  margin-top: auto;
 }
 
-.app-sidebar .ant-menu-item:hover .ant-menu-title-content,
-.app-sidebar .ant-menu-item:hover .anticon {
-  color: var(--active-text) !important;
+.sidebar-toggle-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  border-radius: 6px;
+  transition: all 0.2s;
 }
 
-.dark-mode .app-sidebar .ant-menu-item-selected {
-  background-color: var(--active-text) !important;
-  color: #f1f1f1 !important;
+.sidebar-toggle-btn:hover {
+  background: var(--hover-bg);
+  color: var(--text-primary);
 }
 
-.dark-mode .app-sidebar .ant-menu-item:hover {
-  background-color: rgba(255, 255, 255, 0.08) !important;
+.app-sidebar.collapsed .sidebar-toggle-container {
+  padding: 12px 8px;
 }
 
 .app-content {
