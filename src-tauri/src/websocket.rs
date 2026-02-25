@@ -558,14 +558,14 @@ impl FeishuWsClient {
     }
 }
 
-/// 解析权限回复格式 "{code}-{choice}"，例如 "26-1", "26-2", "26-3"
+/// 解析权限回复格式 "{code}-{choice}"，例如 "26-1", "26-2", "26-3", "26-y"
 fn parse_permission_reply(text: &str) -> Option<(String, String)> {
     let text = text.trim();
     let parts: Vec<&str> = text.splitn(2, '-').collect();
     if parts.len() == 2 {
         let code = parts[0].trim();
         let choice = parts[1].trim();
-        if !code.is_empty() && !choice.is_empty() && choice.chars().all(|c| c.is_ascii_digit()) {
+        if !code.is_empty() && code.chars().all(|c| c.is_ascii_digit()) && !choice.is_empty() {
             return Some((code.to_string(), choice.to_string()));
         }
     }

@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
 
     // File appender: ~/sparky/sparky.YYYY-MM-DD.log
     let home = dirs::home_dir().expect("Failed to get HOME");

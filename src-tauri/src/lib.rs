@@ -1525,6 +1525,27 @@ async fn set_active_project(state: tauri::State<'_, Arc<AppState>>, project_path
     Ok(())
 }
 
+#[tauri::command]
+async fn save_window_size(window: tauri::Window) -> Result<(), String> {
+    let size = window.inner_size().map_err(|e| e.to_string())?;
+    let conn = open_db()?;
+    
+    conn.execute(
+        "INSERT INTO db_meta (key, value) VALUES ('window_width', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![size.width.to_string()],
+    ).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "INSERT INTO db_meta (key, value) VALUES ('window_height', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![size.height.to_string()],
+    ).map_err(|e| e.to_string())?;
+
+    log::info!("Saved window size: {}x{}", size.width, size.height);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let (event_tx, _event_rx) = mpsc::channel::<String>(100);
@@ -1636,6 +1657,20 @@ pub fn run() {
                 }
             });
 
+            // 应用保存的窗口大小（如果存在）
+            if let Ok(conn) = open_db() {
+                if let Ok(width_str) = conn.query_row("SELECT value FROM db_meta WHERE key = 'window_width'", [], |row| row.get::<_, String>(0)) {
+                    if let Ok(height_str) = conn.query_row("SELECT value FROM db_meta WHERE key = 'window_height'", [], |row| row.get::<_, String>(0)) {
+                        if let (Ok(width), Ok(height)) = (width_str.parse::<u32>(), height_str.parse::<u32>()) {
+                            if let Some(main_window) = app.get_webview_window("main") {
+                                let _ = main_window.set_size(tauri::PhysicalSize::new(width, height));
+                                log::info!("Applied saved window size: {}x{}", width, height);
+                            }
+                        }
+                    }
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1669,7 +1704,8 @@ pub fn run() {
             get_ws_connected,
             notify_project_active,
             set_active_project,
-            get_active_projects
+            get_active_projects,
+            save_window_size
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -32,7 +32,7 @@ function getOrCreateTerminal(projectPath: string) {
   const term = new Terminal({
     cursorBlink: true,
     cursorStyle: 'bar',
-    fontSize: 15,
+    fontSize: 13,
     fontFamily: 'Menlo, Monaco, "Courier New", monospace',
     fontWeight: 'bold',
     fontWeightBold: '900',

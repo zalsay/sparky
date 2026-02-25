@@ -752,30 +752,64 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                 <div className="settings-page">
                   <div className="main-grid">
                     <div className="left-column">
-                      <Card className="projects-card channel-card" variant="borderless">
-                        <div className="card-header">
-                          <SettingOutlined className="card-icon" />
-                          <h2>设置中心</h2>
-                        </div>
-                        <p className="card-description">管理飞书、钉钉与企业微信的应用配置</p>
-                        <Divider />
-                        <div className="channel-block">
-                          <Tabs
-                            className="channel-tabs"
-                            defaultActiveKey="feishu"
-                            items={[
-                              {
-                                key: 'feishu',
-                                label: '飞书',
-                                children: (
-                                  <Card className="config-card" variant="borderless">
-                                    <div className="card-header">
-                                      <SettingOutlined className="card-icon" />
-                                      <h2>飞书应用配置</h2>
-                                    </div>
-                                    <p className="card-description">配置飞书开放平台应用凭证，启用长连接模式实现消息推送与接收</p>
-                                    <Divider />
-                                    <Form form={form} layout="vertical" onFinish={handleSave} className="config-form">
+                      <Form form={form} layout="vertical" onFinish={handleSave} className="config-form" style={{ marginTop: 0, display: 'flex', flexDirection: 'column', flex: 1 }}>
+                        <Card className="projects-card general-card" variant="borderless" style={{ marginBottom: 24, height: 'auto' }}>
+                          <div className="card-header">
+                            <SettingOutlined className="card-icon" />
+                            <h2>通用配置</h2>
+                          </div>
+                          <p className="card-description">应用相关的基础与功能配置</p>
+                          <Divider />
+                          <Form.Item
+                            label="Hook 事件过滤"
+                            name="hook_events_filter"
+                            extra="选择需要推送的事件类型"
+                            getValueFromEvent={(checkedValues: string[]) => checkedValues.length > 0 ? checkedValues.join(',') : undefined}
+                            getValueProps={(value: string | undefined) => ({
+                              value: value ? value.split(',').map((s: string) => s.trim()) : [],
+                            })}
+                          >
+                            <Checkbox.Group
+                              options={[
+                                { label: '🛑 Stop（任务结束）', value: 'Stop' },
+                                { label: '🔐 PermissionRequest（权限确认）', value: 'PermissionRequest' },
+                                { label: '📌 Notification（通知）', value: 'Notification' }
+                              ]}
+                              style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}
+                            />
+                          </Form.Item>
+                          <div className="action-buttons" style={{ marginTop: 16 }}>
+                            <Button type="default" onClick={async () => {
+                              try {
+                                await invoke('save_window_size');
+                                messageApi.success('窗口大小已保存，下次启动生效');
+                              } catch (e) {
+                                messageApi.error(`保存窗口大小失败: ${e}`);
+                              }
+                            }} size="large">保存当前窗口为默认大小</Button>
+                          </div>
+                        </Card>
+
+                        <Card className="projects-card channel-card" variant="borderless" style={{ flex: 1, height: 'auto' }}>
+                          <div className="card-header">
+                            <ApiOutlined className="card-icon" />
+                            <h2>通知渠道配置</h2>
+                          </div>
+                          <p className="card-description">管理飞书、钉钉与企业微信的应用配置</p>
+                          <Divider />
+                          <div className="channel-block">
+                            <Tabs
+                              className="channel-tabs"
+                              defaultActiveKey="feishu"
+                              items={[
+                                {
+                                  key: 'feishu',
+                                  label: '飞书',
+                                  children: (
+                                    <div className="config-card" style={{ padding: '0 12px' }}>
+                                      <h3 style={{ marginTop: 0 }}>飞书应用配置</h3>
+                                      <p className="card-description" style={{ marginBottom: 16 }}>配置飞书开放平台应用凭证，启用长连接模式实现消息推送与接收</p>
+
                                       <Form.Item label="应用名称" name="app_name" tooltip="为你的应用起一个好记的名字" rules={[{ required: true, message: '请输入应用名称' }]}>
                                         <Input placeholder="例如：Sparky 生产环境" size="large" className="input-field" />
                                       </Form.Item>
@@ -799,64 +833,40 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                       <Form.Item label="Verification Token" name="verification_token" extra="可选">
                                         <Input.Password placeholder="验证令牌" size="large" className="input-field" />
                                       </Form.Item>
-                                      <Form.Item
-                                        label="Hook 事件过滤"
-                                        name="hook_events_filter"
-                                        extra="选择需要推送到飞书的事件类型，不选则推送全部事件"
-                                        getValueFromEvent={(checkedValues: string[]) => checkedValues.length > 0 ? checkedValues.join(',') : undefined}
-                                        getValueProps={(value: string | undefined) => ({
-                                          value: value ? value.split(',').map((s: string) => s.trim()) : [],
-                                        })}
-                                      >
-                                        <Checkbox.Group
-                                          options={[
-                                            { label: '🛑 Stop（任务结束）', value: 'Stop' },
-                                            { label: '🔐 PermissionRequest（权限确认）', value: 'PermissionRequest' },
-                                            { label: '📌 Notification（通知）', value: 'Notification' },
-                                            { label: '📝 UserPromptSubmit（用户输入）', value: 'UserPromptSubmit' },
-                                          ]}
-                                          style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}
-                                        />
-                                      </Form.Item>
+
                                       <div className="action-buttons">
+                                        <Button type="default" onClick={handleUploadAnthropicLogo} loading={uploadingLogo} size="large">使用 Anthropic Logo</Button>
                                         <Button type="default" icon={<ApiOutlined />} onClick={handleTestConnection} loading={testingConnection} size="large">测试连接</Button>
-                                        <Button type="default" onClick={handleUploadAnthropicLogo} loading={uploadingLogo} size="large">上传 Anthropic Logo</Button>
                                         <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={loading} size="large">保存配置</Button>
                                       </div>
-                                    </Form>
-                                  </Card>
-                                ),
-                              },
-                              {
-                                key: 'dingtalk',
-                                label: '钉钉',
-                                children: (
-                                  <Card className="config-card" variant="borderless">
-                                    <div className="card-header">
-                                      <ApiOutlined className="card-icon" />
-                                      <h2>钉钉应用配置</h2>
                                     </div>
-                                    <p className="card-description">等待开发</p>
-                                  </Card>
-                                ),
-                              },
-                              {
-                                key: 'wework',
-                                label: '企业微信',
-                                children: (
-                                  <Card className="config-card" variant="borderless">
-                                    <div className="card-header">
-                                      <ApiOutlined className="card-icon" />
-                                      <h2>企业微信应用配置</h2>
+                                  ),
+                                },
+                                {
+                                  key: 'dingtalk',
+                                  label: '钉钉',
+                                  children: (
+                                    <div className="config-card" style={{ padding: '0 12px' }}>
+                                      <h3 style={{ marginTop: 0 }}>钉钉应用配置</h3>
+                                      <p className="card-description">等待开发</p>
                                     </div>
-                                    <p className="card-description">等待开发</p>
-                                  </Card>
-                                ),
-                              },
-                            ]}
-                          />
-                        </div>
-                      </Card>
+                                  ),
+                                },
+                                {
+                                  key: 'wework',
+                                  label: '企业微信',
+                                  children: (
+                                    <div className="config-card" style={{ padding: '0 12px' }}>
+                                      <h3 style={{ marginTop: 0 }}>企业微信应用配置</h3>
+                                      <p className="card-description">等待开发</p>
+                                    </div>
+                                  ),
+                                },
+                              ]}
+                            />
+                          </div>
+                        </Card>
+                      </Form>
                     </div>
                   </div>
                 </div>

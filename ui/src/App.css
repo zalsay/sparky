@@ -1420,3 +1420,38 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ==================== Xterm Scrollbar Customization ==================== */
+
+/* Custom scrollbar for xterm viewport */
+.xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+/* Track and Thumb are transparent by default (hidden) */
+.xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+  transition: background 0.3s ease;
+}
+
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background 0.3s ease;
+}
+
+/* Show track and thumb on terminal hover, using theme colors */
+.xterm:hover .xterm-viewport::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+.xterm:hover .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+}
+
+.xterm:hover .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
