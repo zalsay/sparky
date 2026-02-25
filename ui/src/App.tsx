@@ -4,7 +4,7 @@ import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { usePty } from './hooks/usePty';
-import TerminalComponent from './components/Terminal';
+import TerminalComponent, { clearTerminalCache } from './components/Terminal';
 import logo from '../../logo.png';
 import './App.css';
 
@@ -194,6 +194,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     if (!selectedProject || !tauriAvailable) return;
     try {
       await invoke('pty_kill', { projectPath: selectedProject.path });
+      clearTerminalCache(selectedProject.path); // Free resources and clear unexecuted input
       messageApi.success('终端已关闭');
       // Update UI optimistically
       setActiveProjects(activeProjects.filter(p => p !== selectedProject.path));
@@ -467,7 +468,17 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                     {activeProjects.map(path => {
                       const name = path.split('/').pop() || path;
                       return (
-                        <Tag key={path} className="active-project-tag">
+                        <Tag
+                          key={path}
+                          className="active-project-tag"
+                          style={{ cursor: 'pointer' }}
+                          onClick={() => {
+                            const proj = projects.find(p => p.path === path);
+                            if (proj) {
+                              handleEnterProject(proj);
+                            }
+                          }}
+                        >
                           {name}
                         </Tag>
                       );

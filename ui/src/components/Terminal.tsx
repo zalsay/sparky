@@ -23,6 +23,14 @@ const terminalCache = new Map<string, TerminalCacheItem>();
 let activeProjectPath: string | null = null;
 let globalWriterReady = false;
 
+export function clearTerminalCache(projectPath: string) {
+  const cached = terminalCache.get(projectPath);
+  if (cached) {
+    cached.term.dispose(); // Cleanup xterm resources
+    terminalCache.delete(projectPath);
+  }
+}
+
 function getOrCreateTerminal(projectPath: string) {
   const cached = terminalCache.get(projectPath);
   if (cached) {
@@ -135,26 +143,8 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
     termRef.current = cached.term;
     fitRef.current = cached.fit;
 
-    cached.term.attachCustomKeyEventHandler((event) => {
-      if (!onDataRef.current || event.type !== 'keydown') {
-        return true;
-      }
-      if (event.key === 'ArrowUp') {
-        onDataRef.current('\u001b[A');
-        return false;
-      }
-      if (event.key === 'ArrowDown') {
-        onDataRef.current('\u001b[B');
-        return false;
-      }
-      if (event.key === 'ArrowRight') {
-        onDataRef.current('\u001b[C');
-        return false;
-      }
-      if (event.key === 'ArrowLeft') {
-        onDataRef.current('\u001b[D');
-        return false;
-      }
+    cached.term.attachCustomKeyEventHandler(() => {
+      // Allow Xterm to handle all keys natively to ensure proper IME and Selection syncing.
       return true;
     });
 
