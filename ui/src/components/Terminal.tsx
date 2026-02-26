@@ -243,7 +243,14 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
   return (
     <div
       ref={terminalRef}
+      tabIndex={0}
       onClick={handleClick}
+      onKeyDown={(e) => {
+        // 阻止 Shift+Key 事件冒泡到 Tauri/浏览器层，确保 xterm 能正常处理
+        if (e.shiftKey) {
+          e.stopPropagation();
+        }
+      }}
       onMouseEnter={(e) => {
         e.currentTarget.style.boxShadow = '0 0 20px rgba(150, 150, 150, 0.3), inset 0 0 30px rgba(0, 0, 0, 0.5)';
         e.currentTarget.style.border = '1px solid rgba(150, 150, 150, 0.3)';
