@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined } from '@ant-design/icons';
+import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker } from 'antd';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { usePty } from './hooks/usePty';
@@ -15,8 +15,12 @@ interface AppConfig {
   encrypt_key?: string;
   verification_token?: string;
   chat_id?: string;
+  project_path?: string;
   open_id?: string;
   hook_events_filter?: string;
+  anthropic_logo_img_key?: string;
+  terminal_bg_color?: string;
+  terminal_fg_color?: string;
 }
 
 interface Project {
@@ -24,6 +28,7 @@ interface Project {
   name: string;
   path: string;
   hooks_installed: boolean;
+  agent_teams_enabled?: boolean;
 }
 
 interface HookRecord {
@@ -61,6 +66,11 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [hookRecordSelection, setHookRecordSelection] = useState<number[]>([]);
   const [hookDetailOpen, setHookDetailOpen] = useState(false);
   const [hookDetailRecord, setHookDetailRecord] = useState<HookRecord | null>(null);
+
+  // Watch color picker fields to dynamically display color tags
+  const watchedBgColor = Form.useWatch('terminal_bg_color', form);
+  const watchedFgColor = Form.useWatch('terminal_fg_color', form);
+
   const { startPty, write } = usePty();
   const tauriAvailable = isTauri();
   const inputBufferRef = useRef('');
@@ -311,15 +321,21 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     });
   };
 
-  const handleSave = async (values: AppConfig) => {
+  const handleSave = async (values: any) => {
     if (!tauriAvailable) {
       messageApi.warning('请在桌面应用中保存配置');
       return;
     }
     setLoading(true);
     try {
-      await invoke('save_config', { config: values });
-      messageApi.success('配置保存成功');
+      const configToSave = {
+        ...values,
+        terminal_bg_color: typeof values.terminal_bg_color === 'string' ? values.terminal_bg_color : values.terminal_bg_color?.toHexString(),
+        terminal_fg_color: typeof values.terminal_fg_color === 'string' ? values.terminal_fg_color : values.terminal_fg_color?.toHexString(),
+      };
+      await invoke('save_config', { config: configToSave });
+      setAppConfig(configToSave);
+      messageApi.success('配置已保存');
     } catch (error) {
       messageApi.error(`保存配置失败: ${error}`);
     } finally {
@@ -438,6 +454,19 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       messageApi.success('Hooks 已卸载');
     } catch (error) {
       messageApi.error(`卸载推送服务失败: ${error}`);
+    }
+  };
+
+  const handleToggleAgentTeams = async (project: Project) => {
+    if (!tauriAvailable) return;
+    try {
+      const nextValue = await invoke<boolean>('toggle_agent_teams', { projectPath: project.path });
+      setProjects(projects.map(p =>
+        p.id === project.id ? { ...p, agent_teams_enabled: nextValue } : p
+      ));
+      messageApi.success(`项目 ${project.name} 的 Agent Teams 已${nextValue ? '开启' : '关闭'}`);
+    } catch (error) {
+      messageApi.error(`操作失败: ${error}`);
     }
   };
 
@@ -563,11 +592,34 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           {
                             title: '推送服务',
                             key: 'hooks',
-                            width: 100,
+                            width: 140,
                             render: (_: any, record: Project) => (
-                              <Tag className={`hooks-tag ${record.hooks_installed ? 'installed' : ''}`}>
-                                {record.hooks_installed ? '已安装' : '未安装'}
-                              </Tag>
+                              <Space size={4}>
+                                <Tag className={`hooks-tag ${record.hooks_installed ? 'installed' : ''}`} style={{ margin: 0 }}>
+                                  {record.hooks_installed ? '已安装' : '未安装'}
+                                </Tag>
+                                {record.hooks_installed && (
+                                  <Tooltip title="重新安装">
+                                    <Button
+                                      type="text"
+                                      size="small"
+                                      icon={<ReloadOutlined style={{ fontSize: 13 }} />}
+                                      onClick={() => handleInstallHooks(record)}
+                                      style={{ padding: '0 4px', height: 22, color: 'var(--text-secondary)' }}
+                                    />
+                                  </Tooltip>
+                                )}
+                              </Space>
+                            ),
+                          },
+                          {
+                            title: 'Claude 配置',
+                            key: 'claude_config',
+                            width: 140,
+                            render: (_: any, record: Project) => (
+                              <Button size="small" onClick={() => handleToggleAgentTeams(record)}>
+                                {record.agent_teams_enabled ? '关闭 Teams' : '开启 Teams'}
+                              </Button>
                             ),
                           },
                           {
@@ -579,13 +631,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 <Button size="small" type="primary" onClick={() => handleEnterProject(record)}>
                                   Go <RightOutlined style={{ fontSize: 10 }} />
                                 </Button>
-                                {!record.hooks_installed ? (
+                                {!record.hooks_installed && (
                                   <Button size="small" type="text" className="action-btn-text" onClick={() => handleInstallHooks(record)}>
                                     配置
-                                  </Button>
-                                ) : (
-                                  <Button size="small" type="text" className="action-btn-text" onClick={() => handleInstallHooks(record)}>
-                                    重新安装
                                   </Button>
                                 )}
                                 <Button size="small" className="action-btn-outline danger" icon={<DeleteOutlined />} onClick={() => handleDeleteProject(record.id)} />
@@ -652,7 +700,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 }}
                                 onClick={() => setTerminalFullscreen(!terminalFullscreen)}
                               />
-                              <TerminalComponent projectPath={selectedProject.path} onData={handleTerminalInput} mergeTop historyLines={terminalHistory} fullscreen={terminalFullscreen} />
+                              <div style={{ flex: 1, position: 'relative' }}>
+                                <TerminalComponent projectPath={selectedProject.path} onData={handleTerminalInput} mergeTop historyLines={terminalHistory} fullscreen={terminalFullscreen}
+                                  theme={{
+                                    background: appConfig?.terminal_bg_color,
+                                    foreground: appConfig?.terminal_fg_color,
+                                  }}
+                                />
+                              </div>
                             </div>
                           ),
                         },
@@ -931,8 +986,62 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                               </div>
                             </Checkbox.Group>
                           </Form.Item>
+
+
+                          <Form.Item
+                            label={
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '24px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <span style={{ fontSize: '15px', fontWeight: 500 }}>终端界面配置</span>
+                                </div>
+                                <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 'normal' }}>自定义底部终端面板的背景与文字颜色</span>
+                              </div>
+                            }
+                            style={{ margin: 0 }}
+                          >
+                            <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '8px' }}>
+                              <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '6px 12px', borderRadius: '8px', minWidth: '200px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    <span style={{ fontSize: '14px' }}>背景颜色</span>
+                                    <Tag color={watchedBgColor ? (typeof watchedBgColor === 'string' ? watchedBgColor : watchedBgColor.toHexString()) : '#1e1e1e'} style={{ margin: 0, padding: '0 8px', borderRadius: '4px' }}>
+                                      {watchedBgColor ? (typeof watchedBgColor === 'string' ? watchedBgColor : watchedBgColor.toHexString()) : '#1e1e1e'}
+                                    </Tag>
+                                  </div>
+                                  <Form.Item name="terminal_bg_color" style={{ margin: 0 }}>
+                                    <ColorPicker
+                                      format="hex"
+                                      disabledAlpha
+                                    >
+                                      <Button icon={<EditOutlined />} shape="circle" size="small" />
+                                    </ColorPicker>
+                                  </Form.Item>
+                                </div>
+                              </Card>
+                              <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '6px 12px', borderRadius: '8px', minWidth: '200px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    <span style={{ fontSize: '14px' }}>文字颜色</span>
+                                    <Tag color={watchedFgColor ? (typeof watchedFgColor === 'string' ? watchedFgColor : watchedFgColor.toHexString()) : '#e0e0e0'} style={{ margin: 0, padding: '0 8px', borderRadius: '4px', color: '#1e1e1e' }}>
+                                      {watchedFgColor ? (typeof watchedFgColor === 'string' ? watchedFgColor : watchedFgColor.toHexString()) : '#e0e0e0'}
+                                    </Tag>
+                                  </div>
+                                  <Form.Item name="terminal_fg_color" style={{ margin: 0, marginLeft: '12px' }}>
+                                    <ColorPicker
+                                      format="hex"
+                                      disabledAlpha
+                                    >
+                                      <Button icon={<EditOutlined />} shape="circle" size="small" />
+                                    </ColorPicker>
+                                  </Form.Item>
+                                </div>
+                              </Card>
+                            </div>
+                          </Form.Item>
+
                           <Divider style={{ margin: '24px 0 16px 0' }} />
-                          <div className="action-buttons" style={{ marginTop: 0 }}>
+                          <div className="action-buttons" style={{ marginTop: 0, display: 'flex', gap: '12px' }}>
+                            <Button type="primary" icon={<SaveOutlined />} onClick={() => form.submit()} loading={loading} size="large">保存通用设置</Button>
                             <Button type="default" onClick={async () => {
                               try {
                                 await invoke('save_window_size');
@@ -942,6 +1051,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                               }
                             }} size="large">保存当前窗口为默认大小</Button>
                           </div>
+
                         </Card>
 
                         <Card className="projects-card channel-card" variant="borderless" style={{ flex: 1, height: 'auto' }}>

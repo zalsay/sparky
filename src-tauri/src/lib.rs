@@ -37,6 +37,8 @@ pub struct AppConfig {
     pub open_id: Option<String>,
     pub hook_events_filter: Option<String>,
     pub anthropic_logo_img_key: Option<String>,
+    pub terminal_bg_color: Option<String>,
+    pub terminal_fg_color: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -52,6 +54,8 @@ impl Default for AppConfig {
             open_id: None,
             hook_events_filter: None,
             anthropic_logo_img_key: None,
+            terminal_bg_color: None,
+            terminal_fg_color: None,
         }
     }
 }
@@ -155,6 +159,7 @@ pub struct Project {
     pub name: String,
     pub path: String,
     pub hooks_installed: bool,
+    pub agent_teams_enabled: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -264,6 +269,8 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN hook_events_filter TEXT", []);
     let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN app_name TEXT", []);
     let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN anthropic_logo_img_key TEXT", []);
+    let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN terminal_bg_color TEXT", []);
+    let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN terminal_fg_color TEXT", []);
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS app_config_dingtalk (
@@ -419,6 +426,8 @@ fn load_config_from_table(conn: &Connection, table_name: &str) -> Result<Option<
             hook_events_filter: None,
             app_name: None,
             anthropic_logo_img_key: None,
+            terminal_bg_color: None,
+            terminal_fg_color: None,
         }))
     } else {
         Ok(None)
@@ -442,7 +451,7 @@ fn migrate_app_config_table(conn: &Connection) -> Result<(), String> {
 fn load_config_from_db(conn: &Connection) -> Result<Option<AppConfig>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name, anthropic_logo_img_key
+            "SELECT app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name, anthropic_logo_img_key, terminal_bg_color, terminal_fg_color
              FROM app_config_feishu WHERE id = 1",
         )
         .map_err(|e| e.to_string())?;
@@ -459,6 +468,8 @@ fn load_config_from_db(conn: &Connection) -> Result<Option<AppConfig>, String> {
             hook_events_filter: row.get(7).map_err(|e| e.to_string())?,
             app_name: row.get(8).map_err(|e| e.to_string())?,
             anthropic_logo_img_key: row.get(9).map_err(|e| e.to_string())?,
+            terminal_bg_color: row.get(10).map_err(|e| e.to_string())?,
+            terminal_fg_color: row.get(11).map_err(|e| e.to_string())?,
         }))
     } else {
         Ok(None)
@@ -471,8 +482,8 @@ fn upsert_config(conn: &Connection, config: &AppConfig) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .as_secs() as i64;
     conn.execute(
-        "INSERT INTO app_config_feishu (id, app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name, updated_at)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "INSERT INTO app_config_feishu (id, app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name, terminal_bg_color, terminal_fg_color, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
          ON CONFLICT(id) DO UPDATE SET
            app_id = excluded.app_id,
            app_secret = excluded.app_secret,
@@ -483,6 +494,8 @@ fn upsert_config(conn: &Connection, config: &AppConfig) -> Result<(), String> {
            project_path = excluded.project_path,
            open_id = COALESCE(excluded.open_id, app_config_feishu.open_id),
            hook_events_filter = excluded.hook_events_filter,
+           terminal_bg_color = excluded.terminal_bg_color,
+           terminal_fg_color = excluded.terminal_fg_color,
            updated_at = excluded.updated_at",
         params![
             config.app_id,
@@ -494,6 +507,8 @@ fn upsert_config(conn: &Connection, config: &AppConfig) -> Result<(), String> {
             config.open_id,
             config.hook_events_filter,
             config.app_name,
+            config.terminal_bg_color,
+            config.terminal_fg_color,
             now
         ],
     )
@@ -1108,6 +1123,20 @@ fn install_hooks(project_path: String) -> Result<(), String> {
     Ok(())
 }
 
+fn check_agent_teams_enabled_for_path(project_path: &str) -> Result<bool, String> {
+    let settings_path = std::path::Path::new(project_path)
+        .join(".claude")
+        .join("settings.local.json");
+    if !settings_path.exists() {
+        return Ok(false);
+    }
+    let content = fs::read_to_string(&settings_path)
+        .map_err(|e| format!("Failed to read settings: {}", e))?;
+    let config: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|_| "Failed to parse JSON".to_string())?;
+    Ok(config["features"]["agent_teams"].as_bool().unwrap_or(false))
+}
+
 #[tauri::command]
 fn uninstall_hooks(project_path: String) -> Result<(), String> {
     let settings_path = std::path::Path::new(&project_path)
@@ -1418,6 +1447,54 @@ fn get_hook_status(project_path: String) -> Result<HookStatus, String> {
 }
 
 #[tauri::command]
+fn get_agent_teams_status(project_path: String) -> Result<bool, String> {
+    let settings_path = std::path::Path::new(&project_path)
+        .join(".claude")
+        .join("settings.local.json");
+    if !settings_path.exists() {
+        return Ok(false);
+    }
+    let content = fs::read_to_string(&settings_path).unwrap_or_default();
+    let config: serde_json::Value = serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
+    Ok(config["features"]["agent_teams"].as_bool().unwrap_or(false))
+}
+
+#[tauri::command]
+fn toggle_agent_teams(project_path: String) -> Result<bool, String> {
+    let settings_path = std::path::Path::new(&project_path)
+        .join(".claude")
+        .join("settings.local.json");
+    
+    let mut config: serde_json::Value = if settings_path.exists() {
+        let content = fs::read_to_string(&settings_path).unwrap_or_else(|_| "{}".to_string());
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let current = config.get("features")
+        .and_then(|f| f.get("agent_teams"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let next_value = !current;
+
+    if config.get("features").is_none() || !config["features"].is_object() {
+        config["features"] = serde_json::json!({});
+    }
+    config["features"]["agent_teams"] = serde_json::json!(next_value);
+
+    let new_content = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    
+    if let Some(parent) = settings_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(&settings_path, new_content).map_err(|e| e.to_string())?;
+
+    Ok(next_value)
+}
+
+#[tauri::command]
 fn get_projects() -> Result<Vec<Project>, String> {
     let conn = open_db()?;
 
@@ -1432,6 +1509,7 @@ fn get_projects() -> Result<Vec<Project>, String> {
                 name: row.get(1)?,
                 path: row.get(2)?,
                 hooks_installed: row.get::<_, i64>(3)? != 0,
+                agent_teams_enabled: false,
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
             })
@@ -1441,6 +1519,10 @@ fn get_projects() -> Result<Vec<Project>, String> {
     let mut projects = Vec::new();
     for project in rows {
         let mut item = project.map_err(|e| e.to_string())?;
+        
+        // Agent teams dynamic evaluation for per-project setting
+        item.agent_teams_enabled = check_agent_teams_enabled_for_path(&item.path).unwrap_or(false);
+        
         if let Ok(actual) = check_hooks_installed_for_path(&item.path) {
             if actual != item.hooks_installed {
                 let now = std::time::SystemTime::now()
@@ -1478,12 +1560,14 @@ fn add_project(name: String, path: String) -> Result<Project, String> {
     .map_err(|e| e.to_string())?;
 
     let id = conn.last_insert_rowid();
+    let agent_teams_enabled = check_agent_teams_enabled_for_path(&path).unwrap_or(false);
 
     Ok(Project {
         id,
         name,
         path,
         hooks_installed,
+        agent_teams_enabled,
         created_at: now,
         updated_at: now,
     })
@@ -1695,6 +1779,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
+            get_agent_teams_status,
+            toggle_agent_teams,
             test_feishu_connection,
             send_feishu_message,
             upload_anthropic_logo,

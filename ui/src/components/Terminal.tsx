@@ -11,6 +11,10 @@ interface TerminalProps {
   mergeTop?: boolean;
   historyLines?: string[];
   fullscreen?: boolean;
+  theme?: {
+    background?: string;
+    foreground?: string;
+  };
 }
 
 interface TerminalCacheItem {
@@ -31,9 +35,16 @@ export function clearTerminalCache(projectPath: string) {
   }
 }
 
-function getOrCreateTerminal(projectPath: string) {
+function getOrCreateTerminal(projectPath: string, themeVals?: { background?: string; foreground?: string }) {
   const cached = terminalCache.get(projectPath);
   if (cached) {
+    if (themeVals) {
+      cached.term.options.theme = {
+        ...cached.term.options.theme,
+        background: themeVals.background || '#1e1e1e',
+        foreground: themeVals.foreground || '#e0e0e0',
+      };
+    }
     return cached;
   }
 
@@ -45,8 +56,8 @@ function getOrCreateTerminal(projectPath: string) {
     fontWeight: 'bold',
     fontWeightBold: '900',
     theme: {
-      background: '#1e1e1e',
-      foreground: '#e0e0e0',
+      background: themeVals?.background || '#1e1e1e',
+      foreground: themeVals?.foreground || '#e0e0e0',
       cursor: '#ffffff',
       cursorAccent: '#1e1e1e',
       selectionBackground: '#264f78',
@@ -81,7 +92,7 @@ function getOrCreateTerminal(projectPath: string) {
   return created;
 }
 
-export default function TerminalComponent({ projectPath, onData, mergeTop, historyLines, fullscreen }: TerminalProps) {
+export default function TerminalComponent({ projectPath, onData, mergeTop, historyLines, fullscreen, theme }: TerminalProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -123,7 +134,7 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
     const container = terminalRef.current;
     container.innerHTML = '';
 
-    const cached = getOrCreateTerminal(projectPath);
+    const cached = getOrCreateTerminal(projectPath, theme);
     if (cached.term.element) {
       container.appendChild(cached.term.element);
     } else {
@@ -184,6 +195,22 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
     };
   }, [projectPath]);
 
+  // 当 theme 改变时，动态更新终端颜色
+  useEffect(() => {
+    const cached = terminalCache.get(projectPath);
+    if (cached && theme) {
+      cached.term.options.theme = {
+        ...cached.term.options.theme,
+        background: theme.background || '#1e1e1e',
+        foreground: theme.foreground || '#e0e0e0',
+      };
+      // 同步更新容器背景色
+      if (terminalRef.current) {
+        terminalRef.current.style.backgroundColor = theme.background || '#1e1e1e';
+      }
+    }
+  }, [theme?.background, theme?.foreground, projectPath]);
+
   useEffect(() => {
     // 当 fullscreen 状态改变时，重新适应大小
     setTimeout(() => {
@@ -229,7 +256,7 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
         width: '100%',
         height: '100%',
         minHeight: '400px',
-        backgroundColor: '#1e1e1e',
+        backgroundColor: theme?.background || '#1e1e1e',
         padding: '12px',
         boxSizing: 'border-box',
         overflow: 'hidden',
