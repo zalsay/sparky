@@ -644,6 +644,20 @@ body {
   border: none !important;
 }
 
+.project-detail-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.project-detail-page .ant-card-body {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
 .project-detail-page .ant-tabs-content-holder {
   padding: 16px;
   margin-top: 0 !important;
@@ -653,19 +667,10 @@ body {
   position: relative;
   top: -2px;
   box-shadow: 0 8px 20px var(--shadow-color);
-}
-
-.project-detail-page .ant-tabs-content {
-  margin-top: 0 !important;
-}
-
-.project-detail-page .ant-tabs-tabpane {
-  padding-top: 0 !important;
-  margin-top: 0 !important;
-}
-
-.project-detail-page .ant-card-body {
-  padding: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .project-detail-page .card-header {
@@ -729,6 +734,48 @@ body {
 .project-detail-page .detail-form {
   border: none;
   padding: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.project-detail-page .detail-form .ant-table-wrapper {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.project-detail-page .detail-form .ant-spin-nested-loading,
+.project-detail-page .detail-form .ant-spin-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.project-detail-page .detail-form .ant-table {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.project-detail-page .detail-form .ant-table-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.project-detail-page .detail-form .ant-table-body {
+  flex: 1;
+  overflow-y: auto !important;
+}
+
+/* Ensure the pagination stays at the bottom */
+.project-detail-page .detail-form .ant-pagination {
+  margin-top: 16px !important;
+  margin-bottom: 0 !important;
 }
 
 /* Channel Tabs */
@@ -1522,4 +1569,163 @@ body {
 
 .xterm:hover .xterm-viewport::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
+}
+
+/* ==================== Hook Detail Modal ==================== */
+
+.hook-detail-modal .ant-modal-content {
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--card-bg);
+}
+
+.hook-detail-modal .ant-modal-header {
+  background: transparent;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border-light);
+  margin-bottom: 0;
+}
+
+.hook-detail-modal .ant-modal-title {
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.hook-detail-modal .ant-modal-body {
+  padding: 20px 24px;
+}
+
+.hook-detail-modal .ant-modal-footer {
+  margin-top: 0;
+  padding: 16px 24px;
+  background: rgba(0, 0, 0, 0.02);
+  border-top: 1px solid var(--border-light);
+}
+
+.dark-mode .hook-detail-modal .ant-modal-footer {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.hook-detail-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.hook-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px 24px;
+}
+
+.detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.detail-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.detail-value {
+  font-size: 14px;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+}
+
+.detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.section-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.summary-box {
+  background: rgba(0, 0, 0, 0.03);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: 12px 16px;
+  font-size: 14px;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.dark-mode .summary-box {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.code-box {
+  background: var(--code-bg);
+  border-radius: 8px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  border: 1px solid var(--border-light);
+}
+
+.code-box pre {
+  margin: 0;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.path-box {
+  background: rgba(0, 0, 0, 0.02);
+  border: 1px dashed var(--border-color);
+  border-radius: 8px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dark-mode .path-box {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* Force column truncation */
+.column-summary,
+.column-result {
+  max-width: 300px;
+}
+
+.column-summary {
+  max-width: 300px;
+}
+
+.column-result {
+  max-width: 120px;
+}
+
+.column-summary .ant-table-cell-content,
+.column-result .ant-table-cell-content {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap !important;
+}
+
+/* Ant Design 5 specific ellipsis fix if needed */
+.ant-table-cell.column-summary.ant-table-cell-ellipsis,
+.ant-table-cell.column-result.ant-table-cell-ellipsis {
+  white-space: nowrap !important;
 }

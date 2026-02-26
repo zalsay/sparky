@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons';
+import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography } from 'antd';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { usePty } from './hooks/usePty';
@@ -561,7 +561,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                             render: (path: string) => <span style={{ fontSize: 12, color: 'var(--text-secondary)', wordBreak: 'break-all' }}>{path}</span>
                           },
                           {
-                            title: 'Hooks',
+                            title: '推送服务',
                             key: 'hooks',
                             width: 100,
                             render: (_: any, record: Project) => (
@@ -579,9 +579,13 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 <Button size="small" type="primary" onClick={() => handleEnterProject(record)}>
                                   Go <RightOutlined style={{ fontSize: 10 }} />
                                 </Button>
-                                {!record.hooks_installed && (
+                                {!record.hooks_installed ? (
                                   <Button size="small" type="text" className="action-btn-text" onClick={() => handleInstallHooks(record)}>
                                     配置
+                                  </Button>
+                                ) : (
+                                  <Button size="small" type="text" className="action-btn-text" onClick={() => handleInstallHooks(record)}>
+                                    重新安装
                                   </Button>
                                 )}
                                 <Button size="small" className="action-btn-outline danger" icon={<DeleteOutlined />} onClick={() => handleDeleteProject(record.id)} />
@@ -666,7 +670,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 <span className="status-value" style={{ fontSize: '12px', wordBreak: 'break-all' }}>{selectedProject.path}</span>
                               </div>
                               <div className="status-row">
-                                <span className="status-label">Hooks 状态</span>
+                                <span className="status-label">推送服务状态</span>
                                 <Tag color={selectedProject.hooks_installed ? 'black' : 'default'}>
                                   {selectedProject.hooks_installed ? '已安装' : '未安装'}
                                 </Tag>
@@ -697,6 +701,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 dataSource={hookRecords}
                                 rowKey="id"
                                 loading={hookRecordsLoading}
+                                tableLayout="fixed"
+                                scroll={{ x: 1000, y: '100%' }}
+                                style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', height: 0 }}
                                 rowSelection={{
                                   selectedRowKeys: hookRecordSelection,
                                   onChange: (keys) => setHookRecordSelection(keys as number[]),
@@ -710,8 +717,30 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 }}
                                 columns={[
                                   { title: '事件', dataIndex: 'event_name', key: 'event_name', width: 140 },
-                                  { title: '摘要', dataIndex: 'notification_text', key: 'notification_text' },
-                                  { title: '结果', dataIndex: 'result', key: 'result', width: 180 },
+                                  {
+                                    title: '摘要',
+                                    dataIndex: 'notification_text',
+                                    key: 'notification_text',
+                                    width: 300,
+                                    render: (text: string) => (
+                                      <div style={{ maxWidth: 268, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={text}>
+                                        {text || '-'}
+                                      </div>
+                                    ),
+                                    className: 'column-summary'
+                                  },
+                                  {
+                                    title: '结果',
+                                    dataIndex: 'result',
+                                    key: 'result',
+                                    width: 120,
+                                    render: (text: string) => (
+                                      <div style={{ maxWidth: 88, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={text}>
+                                        {text || '-'}
+                                      </div>
+                                    ),
+                                    className: 'column-result'
+                                  },
                                   {
                                     title: '时间',
                                     dataIndex: 'created_at',
@@ -748,46 +777,107 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 ]}
                               />
                               <Modal
-                                title="Hooks 记录详情"
+                                title={(
+                                  <Space>
+                                    <InfoCircleOutlined style={{ color: 'var(--ant-color-primary)' }} />
+                                    <span>Hooks 记录详情</span>
+                                  </Space>
+                                )}
                                 open={hookDetailOpen}
                                 onCancel={() => setHookDetailOpen(false)}
-                                footer={null}
+                                footer={
+                                  <Button onClick={() => setHookDetailOpen(false)}>关闭</Button>
+                                }
                                 destroyOnClose
+                                width={800}
+                                className="hook-detail-modal"
                               >
                                 {hookDetailRecord && (
-                                  <div>
-                                    <div className="status-row">
-                                      <span className="status-label">事件</span>
-                                      <span className="status-value">{hookDetailRecord.event_name}</span>
+                                  <div className="hook-detail-content">
+                                    <div className="hook-detail-grid">
+                                      <div className="detail-item">
+                                        <span className="detail-label">事件</span>
+                                        <span className="detail-value">
+                                          <Tag color="geekblue" style={{ margin: 0 }}>{hookDetailRecord.event_name}</Tag>
+                                        </span>
+                                      </div>
+                                      <div className="detail-item">
+                                        <span className="detail-label">时间</span>
+                                        <span className="detail-value">{formatHookTime(hookDetailRecord.created_at)}</span>
+                                      </div>
+                                      <div className="detail-item">
+                                        <span className="detail-label">结果</span>
+                                        <span className="detail-value">
+                                          <Tag style={{ margin: 0 }} color={hookDetailRecord.result === 'Success' || hookDetailRecord.result === 'OK' || hookDetailRecord.result === 'success' ? 'success' : (hookDetailRecord.result ? 'error' : 'default')}>
+                                            {hookDetailRecord.result || '未知'}
+                                          </Tag>
+                                        </span>
+                                      </div>
+                                      <div className="detail-item">
+                                        <span className="detail-label">会话 ID</span>
+                                        <span className="detail-value">
+                                          <Typography.Text copyable={{ text: hookDetailRecord.session_id }} style={{ fontFamily: 'monospace', color: 'inherit' }}>
+                                            {hookDetailRecord.session_id}
+                                          </Typography.Text>
+                                        </span>
+                                      </div>
                                     </div>
-                                    <div className="status-row">
-                                      <span className="status-label">会话</span>
-                                      <span className="status-value">{hookDetailRecord.session_id}</span>
+
+                                    <Divider style={{ margin: '16px 0' }} />
+
+                                    <div className="detail-section">
+                                      <div className="section-header">
+                                        <h4 className="section-title">摘要</h4>
+                                      </div>
+                                      <div className="summary-box">
+                                        {hookDetailRecord.notification_text || <span style={{ color: 'var(--text-tertiary)' }}>无摘要信息</span>}
+                                      </div>
                                     </div>
-                                    <div className="status-row">
-                                      <span className="status-label">时间</span>
-                                      <span className="status-value">{formatHookTime(hookDetailRecord.created_at)}</span>
+
+                                    <div className="detail-section">
+                                      <div className="section-header">
+                                        <h4 className="section-title">详细内容</h4>
+                                        <Button
+                                          size="small"
+                                          type="text"
+                                          icon={<CopyOutlined />}
+                                          onClick={() => {
+                                            navigator.clipboard.writeText(hookDetailRecord.content);
+                                            messageApi.success('已复制到剪贴板');
+                                          }}
+                                        >
+                                          复制
+                                        </Button>
+                                      </div>
+                                      <div className="code-box">
+                                        <pre>{hookDetailRecord.content}</pre>
+                                      </div>
                                     </div>
-                                    <div className="status-row">
-                                      <span className="status-label">结果</span>
-                                      <span className="status-value">{hookDetailRecord.result}</span>
-                                    </div>
-                                    <Divider />
-                                    <div className="status-row">
-                                      <span className="status-label">摘要</span>
-                                      <span className="status-value">{hookDetailRecord.notification_text}</span>
-                                    </div>
-                                    <div className="status-row">
-                                      <span className="status-label">内容</span>
-                                      <span className="status-value" style={{ whiteSpace: 'pre-wrap' }}>
-                                        {hookDetailRecord.content}
-                                      </span>
-                                    </div>
-                                    <div className="status-row">
-                                      <span className="status-label">Transcript</span>
-                                      <span className="status-value" style={{ fontSize: '12px', wordBreak: 'break-all' }}>
-                                        {hookDetailRecord.transcript_path}
-                                      </span>
+
+                                    <div className="detail-section">
+                                      <div className="section-header">
+                                        <h4 className="section-title">Transcript 路径</h4>
+                                        <Button
+                                          size="small"
+                                          type="text"
+                                          icon={<FolderOutlined />}
+                                          onClick={async () => {
+                                            try {
+                                              const dirPath = hookDetailRecord.transcript_path.substring(0, hookDetailRecord.transcript_path.lastIndexOf('/'));
+                                              await invoke('open_folder', { path: dirPath });
+                                            } catch (error) {
+                                              messageApi.error(`无法打开文件夹: ${error}`);
+                                            }
+                                          }}
+                                        >
+                                          打开目录
+                                        </Button>
+                                      </div>
+                                      <div className="path-box">
+                                        <Typography.Text copyable={{ text: hookDetailRecord.transcript_path }} style={{ color: 'inherit', wordBreak: 'break-all', fontSize: '13px' }}>
+                                          {hookDetailRecord.transcript_path}
+                                        </Typography.Text>
+                                      </div>
                                     </div>
                                   </div>
                                 )}
