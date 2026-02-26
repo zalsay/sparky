@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # 可改为你的版本号
-TAG="v1.0.0"
-TITLE="v1.0.0"
-NOTES="Sparky release v1.0.0"
+TAG="1.1.0"
+TITLE="1.1.0"
+NOTES="Sparky release 1.1.0"
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RELEASE_DIR="$PROJECT_DIR/release"
