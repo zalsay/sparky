@@ -9,7 +9,7 @@ use rand::Rng;
 fn open_db() -> Result<Connection, String> {
     let home = dirs::home_dir().ok_or("Failed to get home dir".to_string())?;
     // CLI 和 GUI 使用相同的数据库路径
-    let db_path = home.join("sparky-server/hooks.db");
+    let db_path = home.join("sparky/hooks.db");
     tracing::info!("[feishu] open_db path: {:?}", db_path);
     if let Some(parent) = db_path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -36,7 +36,7 @@ pub fn save_open_id_to_db(open_id: &str) -> Result<(), String> {
 /// 创建一个新的权限请求（Pending 状态），返回 4 位随机配对码
 pub fn create_permission_request(project_path: &str) -> Result<String, String> {
     let conn = open_db()?;
-    let db_path = dirs::home_dir().unwrap().join("sparky-server/hooks.db");
+    let db_path = dirs::home_dir().unwrap().join("sparky/hooks.db");
     
     // 生成 2 位随机码，并确保不与当前 pending 的冲突
     let mut code_str = String::new();
@@ -107,7 +107,7 @@ pub fn get_project_index(project_path: &str) -> Option<usize> {
 /// 验证并执行命令（通过 code 匹配 pending 请求）
 pub fn verify_and_execute_command(code: &str, choice: &str, message_id: &str) -> Result<(), String> {
     let mut conn = open_db()?;
-    let db_path = dirs::home_dir().unwrap().join("sparky-server/hooks.db");
+    let db_path = dirs::home_dir().unwrap().join("sparky/hooks.db");
 
     // 防止重复处理相同的权限决策消息
     if !message_id.is_empty() {

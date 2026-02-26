@@ -303,7 +303,7 @@ pub async fn pty_spawn(
 fn get_pty_log_path(project_path: &str) -> std::path::PathBuf {
     let home = dirs::home_dir().expect("Failed to get home dir");
     let safe_name = project_path.replace("/", "_").replace(":", "_");
-    home.join("sparky-server/pty_logs").join(format!("{}.log", safe_name))
+    home.join("sparky/pty_logs").join(format!("{}.log", safe_name))
 }
 
 #[tauri::command]

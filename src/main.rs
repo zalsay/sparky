@@ -41,9 +41,9 @@ async fn main() -> Result<()> {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
 
-    // File appender: ~/sparky-server/sparky-server.YYYY-MM-DD.log
+    // File appender: ~/sparky/sparky-server.YYYY-MM-DD.log
     let home = dirs::home_dir().expect("Failed to get HOME");
-    let log_dir = home.join("sparky-server");
+    let log_dir = home.join("sparky");
     let file_appender = tracing_appender::rolling::Builder::new()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
         .filename_prefix("sparky-server")
@@ -594,10 +594,10 @@ async fn run_hook(config: &config::Config) -> Result<()> {
 }
 
 fn get_db_path() -> std::path::PathBuf {
-    // Log directory: ~/sparky-server
+    // Log directory: ~/sparky
     let base_dir = dirs::home_dir()
         .expect("Failed to get home directory")
-        .join("sparky-server");
+        .join("sparky");
     std::fs::create_dir_all(&base_dir).expect("Failed to create base directory");
     base_dir.join("hooks.db")
 }
@@ -827,11 +827,11 @@ async fn run_connect(config: &config::Config) -> Result<()> {
 fn get_hook_log_path() -> std::path::PathBuf {
     dirs::home_dir()
         .expect("Failed to get home directory")
-        .join("sparky-server")
+        .join("sparky")
         .join("hook.log")
 }
 
-/// Hook 进程调用：追加一行日志到 ~/sparky-server/hook.log
+/// Hook 进程调用：追加一行日志到 ~/sparky/hook.log
 fn append_hook_log(message: &str) {
     let log_path = get_hook_log_path();
     if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -844,7 +844,7 @@ fn append_hook_log(message: &str) {
     }
 }
 
-/// Connect 进程调用：监视 ~/sparky-server/hook.log，打印新增内容
+/// Connect 进程调用：监视 ~/sparky/hook.log，打印新增内容
 async fn tail_hook_log() -> Result<()> {
     let log_path = get_hook_log_path();
     tracing::info!("Watching hook log: {:?}", log_path);
@@ -891,7 +891,7 @@ async fn tail_hook_log() -> Result<()> {
 fn get_pty_log_path(project_path: &str) -> PathBuf {
     let home = dirs::home_dir().expect("Failed to get home dir");
     let safe_name = project_path.replace("/", "_").replace(":", "_");
-    home.join("sparky-server/pty_logs").join(format!("{}.log", safe_name))
+    home.join("sparky/pty_logs").join(format!("{}.log", safe_name))
 }
 
 fn read_terminal_prompt(project_path: &str) -> Option<String> {
