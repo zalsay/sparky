@@ -57,7 +57,16 @@ pub fn read_hook_input() -> Result<HookInput, anyhow::Error> {
         input.push_str(&line);
     }
 
-    let preview = if input.len() > 500 { &input[..500] } else { &input };
+    let preview = if input.len() > 500 {
+        // Find the nearest valid char boundary at or before byte 500
+        let mut end = 500;
+        while end > 0 && !input.is_char_boundary(end) {
+            end -= 1;
+        }
+        &input[..end]
+    } else {
+        &input
+    };
     tracing::info!(
         "[hook:stdin] read {} bytes, preview: {}",
         input.len(),
