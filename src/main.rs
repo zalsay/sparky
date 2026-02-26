@@ -471,8 +471,9 @@ async fn run_hook(config: &config::Config) -> Result<()> {
     );
 
     let (receive_id, receive_id_type) = env_chat_id
-        .or(env_cm_chat_id)
-        .or(config_chat_id)
+        .filter(|id| !id.is_empty())
+        .or(env_cm_chat_id.filter(|id| !id.is_empty()))
+        .or(config_chat_id.filter(|id| !id.is_empty()))
         .map(|id| (id, "chat_id"))
         .unwrap_or_else(|| {
             config_open_id
