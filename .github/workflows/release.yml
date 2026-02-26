@@ -13,8 +13,6 @@ jobs:
         include:
           - os: macos-14
             label: mac-arm64
-          - os: macos-13
-            label: mac-x64
           - os: windows-latest
             label: windows-x64
     runs-on: ${{ matrix.os }}

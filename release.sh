@@ -1,13 +1,34 @@
 #!/bin/bash
 set -euo pipefail
 
-# 可改为你的版本号
-TAG="1.1.0"
-TITLE="1.1.0"
-NOTES="Sparky release 1.1.0"
+# 版本号/Tag 优先级：
+# 1) 命令行第一个参数
+# 2) 环境变量 TAG
+# 3) Cargo.toml 中的 version（前面加 v）
 
+# 项目根目录
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RELEASE_DIR="$PROJECT_DIR/release"
+
+# 解析版本/Tag
+INPUT_TAG="${1:-}"  # 可选：第一个参数
+if [ -n "$INPUT_TAG" ]; then
+  TAG="$INPUT_TAG"
+elif [ -n "${TAG:-}" ]; then
+  # 已在环境变量中设置 TAG
+  TAG="$TAG"
+else
+  # 从 Cargo.toml 读取版本并生成 tag
+  CARGO_VERSION=$(grep '^version' "$PROJECT_DIR/Cargo.toml" | head -n 1 | cut -d '"' -f 2)
+  if [ -z "$CARGO_VERSION" ]; then
+    echo "❌ 无法从 Cargo.toml 读取版本号"
+    exit 1
+  fi
+  TAG="v$CARGO_VERSION"
+fi
+
+TITLE="$TAG"
+NOTES="Sparky release $TAG"
 
 cd "$PROJECT_DIR"
 
