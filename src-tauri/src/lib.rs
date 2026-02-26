@@ -489,7 +489,7 @@ fn upsert_config(conn: &Connection, config: &AppConfig) -> Result<(), String> {
            app_secret = excluded.app_secret,
            encrypt_key = excluded.encrypt_key,
            verification_token = excluded.verification_token,
-           chat_id = excluded.chat_id,
+           chat_id = COALESCE(excluded.chat_id, app_config_feishu.chat_id),
            app_name = excluded.app_name,
            project_path = excluded.project_path,
            open_id = COALESCE(excluded.open_id, app_config_feishu.open_id),

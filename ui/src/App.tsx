@@ -196,6 +196,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const handleEnterProject = (project: Project) => {
+    // 检查推送接收者 ID 是否已配置
+    const hasChatId = appConfig?.chat_id && appConfig.chat_id.trim() !== '';
+    const hasOpenId = appConfig?.open_id && appConfig.open_id.trim() !== '';
+    if (!hasChatId && !hasOpenId) {
+      messageApi.warning('缺少 chat_id 或 open_id，飞书消息推送将无法送达。请前往设置配置通知渠道。');
+    }
     setSelectedProject(project);
     setActiveMenu('project-detail');
     if (tauriAvailable) {
