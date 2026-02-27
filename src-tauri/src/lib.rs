@@ -39,6 +39,7 @@ pub struct AppConfig {
     pub anthropic_logo_img_key: Option<String>,
     pub terminal_bg_color: Option<String>,
     pub terminal_fg_color: Option<String>,
+    pub terminal_font_size: Option<i64>,
 }
 
 impl Default for AppConfig {
@@ -56,6 +57,7 @@ impl Default for AppConfig {
             anthropic_logo_img_key: None,
             terminal_bg_color: None,
             terminal_fg_color: None,
+            terminal_font_size: None,
         }
     }
 }
@@ -271,6 +273,7 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN anthropic_logo_img_key TEXT", []);
     let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN terminal_bg_color TEXT", []);
     let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN terminal_fg_color TEXT", []);
+    let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN terminal_font_size INTEGER", []);
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS app_config_dingtalk (
@@ -428,6 +431,7 @@ fn load_config_from_table(conn: &Connection, table_name: &str) -> Result<Option<
             anthropic_logo_img_key: None,
             terminal_bg_color: None,
             terminal_fg_color: None,
+            terminal_font_size: None,
         }))
     } else {
         Ok(None)
@@ -451,25 +455,26 @@ fn migrate_app_config_table(conn: &Connection) -> Result<(), String> {
 fn load_config_from_db(conn: &Connection) -> Result<Option<AppConfig>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name, anthropic_logo_img_key, terminal_bg_color, terminal_fg_color
+            "SELECT app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name, anthropic_logo_img_key, terminal_bg_color, terminal_fg_color, terminal_font_size
              FROM app_config_feishu WHERE id = 1",
         )
         .map_err(|e| e.to_string())?;
     let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
     if let Some(row) = rows.next().map_err(|e| e.to_string())? {
         Ok(Some(AppConfig {
-            app_id: row.get(0).map_err(|e| e.to_string())?,
-            app_secret: row.get(1).map_err(|e| e.to_string())?,
-            encrypt_key: row.get(2).map_err(|e| e.to_string())?,
-            verification_token: row.get(3).map_err(|e| e.to_string())?,
-            chat_id: row.get(4).map_err(|e| e.to_string())?,
-            project_path: row.get(5).map_err(|e| e.to_string())?,
-            open_id: row.get(6).map_err(|e| e.to_string())?,
-            hook_events_filter: row.get(7).map_err(|e| e.to_string())?,
-            app_name: row.get(8).map_err(|e| e.to_string())?,
-            anthropic_logo_img_key: row.get(9).map_err(|e| e.to_string())?,
-            terminal_bg_color: row.get(10).map_err(|e| e.to_string())?,
-            terminal_fg_color: row.get(11).map_err(|e| e.to_string())?,
+            app_id: row.get(0).unwrap_or_default(),
+            app_secret: row.get(1).unwrap_or_default(),
+            encrypt_key: row.get(2).ok(),
+            verification_token: row.get(3).ok(),
+            chat_id: row.get(4).ok(),
+            project_path: row.get(5).ok(),
+            open_id: row.get(6).ok(),
+            hook_events_filter: row.get(7).ok(),
+            app_name: row.get(8).ok(),
+            anthropic_logo_img_key: row.get(9).ok(),
+            terminal_bg_color: row.get(10).ok(),
+            terminal_fg_color: row.get(11).ok(),
+            terminal_font_size: row.get(12).ok(),
         }))
     } else {
         Ok(None)
@@ -482,8 +487,8 @@ fn upsert_config(conn: &Connection, config: &AppConfig) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .as_secs() as i64;
     conn.execute(
-        "INSERT INTO app_config_feishu (id, app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name, terminal_bg_color, terminal_fg_color, updated_at)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        "INSERT INTO app_config_feishu (id, app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name, terminal_bg_color, terminal_fg_color, terminal_font_size, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
          ON CONFLICT(id) DO UPDATE SET
            app_id = excluded.app_id,
            app_secret = excluded.app_secret,
@@ -496,6 +501,7 @@ fn upsert_config(conn: &Connection, config: &AppConfig) -> Result<(), String> {
            hook_events_filter = excluded.hook_events_filter,
            terminal_bg_color = excluded.terminal_bg_color,
            terminal_fg_color = excluded.terminal_fg_color,
+           terminal_font_size = excluded.terminal_font_size,
            updated_at = excluded.updated_at",
         params![
             config.app_id,
@@ -509,6 +515,7 @@ fn upsert_config(conn: &Connection, config: &AppConfig) -> Result<(), String> {
             config.app_name,
             config.terminal_bg_color,
             config.terminal_fg_color,
+            config.terminal_font_size,
             now
         ],
     )
@@ -1124,17 +1131,21 @@ fn install_hooks(project_path: String) -> Result<(), String> {
 }
 
 fn check_agent_teams_enabled_for_path(project_path: &str) -> Result<bool, String> {
-    let settings_path = std::path::Path::new(project_path)
+    let agents_dir = std::path::Path::new(project_path)
         .join(".claude")
-        .join("settings.local.json");
-    if !settings_path.exists() {
+        .join("agents");
+    if !agents_dir.exists() {
         return Ok(false);
     }
-    let content = fs::read_to_string(&settings_path)
-        .map_err(|e| format!("Failed to read settings: {}", e))?;
-    let config: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|_| "Failed to parse JSON".to_string())?;
-    Ok(config["features"]["agent_teams"].as_bool().unwrap_or(false))
+    let expected_files = vec![
+        "architect.md",
+        "implementer.md",
+        "code-reviewer.md",
+        "debugger.md",
+        "test-writer.md",
+        "refactorer.md",
+    ];
+    Ok(expected_files.iter().all(|f| agents_dir.join(f).exists()))
 }
 
 #[tauri::command]
@@ -1448,15 +1459,7 @@ fn get_hook_status(project_path: String) -> Result<HookStatus, String> {
 
 #[tauri::command]
 fn get_agent_teams_status(project_path: String) -> Result<bool, String> {
-    let settings_path = std::path::Path::new(&project_path)
-        .join(".claude")
-        .join("settings.local.json");
-    if !settings_path.exists() {
-        return Ok(false);
-    }
-    let content = fs::read_to_string(&settings_path).unwrap_or_default();
-    let config: serde_json::Value = serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
-    Ok(config["features"]["agent_teams"].as_bool().unwrap_or(false))
+    check_agent_teams_enabled_for_path(&project_path)
 }
 
 #[tauri::command]

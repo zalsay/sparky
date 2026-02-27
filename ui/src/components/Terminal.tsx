@@ -14,6 +14,7 @@ interface TerminalProps {
   theme?: {
     background?: string;
     foreground?: string;
+    fontSize?: number;
   };
 }
 
@@ -35,7 +36,7 @@ export function clearTerminalCache(projectPath: string) {
   }
 }
 
-function getOrCreateTerminal(projectPath: string, themeVals?: { background?: string; foreground?: string }) {
+function getOrCreateTerminal(projectPath: string, themeVals?: { background?: string; foreground?: string; fontSize?: number }) {
   const cached = terminalCache.get(projectPath);
   if (cached) {
     if (themeVals) {
@@ -44,6 +45,9 @@ function getOrCreateTerminal(projectPath: string, themeVals?: { background?: str
         background: themeVals.background || '#1e1e1e',
         foreground: themeVals.foreground || '#e0e0e0',
       };
+      if (themeVals.fontSize) {
+        cached.term.options.fontSize = themeVals.fontSize;
+      }
     }
     return cached;
   }
@@ -51,7 +55,7 @@ function getOrCreateTerminal(projectPath: string, themeVals?: { background?: str
   const term = new Terminal({
     cursorBlink: true,
     cursorStyle: 'bar',
-    fontSize: 13,
+    fontSize: themeVals?.fontSize || 13,
     fontFamily: 'Menlo, Monaco, "Courier New", monospace',
     fontWeight: 'bold',
     fontWeightBold: '900',
@@ -210,6 +214,22 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
       }
     }
   }, [theme?.background, theme?.foreground, projectPath]);
+
+  // 当 fontSize 改变时，动态更新终端字体大小
+  useEffect(() => {
+    const cached = terminalCache.get(projectPath);
+    if (cached && theme?.fontSize) {
+      cached.term.options.fontSize = theme.fontSize;
+      // 字体大小变化后需要重新 fit
+      setTimeout(() => {
+        try {
+          fitRef.current?.fit();
+        } catch (e) {
+          // ignore
+        }
+      }, 50);
+    }
+  }, [theme?.fontSize, projectPath]);
 
   useEffect(() => {
     // 当 fullscreen 状态改变时，重新适应大小

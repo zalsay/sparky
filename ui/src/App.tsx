@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker } from 'antd';
+import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider } from 'antd';
 import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -21,6 +21,7 @@ interface AppConfig {
   anthropic_logo_img_key?: string;
   terminal_bg_color?: string;
   terminal_fg_color?: string;
+  terminal_font_size?: number;
 }
 
 interface Project {
@@ -70,6 +71,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   // Watch color picker fields to dynamically display color tags
   const watchedBgColor = Form.useWatch('terminal_bg_color', form);
   const watchedFgColor = Form.useWatch('terminal_fg_color', form);
+  const watchedFontSize = Form.useWatch('terminal_font_size', form);
 
   const { startPty, write } = usePty();
   const tauriAvailable = isTauri();
@@ -196,12 +198,15 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const handleEnterProject = (project: Project) => {
-    // 检查推送接收者 ID 是否已配置
+    // 检查推送接收者 ID 是否已配置 (需要至少配置一个)
+    console.log("Checking IDs before enter project:", "chat_id:", appConfig?.chat_id, "open_id:", appConfig?.open_id, "Full config:", appConfig);
     const hasChatId = appConfig?.chat_id && appConfig.chat_id.trim() !== '';
     const hasOpenId = appConfig?.open_id && appConfig.open_id.trim() !== '';
+
     if (!hasChatId && !hasOpenId) {
       messageApi.warning('缺少 chat_id 或 open_id，飞书消息推送将无法送达。请前往设置配置通知渠道。');
     }
+
     setSelectedProject(project);
     setActiveMenu('project-detail');
     if (tauriAvailable) {
@@ -338,6 +343,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
         ...values,
         terminal_bg_color: typeof values.terminal_bg_color === 'string' ? values.terminal_bg_color : values.terminal_bg_color?.toHexString(),
         terminal_fg_color: typeof values.terminal_fg_color === 'string' ? values.terminal_fg_color : values.terminal_fg_color?.toHexString(),
+        terminal_font_size: values.terminal_font_size ?? 13,
       };
       await invoke('save_config', { config: configToSave });
       setAppConfig(configToSave);
@@ -665,6 +671,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                       />
                       <span className="header-divider" />
                       <span className="project-title-badge">{selectedProject.name}</span>
+                      <Button size="small" type="default" onClick={() => write('claude\n')} className="action-btn-outline" style={{ marginLeft: 8 }}>
+                        正常启动
+                      </Button>
+                      <Button size="small" type="default" onClick={() => write('claude --dangerously-skip-permissions\n')} className="action-btn-outline danger" style={{ marginLeft: 4 }}>
+                        放权启动
+                      </Button>
                       <span className={`ws-status-badge ${wsConnected ? 'connected' : 'disconnected'}`}>
                         <span className="ws-status-dot" />
                         {wsConnected ? '已连接' : '未连接'}
@@ -711,6 +723,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   theme={{
                                     background: appConfig?.terminal_bg_color,
                                     foreground: appConfig?.terminal_fg_color,
+                                    fontSize: appConfig?.terminal_font_size,
                                   }}
                                 />
                               </div>
@@ -1001,7 +1014,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                   <span style={{ fontSize: '15px', fontWeight: 500 }}>终端界面配置</span>
                                 </div>
-                                <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 'normal' }}>自定义底部终端面板的背景与文字颜色</span>
+                                <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 'normal' }}>自定义底部终端面板的背景、文字颜色与字体大小</span>
                               </div>
                             }
                             style={{ margin: 0 }}
@@ -1043,12 +1056,23 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   </Form.Item>
                                 </div>
                               </Card>
+                              <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '6px 12px', borderRadius: '8px', minWidth: '300px', maxWidth: '450px', flex: 1 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                  <span style={{ fontSize: '14px', whiteSpace: 'nowrap' }}>字体大小</span>
+                                  <Form.Item name="terminal_font_size" style={{ margin: 0, flex: 1 }}>
+                                    <Slider min={10} max={24} step={1} defaultValue={13} tooltip={{ formatter: (val) => `${val}px` }} style={{ margin: '14px 8px 10px 8px' }} />
+                                  </Form.Item>
+                                  <Tag style={{ margin: 0, padding: '0 8px', borderRadius: '4px', minWidth: '36px', textAlign: 'center' }}>
+                                    {watchedFontSize ?? 13}px
+                                  </Tag>
+                                </div>
+                              </Card>
                             </div>
                           </Form.Item>
 
                           <Divider style={{ margin: '24px 0 16px 0' }} />
                           <div className="action-buttons" style={{ marginTop: 0, display: 'flex', gap: '12px' }}>
-                            <Button type="primary" icon={<SaveOutlined />} onClick={() => form.submit()} loading={loading} size="large">保存通用设置</Button>
+                            <Button type="primary" icon={<SaveOutlined />} onClick={() => handleSave(form.getFieldsValue())} loading={loading} size="large">保存通用设置</Button>
                             <Button type="default" onClick={async () => {
                               try {
                                 await invoke('save_window_size');
