@@ -80,6 +80,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [wsConnected, setWsConnected] = useState(false);
   const [activeProjects, setActiveProjects] = useState<string[]>([]);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
+  const appConfigRef = useRef<AppConfig | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     const saved = localStorage.getItem('sparky-sidebar-collapsed');
     return saved === 'true';
@@ -199,9 +200,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
   const handleEnterProject = (project: Project) => {
     // 检查推送接收者 ID 是否已配置 (需要至少配置一个)
-    console.log("Checking IDs before enter project:", "chat_id:", appConfig?.chat_id, "open_id:", appConfig?.open_id, "Full config:", appConfig);
-    const hasChatId = appConfig?.chat_id && appConfig.chat_id.trim() !== '';
-    const hasOpenId = appConfig?.open_id && appConfig.open_id.trim() !== '';
+    const latestConfig = appConfigRef.current;
+    const hasChatId = !!(latestConfig?.chat_id && latestConfig.chat_id.trim() !== '');
+    const hasOpenId = !!(latestConfig?.open_id && latestConfig.open_id.trim() !== '');
 
     if (!hasChatId && !hasOpenId) {
       messageApi.warning('缺少 chat_id 或 open_id，飞书消息推送将无法送达。请前往设置配置通知渠道。');
@@ -242,6 +243,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       const config = await invoke<AppConfig>('get_config');
       form.setFieldsValue(config);
       setAppConfig(config);
+      appConfigRef.current = config;
     } catch (error) {
       messageApi.error(`加载配置失败: ${error}`);
     }
