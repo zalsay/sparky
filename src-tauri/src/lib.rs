@@ -1491,6 +1491,188 @@ fn toggle_agent_teams(project_path: String) -> Result<bool, String> {
     }
     fs::write(&settings_path, new_content).map_err(|e| e.to_string())?;
 
+    // Handle the creation / deletion of sub-agents files
+    let agents_dir = std::path::Path::new(&project_path)
+        .join(".claude")
+        .join("agents");
+
+    if next_value {
+        // Enable: create files
+        if let Err(e) = fs::create_dir_all(&agents_dir) {
+            log::error!("Failed to create agents directory {:?}: {}", agents_dir, e);
+        } else {
+            let agents = vec![
+                (
+                    "architect.md",
+                    r#"---
+name: architect
+description: Use for system design, feature planning, refactoring strategy, and task decomposition before implementation.
+model: sonnet
+maxTurns: 2
+---
+
+You are a senior software architect.
+
+Responsibilities:
+- Define system boundaries
+- Propose module structure
+- Define APIs and data flow
+- Identify technical risks
+- Break large tasks into actionable steps
+
+Rules:
+- Do NOT write production code.
+- Provide structured sections.
+- Keep output concise and implementation-ready."#,
+                ),
+                (
+                    "implementer.md",
+                    r#"---
+name: implementer
+description: Use when writing new code or implementing a planned module.
+model: sonnet
+maxTurns: 3
+tools: Read, Write, Edit, Glob, Grep
+---
+
+You are a senior software engineer.
+
+Responsibilities:
+- Implement approved design
+- Produce clean, maintainable, production-ready code
+- Include error handling
+- Follow best practices
+
+Rules:
+- Do not redesign architecture.
+- Avoid unnecessary explanations.
+- Output complete runnable units."#,
+                ),
+                (
+                    "code-reviewer.md",
+                    r#"---
+name: code-reviewer
+description: Use proactively after code changes to review quality, security, and maintainability.
+model: sonnet
+maxTurns: 2
+tools: Read, Glob, Grep
+disallowedTools: Write, Edit
+---
+
+You are a strict code reviewer.
+
+Review checklist:
+- Security vulnerabilities
+- Error handling completeness
+- Resource management
+- Concurrency risks
+- Code readability
+- Performance issues
+
+Output format:
+- Critical issues
+- Major improvements
+- Minor suggestions
+- Optional optimizations"#,
+                ),
+                (
+                    "debugger.md",
+                    r#"---
+name: debugger
+description: Use when errors occur, tests fail, or unexpected behavior is observed.
+model: haiku
+maxTurns: 3
+tools: Read, Grep, Glob, Bash
+---
+
+You are an expert debugger.
+
+Responsibilities:
+- Identify root cause
+- Reproduce issue logically
+- Suggest minimal fix
+- Avoid speculative redesign
+
+Output:
+- Root cause
+- Fix proposal
+- Risk assessment"#,
+                ),
+                (
+                    "test-writer.md",
+                    r#"---
+name: test-writer
+description: Use to create unit tests, integration tests, or edge-case coverage.
+model: sonnet
+maxTurns: 2
+tools: Read, Write, Edit
+---
+
+You are a test engineer.
+
+Responsibilities:
+- Write deterministic tests
+- Cover edge cases
+- Ensure meaningful assertions
+- Avoid redundant tests
+
+Prefer:
+- Isolated unit tests
+- Clear naming
+- Small fixtures"#,
+                ),
+                (
+                    "refactorer.md",
+                    r#"---
+name: refactorer
+description: Use when improving structure, readability, or performance without changing behavior.
+model: sonnet
+maxTurns: 2
+tools: Read, Write, Edit
+---
+
+You are a refactoring specialist.
+
+Responsibilities:
+- Improve structure
+- Reduce duplication
+- Simplify logic
+- Preserve behavior
+
+Rules:
+- Do not change functionality.
+- Provide diff-style changes when possible."#,
+                ),
+            ];
+
+            for (filename, content) in agents {
+                let file_path = agents_dir.join(filename);
+                if let Err(e) = fs::write(&file_path, content) {
+                    log::error!("Failed to write agent file {:?}: {}", file_path, e);
+                }
+            }
+        }
+    } else {
+        // Disable: delete files
+        let agent_files = vec![
+            "architect.md",
+            "implementer.md",
+            "code-reviewer.md",
+            "debugger.md",
+            "test-writer.md",
+            "refactorer.md",
+        ];
+
+        for filename in agent_files {
+            let file_path = agents_dir.join(filename);
+            if file_path.exists() {
+                if let Err(e) = fs::remove_file(&file_path) {
+                    log::error!("Failed to delete agent file {:?}: {}", file_path, e);
+                }
+            }
+        }
+    }
+
     Ok(next_value)
 }
 

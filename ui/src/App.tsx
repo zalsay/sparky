@@ -470,7 +470,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       setProjects(projects.map(p =>
         p.id === project.id ? { ...p, agent_teams_enabled: nextValue } : p
       ));
-      messageApi.success(`项目 ${project.name} 的 Agent Teams 已${nextValue ? '开启' : '关闭'}`);
+      messageApi.success(`项目 ${project.name} 的 Sub agents 已${nextValue ? '开启' : '关闭'}`);
     } catch (error) {
       messageApi.error(`操作失败: ${error}`);
     }
@@ -624,7 +624,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                             width: 140,
                             render: (_: any, record: Project) => (
                               <Button size="small" onClick={() => handleToggleAgentTeams(record)}>
-                                {record.agent_teams_enabled ? '关闭 Teams' : '开启 Teams'}
+                                {record.agent_teams_enabled ? '关闭 Sub agents' : '开启 Sub agents'}
                               </Button>
                             ),
                           },
