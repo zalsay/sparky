@@ -97,12 +97,13 @@ async fn run_hook(config: &config::Config) -> Result<()> {
     tracing::info!("[run_hook] starting hook processing");
     let hook_input = hooks::read_hook_input()?;
     tracing::info!(
-        "[run_hook] event={}, session={}, cwd={}, notification_len={}, final_response_len={}, tool={:?}",
+        "[run_hook] event={}, session={}, cwd={}, notification_len={}, final_response_len={}, last_assistant_msg_len={}, tool={:?}",
         hook_input.hook_event_name,
         hook_input.session_id,
         hook_input.cwd,
         hook_input.notification_text.as_ref().map(|s| s.len()).unwrap_or(0),
         hook_input.final_response.as_ref().map(|s| s.len()).unwrap_or(0),
+        hook_input.last_assistant_message.as_ref().map(|s| s.len()).unwrap_or(0),
         hook_input.tool_name
     );
     append_hook_log(&format!(
@@ -135,6 +136,7 @@ async fn run_hook(config: &config::Config) -> Result<()> {
 
     let notification_text = hook_input.notification_text.clone().unwrap_or_default();
     let final_response = hook_input.final_response.clone().unwrap_or_default();
+    let last_assistant_message = hook_input.last_assistant_message.clone().unwrap_or_default();
     let event_name = hook_input.hook_event_name.clone();
 
     // 对于 PermissionRequest，提取 tool 信息作为摘要
@@ -302,8 +304,19 @@ async fn run_hook(config: &config::Config) -> Result<()> {
         }
     }
 
-    // Stop hook - 显示 Claude 的输出内容
-    if !final_response.is_empty() {
+    // Stop hook - 优先使用 last_assistant_message（Claude Code 的 Stop hook 实际使用此字段）
+    let has_last_assistant_msg = event_name == "Stop" && !last_assistant_message.is_empty();
+    if has_last_assistant_msg {
+        content.push_str("\n\n**Claude 输出**\n");
+        let char_count = last_assistant_message.chars().count();
+        let truncated = if char_count > 3000 {
+            format!("{}...\n\n（省略 {} 字符）", last_assistant_message.chars().take(3000).collect::<String>(), char_count - 3000)
+        } else {
+            last_assistant_message
+        };
+        content.push_str(&truncated);
+    } else if !final_response.is_empty() {
+        // 兼容旧版本的 final_response 字段
         content.push_str("\n\n**Claude 输出**\n");
         // 安全截断 UTF-8 字符串
         let char_count = final_response.chars().count();
@@ -315,8 +328,8 @@ async fn run_hook(config: &config::Config) -> Result<()> {
         content.push_str(&truncated);
     }
 
-    // Stop hook - 从 transcript 中提取最新的 Claude 回复
-    if event_name == "Stop" && !hook_input.transcript_path.is_empty() {
+    // Stop hook - 从 transcript 中提取最新的 Claude 回复（仅当 last_assistant_message 为空时）
+    if event_name == "Stop" && !has_last_assistant_msg && !hook_input.transcript_path.is_empty() {
         match std::fs::read_to_string(&hook_input.transcript_path) {
             Ok(transcript) => {
                 // 提取最新的交流过程（只包含文本和工具调用，过滤掉执行详情）
@@ -515,7 +528,7 @@ async fn run_hook(config: &config::Config) -> Result<()> {
 
     // 限制消息长度，飞书单条消息最大 20000 字符
     const MAX_CONTENT_LEN: usize = 18000;
-    let mut send_content = content.clone();
+    let mut send_content = content.trim_start().to_string();
     if send_content.len() > MAX_CONTENT_LEN {
         send_content = format!("{}...\n\n（内容过长，已截断）", &send_content[..MAX_CONTENT_LEN]);
     }

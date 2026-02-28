@@ -18,6 +18,8 @@ pub struct HookInput {
     pub tool_name: Option<String>,
     #[serde(default, alias = "tools")]
     pub tool_input: Option<serde_json::Value>,
+    #[serde(default)]
+    pub last_assistant_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
