@@ -73,7 +73,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const watchedFgColor = Form.useWatch('terminal_fg_color', form);
   const watchedFontSize = Form.useWatch('terminal_font_size', form);
 
-  const { startPty, write } = usePty();
+  const { startPty, write, clearPty } = usePty();
   const tauriAvailable = isTauri();
   const inputBufferRef = useRef('');
   const [lastCommand, setLastCommand] = useState('');
@@ -213,6 +213,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     try {
       await invoke('pty_kill', { projectPath: selectedProject.path });
       clearTerminalCache(selectedProject.path); // Free resources and clear unexecuted input
+      clearPty();
       messageApi.success(`项目 ${selectedProject.name} 已关闭`);
       // Update UI optimistically
       setActiveProjects(activeProjects.filter(p => p !== selectedProject.path));

@@ -63,18 +63,18 @@ export function usePty(onData?: (data: string, projectPath: string) => void) {
       return null;
     }
 
-    // 如果当前项目相同且正在运行，直接设置监听器
-    if (currentProjectRef.current === projectPath && isRunning) {
-      console.log('Same project, setting up listener');
-      await setupListener(projectPath);
-      return ptyRef.current;
-    }
-
     try {
       console.log('Checking if PTY exists for project:', projectPath);
 
       const exists = await invoke<boolean>('pty_exists', { projectPath });
       console.log('PTY exists:', exists);
+
+      // 如果当前项目相同、并且前后端认为正在运行，直接设置监听器
+      if (currentProjectRef.current === projectPath && isRunning && exists) {
+        console.log('Same project, setting up listener');
+        await setupListener(projectPath);
+        return ptyRef.current;
+      }
 
       currentProjectRef.current = projectPath;
 
@@ -130,9 +130,17 @@ export function usePty(onData?: (data: string, projectPath: string) => void) {
     }
   }, []);
 
+  const clearPty = useCallback(() => {
+    setIsRunning(false);
+    ptyRef.current = null;
+    currentProjectRef.current = null;
+    cleanupListener();
+  }, [cleanupListener]);
+
   return {
     startPty,
     write,
     isRunning,
+    clearPty,
   };
 }
