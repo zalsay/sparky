@@ -667,6 +667,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                       <Button size="small" type="default" onClick={() => write('claude --dangerously-skip-permissions\n')} className="action-btn-outline danger" style={{ marginLeft: 4 }}>
                         放权启动
                       </Button>
+                      <Button size="small" type="default" onClick={() => write('claude --dangerously-skip-permissions --continue\n')} className="action-btn-outline danger" style={{ marginLeft: 4 }}>
+                        放权continue
+                      </Button>
                       <span className={`ws-status-badge ${wsConnected ? 'connected' : 'disconnected'}`}>
                         <span className="ws-status-dot" />
                         {wsConnected ? '已连接' : '未连接'}
@@ -689,264 +692,270 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                     )}
                     <Tabs
                       defaultActiveKey="claude"
+                      className="settings-tabs"
+                      style={{ flex: 1, display: 'flex', flexDirection: 'column' }}
                       items={[
                         {
                           key: 'claude',
                           label: 'Claude',
                           children: (
-                            <div className={`terminal-wrapper ${terminalFullscreen ? 'fullscreen' : ''}`}>
-                              <Button
-                                type="text"
-                                icon={terminalFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
-                                style={{
-                                  position: 'absolute',
-                                  right: 16,
-                                  top: 16,
-                                  zIndex: 100,
-                                  color: 'rgba(255, 255, 255, 0.65)',
-                                  background: 'rgba(0, 0, 0, 0.2)'
-                                }}
-                                onClick={() => setTerminalFullscreen(!terminalFullscreen)}
-                              />
-                              <div style={{ flex: 1, position: 'relative' }}>
-                                <TerminalComponent projectPath={selectedProject.path} onData={handleTerminalInput} mergeTop historyLines={terminalHistory} fullscreen={terminalFullscreen}
-                                  theme={{
-                                    background: appConfig?.terminal_bg_color,
-                                    foreground: appConfig?.terminal_fg_color,
-                                    fontSize: appConfig?.terminal_font_size,
+                            <Card className="projects-card channel-card" variant="borderless" style={{ flex: 1, height: 'auto', padding: 0 }}>
+                              <div className={`terminal-wrapper ${terminalFullscreen ? 'fullscreen' : ''}`}>
+                                <Button
+                                  type="text"
+                                  icon={terminalFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+                                  style={{
+                                    position: 'absolute',
+                                    right: 16,
+                                    top: 16,
+                                    zIndex: 100,
+                                    color: 'rgba(255, 255, 255, 0.65)',
+                                    background: 'rgba(0, 0, 0, 0.2)'
                                   }}
+                                  onClick={() => setTerminalFullscreen(!terminalFullscreen)}
                                 />
+                                <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                                  <TerminalComponent projectPath={selectedProject.path} onData={handleTerminalInput} mergeTop historyLines={terminalHistory} fullscreen={terminalFullscreen}
+                                    theme={{
+                                      background: appConfig?.terminal_bg_color,
+                                      foreground: appConfig?.terminal_fg_color,
+                                      fontSize: appConfig?.terminal_font_size,
+                                    }}
+                                  />
+                                </div>
                               </div>
-                            </div>
+                            </Card>
                           ),
                         },
                         {
                           key: 'detail',
                           label: '详情',
                           children: (
-                            <div className="detail-form">
-                              <div className="status-row">
-                                <span className="status-label">项目名称</span>
-                                <span className="status-value">{selectedProject.name}</span>
-                              </div>
-                              <div className="status-row">
-                                <span className="status-label">项目路径</span>
-                                <span className="status-value" style={{ fontSize: '12px', wordBreak: 'break-all' }}>{selectedProject.path}</span>
-                              </div>
-                              <div className="status-row">
-                                <span className="status-label">推送服务状态</span>
-                                <Tag color={selectedProject.hooks_installed ? 'black' : 'default'}>
-                                  {selectedProject.hooks_installed ? '已安装' : '未安装'}
-                                </Tag>
-                              </div>
-                              <Divider />
-                              <Space>
-                                <Button type="primary" icon={<FolderOutlined />} onClick={async () => {
-                                  try {
-                                    await invoke('open_folder', { path: selectedProject.path });
-                                  } catch (error) {
-                                    messageApi.error(`无法打开文件夹: ${error}`);
+                            <Card className="projects-card config-card" variant="borderless" style={{ flex: 1, height: 'auto' }}>
+                              <div className="detail-form">
+                                <div className="status-row">
+                                  <span className="status-label">项目名称</span>
+                                  <span className="status-value">{selectedProject.name}</span>
+                                </div>
+                                <div className="status-row">
+                                  <span className="status-label">项目路径</span>
+                                  <span className="status-value" style={{ fontSize: '12px', wordBreak: 'break-all' }}>{selectedProject.path}</span>
+                                </div>
+                                <div className="status-row">
+                                  <span className="status-label">推送服务状态</span>
+                                  <Tag color={selectedProject.hooks_installed ? 'black' : 'default'}>
+                                    {selectedProject.hooks_installed ? '已安装' : '未安装'}
+                                  </Tag>
+                                </div>
+                                <Divider />
+                                <Space>
+                                  <Button type="primary" icon={<FolderOutlined />} onClick={async () => {
+                                    try {
+                                      await invoke('open_folder', { path: selectedProject.path });
+                                    } catch (error) {
+                                      messageApi.error(`无法打开文件夹: ${error}`);
+                                    }
+                                  }}>
+                                    打开文件夹
+                                  </Button>
+                                  <Button icon={<SettingOutlined />} onClick={() => selectedProject.hooks_installed ? handleUninstallHooks(selectedProject) : handleInstallHooks(selectedProject)}>
+                                    {selectedProject.hooks_installed ? '卸载推送服务' : '安装推送服务'}
+                                  </Button>
+                                </Space>
+                                <Divider />
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                                  <h3 style={{ margin: 0 }}>Claude 记录</h3>
+                                  <Button danger disabled={hookRecordSelection.length === 0} onClick={handleDeleteHookRecords}>
+                                    批量删除
+                                  </Button>
+                                </div>
+                                <Table
+                                  dataSource={hookRecords}
+                                  rowKey="id"
+                                  loading={hookRecordsLoading}
+                                  tableLayout="fixed"
+                                  scroll={{ x: 1000, y: '100%' }}
+                                  style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', height: 0 }}
+                                  rowSelection={{
+                                    selectedRowKeys: hookRecordSelection,
+                                    onChange: (keys) => setHookRecordSelection(keys as number[]),
+                                  }}
+                                  pagination={{
+                                    current: hookRecordsPage,
+                                    total: hookRecordsTotal,
+                                    pageSize: 20,
+                                    showSizeChanger: false,
+                                    onChange: (page) => fetchHookRecords(page),
+                                  }}
+                                  columns={[
+                                    { title: '事件', dataIndex: 'event_name', key: 'event_name', width: 140 },
+                                    {
+                                      title: '摘要',
+                                      dataIndex: 'notification_text',
+                                      key: 'notification_text',
+                                      width: 300,
+                                      render: (text: string) => (
+                                        <div style={{ maxWidth: 268, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={text}>
+                                          {text || '-'}
+                                        </div>
+                                      ),
+                                      className: 'column-summary'
+                                    },
+                                    {
+                                      title: '结果',
+                                      dataIndex: 'result',
+                                      key: 'result',
+                                      width: 120,
+                                      render: (text: string) => (
+                                        <div style={{ maxWidth: 88, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={text}>
+                                          {text || '-'}
+                                        </div>
+                                      ),
+                                      className: 'column-result'
+                                    },
+                                    {
+                                      title: '时间',
+                                      dataIndex: 'created_at',
+                                      key: 'created_at',
+                                      width: 180,
+                                      render: (value: number) => formatHookTime(value),
+                                    },
+                                    {
+                                      title: '操作',
+                                      key: 'action',
+                                      width: 160,
+                                      render: (_: any, record: HookRecord) => (
+                                        <Space>
+                                          <Button
+                                            size="small"
+                                            className="action-btn"
+                                            onClick={() => {
+                                              setHookDetailRecord(record);
+                                              setHookDetailOpen(true);
+                                            }}
+                                          >
+                                            查看详情
+                                          </Button>
+                                          <Button
+                                            size="small"
+                                            className="action-btn danger"
+                                            onClick={() => handleDeleteHookRecord(record.id)}
+                                          >
+                                            删除
+                                          </Button>
+                                        </Space>
+                                      ),
+                                    },
+                                  ]}
+                                />
+                                <Modal
+                                  title={(
+                                    <Space>
+                                      <InfoCircleOutlined style={{ color: 'var(--ant-color-primary)' }} />
+                                      <span>Hooks 记录详情</span>
+                                    </Space>
+                                  )}
+                                  open={hookDetailOpen}
+                                  onCancel={() => setHookDetailOpen(false)}
+                                  footer={
+                                    <Button onClick={() => setHookDetailOpen(false)}>关闭</Button>
                                   }
-                                }}>
-                                  打开文件夹
-                                </Button>
-                                <Button icon={<SettingOutlined />} onClick={() => selectedProject.hooks_installed ? handleUninstallHooks(selectedProject) : handleInstallHooks(selectedProject)}>
-                                  {selectedProject.hooks_installed ? '卸载推送服务' : '安装推送服务'}
-                                </Button>
-                              </Space>
-                              <Divider />
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                                <h3 style={{ margin: 0 }}>Claude 记录</h3>
-                                <Button danger disabled={hookRecordSelection.length === 0} onClick={handleDeleteHookRecords}>
-                                  批量删除
-                                </Button>
-                              </div>
-                              <Table
-                                dataSource={hookRecords}
-                                rowKey="id"
-                                loading={hookRecordsLoading}
-                                tableLayout="fixed"
-                                scroll={{ x: 1000, y: '100%' }}
-                                style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', height: 0 }}
-                                rowSelection={{
-                                  selectedRowKeys: hookRecordSelection,
-                                  onChange: (keys) => setHookRecordSelection(keys as number[]),
-                                }}
-                                pagination={{
-                                  current: hookRecordsPage,
-                                  total: hookRecordsTotal,
-                                  pageSize: 20,
-                                  showSizeChanger: false,
-                                  onChange: (page) => fetchHookRecords(page),
-                                }}
-                                columns={[
-                                  { title: '事件', dataIndex: 'event_name', key: 'event_name', width: 140 },
-                                  {
-                                    title: '摘要',
-                                    dataIndex: 'notification_text',
-                                    key: 'notification_text',
-                                    width: 300,
-                                    render: (text: string) => (
-                                      <div style={{ maxWidth: 268, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={text}>
-                                        {text || '-'}
+                                  destroyOnClose
+                                  width={800}
+                                  className="hook-detail-modal"
+                                >
+                                  {hookDetailRecord && (
+                                    <div className="hook-detail-content">
+                                      <div className="hook-detail-grid">
+                                        <div className="detail-item">
+                                          <span className="detail-label">事件</span>
+                                          <span className="detail-value">
+                                            <Tag color="geekblue" style={{ margin: 0 }}>{hookDetailRecord.event_name}</Tag>
+                                          </span>
+                                        </div>
+                                        <div className="detail-item">
+                                          <span className="detail-label">时间</span>
+                                          <span className="detail-value">{formatHookTime(hookDetailRecord.created_at)}</span>
+                                        </div>
+                                        <div className="detail-item">
+                                          <span className="detail-label">结果</span>
+                                          <span className="detail-value">
+                                            <Tag style={{ margin: 0 }} color={hookDetailRecord.result === 'Success' || hookDetailRecord.result === 'OK' || hookDetailRecord.result === 'success' ? 'success' : (hookDetailRecord.result ? 'error' : 'default')}>
+                                              {hookDetailRecord.result || '未知'}
+                                            </Tag>
+                                          </span>
+                                        </div>
+                                        <div className="detail-item">
+                                          <span className="detail-label">会话 ID</span>
+                                          <span className="detail-value">
+                                            <Typography.Text copyable={{ text: hookDetailRecord.session_id }} style={{ fontFamily: 'monospace', color: 'inherit' }}>
+                                              {hookDetailRecord.session_id}
+                                            </Typography.Text>
+                                          </span>
+                                        </div>
                                       </div>
-                                    ),
-                                    className: 'column-summary'
-                                  },
-                                  {
-                                    title: '结果',
-                                    dataIndex: 'result',
-                                    key: 'result',
-                                    width: 120,
-                                    render: (text: string) => (
-                                      <div style={{ maxWidth: 88, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={text}>
-                                        {text || '-'}
+
+                                      <Divider style={{ margin: '16px 0' }} />
+
+                                      <div className="detail-section">
+                                        <div className="section-header">
+                                          <h4 className="section-title">摘要</h4>
+                                        </div>
+                                        <div className="summary-box">
+                                          {hookDetailRecord.notification_text || <span style={{ color: 'var(--text-tertiary)' }}>无摘要信息</span>}
+                                        </div>
                                       </div>
-                                    ),
-                                    className: 'column-result'
-                                  },
-                                  {
-                                    title: '时间',
-                                    dataIndex: 'created_at',
-                                    key: 'created_at',
-                                    width: 180,
-                                    render: (value: number) => formatHookTime(value),
-                                  },
-                                  {
-                                    title: '操作',
-                                    key: 'action',
-                                    width: 160,
-                                    render: (_: any, record: HookRecord) => (
-                                      <Space>
-                                        <Button
-                                          size="small"
-                                          className="action-btn"
-                                          onClick={() => {
-                                            setHookDetailRecord(record);
-                                            setHookDetailOpen(true);
-                                          }}
-                                        >
-                                          查看详情
-                                        </Button>
-                                        <Button
-                                          size="small"
-                                          className="action-btn danger"
-                                          onClick={() => handleDeleteHookRecord(record.id)}
-                                        >
-                                          删除
-                                        </Button>
-                                      </Space>
-                                    ),
-                                  },
-                                ]}
-                              />
-                              <Modal
-                                title={(
-                                  <Space>
-                                    <InfoCircleOutlined style={{ color: 'var(--ant-color-primary)' }} />
-                                    <span>Hooks 记录详情</span>
-                                  </Space>
-                                )}
-                                open={hookDetailOpen}
-                                onCancel={() => setHookDetailOpen(false)}
-                                footer={
-                                  <Button onClick={() => setHookDetailOpen(false)}>关闭</Button>
-                                }
-                                destroyOnClose
-                                width={800}
-                                className="hook-detail-modal"
-                              >
-                                {hookDetailRecord && (
-                                  <div className="hook-detail-content">
-                                    <div className="hook-detail-grid">
-                                      <div className="detail-item">
-                                        <span className="detail-label">事件</span>
-                                        <span className="detail-value">
-                                          <Tag color="geekblue" style={{ margin: 0 }}>{hookDetailRecord.event_name}</Tag>
-                                        </span>
+
+                                      <div className="detail-section">
+                                        <div className="section-header">
+                                          <h4 className="section-title">详细内容</h4>
+                                          <Button
+                                            size="small"
+                                            type="text"
+                                            icon={<CopyOutlined />}
+                                            onClick={() => {
+                                              navigator.clipboard.writeText(hookDetailRecord.content);
+                                              messageApi.success('已复制到剪贴板');
+                                            }}
+                                          >
+                                            复制
+                                          </Button>
+                                        </div>
+                                        <div className="code-box">
+                                          <pre>{hookDetailRecord.content}</pre>
+                                        </div>
                                       </div>
-                                      <div className="detail-item">
-                                        <span className="detail-label">时间</span>
-                                        <span className="detail-value">{formatHookTime(hookDetailRecord.created_at)}</span>
-                                      </div>
-                                      <div className="detail-item">
-                                        <span className="detail-label">结果</span>
-                                        <span className="detail-value">
-                                          <Tag style={{ margin: 0 }} color={hookDetailRecord.result === 'Success' || hookDetailRecord.result === 'OK' || hookDetailRecord.result === 'success' ? 'success' : (hookDetailRecord.result ? 'error' : 'default')}>
-                                            {hookDetailRecord.result || '未知'}
-                                          </Tag>
-                                        </span>
-                                      </div>
-                                      <div className="detail-item">
-                                        <span className="detail-label">会话 ID</span>
-                                        <span className="detail-value">
-                                          <Typography.Text copyable={{ text: hookDetailRecord.session_id }} style={{ fontFamily: 'monospace', color: 'inherit' }}>
-                                            {hookDetailRecord.session_id}
+
+                                      <div className="detail-section">
+                                        <div className="section-header">
+                                          <h4 className="section-title">Transcript 路径</h4>
+                                          <Button
+                                            size="small"
+                                            type="text"
+                                            icon={<FolderOutlined />}
+                                            onClick={async () => {
+                                              try {
+                                                const dirPath = hookDetailRecord.transcript_path.substring(0, hookDetailRecord.transcript_path.lastIndexOf('/'));
+                                                await invoke('open_folder', { path: dirPath });
+                                              } catch (error) {
+                                                messageApi.error(`无法打开文件夹: ${error}`);
+                                              }
+                                            }}
+                                          >
+                                            打开目录
+                                          </Button>
+                                        </div>
+                                        <div className="path-box">
+                                          <Typography.Text copyable={{ text: hookDetailRecord.transcript_path }} style={{ color: 'inherit', wordBreak: 'break-all', fontSize: '13px' }}>
+                                            {hookDetailRecord.transcript_path}
                                           </Typography.Text>
-                                        </span>
+                                        </div>
                                       </div>
                                     </div>
-
-                                    <Divider style={{ margin: '16px 0' }} />
-
-                                    <div className="detail-section">
-                                      <div className="section-header">
-                                        <h4 className="section-title">摘要</h4>
-                                      </div>
-                                      <div className="summary-box">
-                                        {hookDetailRecord.notification_text || <span style={{ color: 'var(--text-tertiary)' }}>无摘要信息</span>}
-                                      </div>
-                                    </div>
-
-                                    <div className="detail-section">
-                                      <div className="section-header">
-                                        <h4 className="section-title">详细内容</h4>
-                                        <Button
-                                          size="small"
-                                          type="text"
-                                          icon={<CopyOutlined />}
-                                          onClick={() => {
-                                            navigator.clipboard.writeText(hookDetailRecord.content);
-                                            messageApi.success('已复制到剪贴板');
-                                          }}
-                                        >
-                                          复制
-                                        </Button>
-                                      </div>
-                                      <div className="code-box">
-                                        <pre>{hookDetailRecord.content}</pre>
-                                      </div>
-                                    </div>
-
-                                    <div className="detail-section">
-                                      <div className="section-header">
-                                        <h4 className="section-title">Transcript 路径</h4>
-                                        <Button
-                                          size="small"
-                                          type="text"
-                                          icon={<FolderOutlined />}
-                                          onClick={async () => {
-                                            try {
-                                              const dirPath = hookDetailRecord.transcript_path.substring(0, hookDetailRecord.transcript_path.lastIndexOf('/'));
-                                              await invoke('open_folder', { path: dirPath });
-                                            } catch (error) {
-                                              messageApi.error(`无法打开文件夹: ${error}`);
-                                            }
-                                          }}
-                                        >
-                                          打开目录
-                                        </Button>
-                                      </div>
-                                      <div className="path-box">
-                                        <Typography.Text copyable={{ text: hookDetailRecord.transcript_path }} style={{ color: 'inherit', wordBreak: 'break-all', fontSize: '13px' }}>
-                                          {hookDetailRecord.transcript_path}
-                                        </Typography.Text>
-                                      </div>
-                                    </div>
-                                  </div>
-                                )}
-                              </Modal>
-                            </div>
+                                  )}
+                                </Modal>
+                              </div>
+                            </Card>
                           ),
                         },
                       ]}
@@ -960,197 +969,215 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                   <div className="main-grid">
                     <div className="left-column">
                       <Form form={form} layout="vertical" onFinish={handleSave} className="config-form" style={{ marginTop: 0, display: 'flex', flexDirection: 'column', flex: 1 }}>
-                        <Card className="projects-card general-card" variant="borderless" style={{ marginBottom: 24, height: 'auto' }}>
-                          <div className="card-header">
-                            <SettingOutlined className="card-icon" />
-                            <h2>通用配置</h2>
-                          </div>
-                          <p className="card-description">应用相关的基础与功能配置</p>
-                          <Divider />
-                          <Form.Item
-                            label={
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                <span>推送 Hook 事件过滤</span>
-                                <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 'normal' }}>选择需要推送的事件类型</span>
-                              </div>
-                            }
-                            name="hook_events_filter"
-                            getValueFromEvent={(checkedValues: string[]) => checkedValues.length > 0 ? checkedValues.join(',') : undefined}
-                            getValueProps={(value: string | undefined) => ({
-                              value: value ? value.split(',').map((s: string) => s.trim()) : [],
-                            })}
-                            style={{ margin: 0 }}
-                          >
-                            <Checkbox.Group style={{ width: '100%' }}>
-                              <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '8px' }}>
-                                <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '0 8px', borderRadius: '8px' }}>
-                                  <Checkbox value="Stop">🛑 Stop（任务结束）</Checkbox>
-                                </Card>
-                                <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '0 8px', borderRadius: '8px' }}>
-                                  <Checkbox value="PermissionRequest">🔐 PermissionRequest（权限确认）</Checkbox>
-                                </Card>
-                                <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '0 8px', borderRadius: '8px' }}>
-                                  <Checkbox value="Notification">📌 Notification（通知）</Checkbox>
-                                </Card>
-                              </div>
-                            </Checkbox.Group>
-                          </Form.Item>
-
-
-                          <Divider style={{ margin: '24px 0 16px 0' }} />
-                          <Form.Item
-                            label={
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '24px' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                  <span style={{ fontSize: '15px', fontWeight: 500 }}>终端界面配置</span>
-                                </div>
-                                <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 'normal' }}>自定义底部终端面板的背景、文字颜色与字体大小</span>
-                              </div>
-                            }
-                            style={{ margin: 0 }}
-                          >
-                            <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '8px' }}>
-                              <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '6px 12px', borderRadius: '8px', minWidth: '200px' }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    <span style={{ fontSize: '14px' }}>背景颜色</span>
-                                    <Tag color={watchedBgColor ? (typeof watchedBgColor === 'string' ? watchedBgColor : watchedBgColor.toHexString()) : '#1e1e1e'} style={{ margin: 0, padding: '0 8px', borderRadius: '4px' }}>
-                                      {watchedBgColor ? (typeof watchedBgColor === 'string' ? watchedBgColor : watchedBgColor.toHexString()) : '#1e1e1e'}
-                                    </Tag>
+                        <Tabs
+                          defaultActiveKey="general"
+                          className="settings-tabs"
+                          style={{ flex: 1, display: 'flex', flexDirection: 'column' }}
+                          items={[
+                            {
+                              key: 'general',
+                              label: '通用配置',
+                              children: (
+                                <Card className="projects-card general-card" variant="borderless" style={{ height: 'auto', flex: 1 }}>
+                                  <div className="card-header">
+                                    <SettingOutlined className="card-icon" />
+                                    <h2>通用配置</h2>
                                   </div>
-                                  <Form.Item name="terminal_bg_color" style={{ margin: 0 }}>
-                                    <ColorPicker
-                                      format="hex"
-                                      disabledAlpha
-                                    >
-                                      <Button icon={<EditOutlined />} shape="circle" size="small" />
-                                    </ColorPicker>
-                                  </Form.Item>
-                                </div>
-                              </Card>
-                              <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '6px 12px', borderRadius: '8px', minWidth: '200px' }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    <span style={{ fontSize: '14px' }}>文字颜色</span>
-                                    <Tag color={watchedFgColor ? (typeof watchedFgColor === 'string' ? watchedFgColor : watchedFgColor.toHexString()) : '#e0e0e0'} style={{ margin: 0, padding: '0 8px', borderRadius: '4px', color: '#1e1e1e' }}>
-                                      {watchedFgColor ? (typeof watchedFgColor === 'string' ? watchedFgColor : watchedFgColor.toHexString()) : '#e0e0e0'}
-                                    </Tag>
-                                  </div>
-                                  <Form.Item name="terminal_fg_color" style={{ margin: 0, marginLeft: '12px' }}>
-                                    <ColorPicker
-                                      format="hex"
-                                      disabledAlpha
-                                    >
-                                      <Button icon={<EditOutlined />} shape="circle" size="small" />
-                                    </ColorPicker>
-                                  </Form.Item>
-                                </div>
-                              </Card>
-                              <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '6px 12px', borderRadius: '8px', minWidth: '300px', maxWidth: '450px', flex: 1 }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                                  <span style={{ fontSize: '14px', whiteSpace: 'nowrap' }}>字体大小</span>
-                                  <Form.Item name="terminal_font_size" style={{ margin: 0, flex: 1 }}>
-                                    <Slider min={10} max={24} step={1} defaultValue={13} tooltip={{ formatter: (val) => `${val}px` }} style={{ margin: '14px 8px 10px 8px' }} />
-                                  </Form.Item>
-                                  <Tag style={{ margin: 0, padding: '0 8px', borderRadius: '4px', minWidth: '36px', textAlign: 'center' }}>
-                                    {watchedFontSize ?? 13}px
-                                  </Tag>
-                                </div>
-                              </Card>
-                            </div>
-                          </Form.Item>
-
-                          <Divider style={{ margin: '24px 0 16px 0' }} />
-                          <div className="action-buttons" style={{ marginTop: 0, display: 'flex', gap: '12px' }}>
-                            <Button type="primary" icon={<SaveOutlined />} onClick={() => handleSave(form.getFieldsValue())} loading={loading} size="large">保存通用设置</Button>
-                            <Button type="default" onClick={async () => {
-                              try {
-                                await invoke('save_window_size');
-                                messageApi.success('窗口大小已保存，下次启动生效');
-                              } catch (e) {
-                                messageApi.error(`保存窗口大小失败: ${e}`);
-                              }
-                            }} size="large">保存当前窗口为默认大小</Button>
-                          </div>
-
-                        </Card>
-
-                        <Card className="projects-card channel-card" variant="borderless" style={{ flex: 1, height: 'auto' }}>
-                          <div className="card-header">
-                            <ApiOutlined className="card-icon" />
-                            <h2>通知渠道配置</h2>
-                          </div>
-                          <p className="card-description">管理飞书、钉钉与企业微信的应用配置</p>
-                          <Divider />
-                          <div className="channel-block">
-                            <Tabs
-                              className="channel-tabs"
-                              defaultActiveKey="feishu"
-                              items={[
-                                {
-                                  key: 'feishu',
-                                  label: '飞书',
-                                  children: (
-                                    <div className="config-card" style={{ padding: '0 12px' }}>
-                                      <h3 style={{ marginTop: 0 }}>飞书应用配置</h3>
-                                      <p className="card-description" style={{ marginBottom: 16 }}>配置飞书开放平台应用凭证，启用长连接模式实现消息推送与接收</p>
-
-                                      <Form.Item label="应用名称" name="app_name" tooltip="为你的应用起一个好记的名字" rules={[{ required: true, message: '请输入应用名称' }]}>
-                                        <Input placeholder="例如：Sparky 生产环境" size="large" className="input-field" />
-                                      </Form.Item>
-                                      <Form.Item label="App ID" name="app_id" rules={[{ required: true, message: '请输入 App ID' }]}>
-                                        <Input placeholder="cli_xxxxxxxxxxxxxxxx" size="large" className="input-field" />
-                                      </Form.Item>
-                                      <Form.Item label="App Secret" name="app_secret" rules={[{ required: true, message: '请输入 App Secret' }]}>
-                                        <Input.Password placeholder="应用密钥" size="large" className="input-field" />
-                                      </Form.Item>
-                                      <Form.Item label="默认群聊 ID" name="chat_id" extra="可选">
-                                        <Input placeholder="oc_xxxxxxxxxxxxxxxxxxxxxxxx" size="large" className="input-field" />
-                                      </Form.Item>
-                                      {tauriAvailable && appConfig && !appConfig.chat_id && !appConfig.open_id && (
-                                        <div style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--ant-color-warning-bg, #fffbe6)', border: '1px solid var(--ant-color-warning-border, #ffe58f)', borderRadius: 6, fontSize: 13 }}>
-                                          💡 未配置群聊 ID 也未绑定个人账号。请在飞书中向 <strong>{appConfig.app_name || 'Sparky'}</strong> 机器人发送任意消息，系统将自动绑定你的账号用于消息推送。
-                                        </div>
-                                      )}
-                                      <Form.Item label="Encrypt Key" name="encrypt_key" extra="可选">
-                                        <Input.Password placeholder="加密密钥" size="large" className="input-field" />
-                                      </Form.Item>
-                                      <Form.Item label="Verification Token" name="verification_token" extra="可选">
-                                        <Input.Password placeholder="验证令牌" size="large" className="input-field" />
-                                      </Form.Item>
-
-                                      <div className="action-buttons">
-                                        <Button type="default" onClick={handleUploadAnthropicLogo} loading={uploadingLogo} size="large">使用 Anthropic Logo</Button>
-                                        <Button type="default" icon={<ApiOutlined />} onClick={handleTestConnection} loading={testingConnection} size="large">测试连接</Button>
-                                        <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={loading} size="large">保存配置</Button>
+                                  <p className="card-description">应用相关的基础与功能配置</p>
+                                  <Divider />
+                                  <Form.Item
+                                    label={
+                                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                        <span>推送事件类型</span>
+                                        <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 'normal' }}>选择需要推送的事件类型</span>
                                       </div>
+                                    }
+                                    name="hook_events_filter"
+                                    getValueFromEvent={(checkedValues: string[]) => checkedValues.length > 0 ? checkedValues.join(',') : undefined}
+                                    getValueProps={(value: string | undefined) => ({
+                                      value: value ? value.split(',').map((s: string) => s.trim()) : [],
+                                    })}
+                                    style={{ margin: 0 }}
+                                  >
+                                    <Checkbox.Group style={{ width: '100%' }}>
+                                      <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '8px' }}>
+                                        <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '0 8px', borderRadius: '8px' }}>
+                                          <Checkbox value="Stop">🛑 Stop（任务结束）</Checkbox>
+                                        </Card>
+                                        <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '0 8px', borderRadius: '8px' }}>
+                                          <Checkbox value="PermissionRequest">🔐 PermissionRequest（权限确认）</Checkbox>
+                                        </Card>
+                                        <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '0 8px', borderRadius: '8px' }}>
+                                          <Checkbox value="Notification">📌 Notification（通知）</Checkbox>
+                                        </Card>
+                                      </div>
+                                    </Checkbox.Group>
+                                  </Form.Item>
+
+
+                                  <Divider style={{ margin: '24px 0 16px 0' }} />
+                                  <Form.Item
+                                    label={
+                                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '24px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                          <span style={{ fontSize: '15px', fontWeight: 500 }}>终端界面配置</span>
+                                        </div>
+                                        <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 'normal' }}>自定义底部终端面板的背景、文字颜色与字体大小</span>
+                                      </div>
+                                    }
+                                    style={{ margin: 0 }}
+                                  >
+                                    <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '8px' }}>
+                                      <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '6px 12px', borderRadius: '8px', minWidth: '200px' }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <span style={{ fontSize: '14px' }}>背景颜色</span>
+                                            <Tag color={watchedBgColor ? (typeof watchedBgColor === 'string' ? watchedBgColor : watchedBgColor.toHexString()) : '#1e1e1e'} style={{ margin: 0, padding: '0 8px', borderRadius: '4px' }}>
+                                              {watchedBgColor ? (typeof watchedBgColor === 'string' ? watchedBgColor : watchedBgColor.toHexString()) : '#1e1e1e'}
+                                            </Tag>
+                                          </div>
+                                          <Form.Item name="terminal_bg_color" style={{ margin: 0 }}>
+                                            <ColorPicker
+                                              format="hex"
+                                              disabledAlpha
+                                            >
+                                              <Button icon={<EditOutlined />} shape="circle" size="small" />
+                                            </ColorPicker>
+                                          </Form.Item>
+                                        </div>
+                                      </Card>
+                                      <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '6px 12px', borderRadius: '8px', minWidth: '200px' }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <span style={{ fontSize: '14px' }}>文字颜色</span>
+                                            <Tag color={watchedFgColor ? (typeof watchedFgColor === 'string' ? watchedFgColor : watchedFgColor.toHexString()) : '#e0e0e0'} style={{ margin: 0, padding: '0 8px', borderRadius: '4px', color: '#1e1e1e' }}>
+                                              {watchedFgColor ? (typeof watchedFgColor === 'string' ? watchedFgColor : watchedFgColor.toHexString()) : '#e0e0e0'}
+                                            </Tag>
+                                          </div>
+                                          <Form.Item name="terminal_fg_color" style={{ margin: 0, marginLeft: '12px' }}>
+                                            <ColorPicker
+                                              format="hex"
+                                              disabledAlpha
+                                            >
+                                              <Button icon={<EditOutlined />} shape="circle" size="small" />
+                                            </ColorPicker>
+                                          </Form.Item>
+                                        </div>
+                                      </Card>
+                                      <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '6px 12px', borderRadius: '8px', minWidth: '300px', maxWidth: '450px', flex: 1 }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                          <span style={{ fontSize: '14px', whiteSpace: 'nowrap' }}>字体大小</span>
+                                          <Form.Item name="terminal_font_size" style={{ margin: 0, flex: 1 }}>
+                                            <Slider min={10} max={24} step={1} defaultValue={13} tooltip={{ formatter: (val) => `${val}px` }} style={{ margin: '14px 8px 10px 8px' }} />
+                                          </Form.Item>
+                                          <Tag style={{ margin: 0, padding: '0 8px', borderRadius: '4px', minWidth: '36px', textAlign: 'center' }}>
+                                            {watchedFontSize ?? 13}px
+                                          </Tag>
+                                        </div>
+                                      </Card>
                                     </div>
-                                  ),
-                                },
-                                {
-                                  key: 'dingtalk',
-                                  label: '钉钉',
-                                  children: (
-                                    <div className="config-card" style={{ padding: '0 12px' }}>
-                                      <h3 style={{ marginTop: 0 }}>钉钉应用配置</h3>
-                                      <p className="card-description">等待开发</p>
-                                    </div>
-                                  ),
-                                },
-                                {
-                                  key: 'wework',
-                                  label: '企业微信',
-                                  children: (
-                                    <div className="config-card" style={{ padding: '0 12px' }}>
-                                      <h3 style={{ marginTop: 0 }}>企业微信应用配置</h3>
-                                      <p className="card-description">等待开发</p>
-                                    </div>
-                                  ),
-                                },
-                              ]}
-                            />
-                          </div>
-                        </Card>
+                                  </Form.Item>
+
+                                  <Divider style={{ margin: '24px 0 16px 0' }} />
+                                  <div className="action-buttons" style={{ marginTop: 0, display: 'flex', gap: '12px' }}>
+                                    <Button type="primary" icon={<SaveOutlined />} onClick={() => handleSave(form.getFieldsValue())} loading={loading} size="large">保存通用设置</Button>
+                                    <Button type="default" onClick={async () => {
+                                      try {
+                                        await invoke('save_window_size');
+                                        messageApi.success('窗口大小已保存，下次启动生效');
+                                      } catch (e) {
+                                        messageApi.error(`保存窗口大小失败: ${e}`);
+                                      }
+                                    }} size="large">保存当前窗口为默认大小</Button>
+                                  </div>
+
+                                </Card>
+                              )
+                            },
+                            {
+                              key: 'channel',
+                              label: '通知渠道配置',
+                              children: (
+                                <Card className="projects-card channel-card" variant="borderless" style={{ flex: 1, height: 'auto' }}>
+                                  <div className="card-header">
+                                    <ApiOutlined className="card-icon" />
+                                    <h2>通知渠道配置</h2>
+                                  </div>
+                                  <p className="card-description">管理飞书、钉钉与企业微信的应用配置</p>
+                                  <Divider />
+                                  <div className="channel-block">
+                                    <Tabs
+                                      className="channel-tabs"
+                                      defaultActiveKey="feishu"
+                                      items={[
+                                        {
+                                          key: 'feishu',
+                                          label: '飞书',
+                                          children: (
+                                            <div className="config-card" style={{ padding: '0 12px' }}>
+                                              <h3 style={{ marginTop: 0 }}>飞书应用配置</h3>
+                                              <p className="card-description" style={{ marginBottom: 16 }}>配置飞书开放平台应用凭证，启用长连接模式实现消息推送与接收</p>
+
+                                              <Form.Item label="应用名称" name="app_name" tooltip="为你的应用起一个好记的名字" rules={[{ required: true, message: '请输入应用名称' }]}>
+                                                <Input placeholder="例如：Sparky 生产环境" size="large" className="input-field" />
+                                              </Form.Item>
+                                              <Form.Item label="App ID" name="app_id" rules={[{ required: true, message: '请输入 App ID' }]}>
+                                                <Input placeholder="cli_xxxxxxxxxxxxxxxx" size="large" className="input-field" />
+                                              </Form.Item>
+                                              <Form.Item label="App Secret" name="app_secret" rules={[{ required: true, message: '请输入 App Secret' }]}>
+                                                <Input.Password placeholder="应用密钥" size="large" className="input-field" />
+                                              </Form.Item>
+                                              <Form.Item label="默认群聊 ID" name="chat_id" extra="可选">
+                                                <Input placeholder="oc_xxxxxxxxxxxxxxxxxxxxxxxx" size="large" className="input-field" />
+                                              </Form.Item>
+                                              {tauriAvailable && appConfig && !appConfig.chat_id && !appConfig.open_id && (
+                                                <div style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--ant-color-warning-bg, #fffbe6)', border: '1px solid var(--ant-color-warning-border, #ffe58f)', borderRadius: 6, fontSize: 13 }}>
+                                                  💡 未配置群聊 ID 也未绑定个人账号。请在飞书中向 <strong>{appConfig.app_name || 'Sparky'}</strong> 机器人发送任意消息，系统将自动绑定你的账号用于消息推送。
+                                                </div>
+                                              )}
+                                              <Form.Item label="Encrypt Key" name="encrypt_key" extra="可选">
+                                                <Input.Password placeholder="加密密钥" size="large" className="input-field" />
+                                              </Form.Item>
+                                              <Form.Item label="Verification Token" name="verification_token" extra="可选">
+                                                <Input.Password placeholder="验证令牌" size="large" className="input-field" />
+                                              </Form.Item>
+
+                                              <div className="action-buttons">
+                                                <Button type="default" onClick={handleUploadAnthropicLogo} loading={uploadingLogo} size="large">使用 Anthropic Logo</Button>
+                                                <Button type="default" icon={<ApiOutlined />} onClick={handleTestConnection} loading={testingConnection} size="large">测试连接</Button>
+                                                <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={loading} size="large">保存配置</Button>
+                                              </div>
+                                            </div>
+                                          ),
+                                        },
+                                        {
+                                          key: 'dingtalk',
+                                          label: '钉钉',
+                                          children: (
+                                            <div className="config-card" style={{ padding: '0 12px' }}>
+                                              <h3 style={{ marginTop: 0 }}>钉钉应用配置</h3>
+                                              <p className="card-description">等待开发</p>
+                                            </div>
+                                          ),
+                                        },
+                                        {
+                                          key: 'wework',
+                                          label: '企业微信',
+                                          children: (
+                                            <div className="config-card" style={{ padding: '0 12px' }}>
+                                              <h3 style={{ marginTop: 0 }}>企业微信应用配置</h3>
+                                              <p className="card-description">等待开发</p>
+                                            </div>
+                                          ),
+                                        },
+                                      ]}
+                                    />
+                                  </div>
+                                </Card>
+                              )
+                            }
+                          ]}
+                        />
                       </Form>
                     </div>
                   </div>
@@ -1195,9 +1222,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
           </div>
         </main>
 
-        <footer className="app-footer">
-          <p>Sparky © 2026 你的随身助手</p>
-        </footer>
+
       </div>
     </ConfigProvider>
   );

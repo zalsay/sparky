@@ -205,7 +205,7 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
     if (cached && theme) {
       cached.term.options.theme = {
         ...cached.term.options.theme,
-        background: theme.background || '#1e1e1e',
+        // background: theme.background || '#1e1e1e',
         foreground: theme.foreground || '#e0e0e0',
       };
       // 同步更新容器背景色
@@ -262,14 +262,19 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
 
   return (
     <div
-      ref={terminalRef}
-      tabIndex={0}
-      onClick={handleClick}
-      onKeyDown={(e) => {
-        // 阻止 Shift+Key 事件冒泡到 Tauri/浏览器层，确保 xterm 能正常处理
-        if (e.shiftKey) {
-          e.stopPropagation();
-        }
+      style={{
+        width: '100%',
+        height: '100%',
+        minHeight: '0',
+        backgroundColor: theme?.background || '#1e1e1e',
+        padding: '12px',
+        boxSizing: 'border-box',
+        overflow: 'hidden',
+        cursor: 'text',
+        borderRadius: fullscreen ? '0' : (mergeTop ? '0 0 8px 8px' : '8px'),
+        transition: 'all 0.3s ease',
+        display: 'flex',
+        flexDirection: 'column',
       }}
       onMouseEnter={(e) => {
         e.currentTarget.style.boxShadow = '0 0 20px rgba(150, 150, 150, 0.3), inset 0 0 30px rgba(0, 0, 0, 0.5)';
@@ -279,20 +284,24 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
         e.currentTarget.style.boxShadow = 'inset 0 0 20px rgba(0, 0, 0, 0.5)';
         e.currentTarget.style.border = '1px solid transparent';
       }}
-      style={{
-        width: '100%',
-        height: '100%',
-        minHeight: '400px',
-        backgroundColor: theme?.background || '#1e1e1e',
-        padding: '12px',
-        boxSizing: 'border-box',
-        overflow: 'hidden',
-        cursor: 'text',
-        borderRadius: fullscreen ? '0' : (mergeTop ? '0 0 8px 8px' : '8px'),
-        boxShadow: 'inset 0 0 20px rgba(0, 0, 0, 0.5)',
-        border: '1px solid transparent',
-        transition: 'all 0.3s ease',
-      }}
-    />
+    >
+      <div
+        ref={terminalRef}
+        tabIndex={0}
+        onClick={handleClick}
+        onKeyDown={(e) => {
+          // 阻止 Shift+Key 事件冒泡到 Tauri/浏览器层，确保 xterm 能正常处理
+          if (e.shiftKey) {
+            e.stopPropagation();
+          }
+        }}
+        style={{
+          flex: 1,
+          width: '100%',
+          overflow: 'hidden',
+          minHeight: 0,
+        }}
+      />
+    </div>
   );
 }

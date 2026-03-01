@@ -170,8 +170,8 @@ body {
 .app-main {
   flex: 1;
   width: 100%;
-  padding: 20px 24px;
-  overflow-y: auto;
+  padding: 20px 24px 16px 24px;
+  overflow: hidden;
   min-height: 0;
 }
 
@@ -208,6 +208,7 @@ body {
   background: transparent;
   color: var(--text-primary);
   overflow: visible !important;
+  padding-top: 16px;
 }
 
 .app-sidebar .ant-menu-item {
@@ -516,6 +517,24 @@ body {
   height: 100%;
 }
 
+/* ==================== Settings Tabs ==================== */
+
+.settings-tabs .ant-tabs-tab .ant-tabs-tab-btn {
+  color: var(--text-secondary);
+  font-weight: 500;
+  font-size: 14px;
+  transition: color 0.3s;
+}
+
+.settings-tabs .ant-tabs-tab:hover .ant-tabs-tab-btn {
+  color: var(--text-primary);
+}
+
+.settings-tabs .ant-tabs-tab.ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: var(--active-text) !important;
+  font-weight: 600;
+}
+
 /* ==================== Config Card ==================== */
 
 .card-header {
@@ -558,87 +577,7 @@ body {
   border-bottom: none;
 }
 
-/* Project Detail Tabs */
-.project-detail-page .ant-tabs-nav {
-  margin: 0;
-  padding: 6px 0 0;
-  background: transparent;
-  border-radius: 10px;
-}
-
-.project-detail-page .ant-tabs-top>.ant-tabs-nav {
-  margin-bottom: 0 !important;
-}
-
-.project-detail-page .ant-tabs-nav-wrap {
-  padding-bottom: 0;
-}
-
-.project-detail-page .ant-tabs-nav-list {
-  padding-bottom: 0;
-}
-
-.project-detail-page .ant-tabs-nav-operations {
-  margin-bottom: 0;
-}
-
-.project-detail-page .ant-tabs-nav-list,
-.project-detail-page .ant-tabs-tab,
-.project-detail-page .ant-tabs-tab-btn {
-  line-height: 1;
-}
-
-.project-detail-page .ant-tabs-nav::before {
-  border-bottom: none;
-}
-
-.project-detail-page .ant-tabs-tab {
-  margin: 0 2px 0 0;
-  padding: 10px 24px;
-  border-radius: 8px;
-  transition: background 0.2s ease, color 0.2s ease;
-}
-
-.project-detail-page .ant-tabs-tab .ant-tabs-tab-btn {
-  color: var(--text-primary);
-  font-weight: 500;
-  font-size: 16px;
-}
-
-.project-detail-page .ant-tabs-tab:hover .ant-tabs-tab-btn {
-  color: var(--text-primary);
-}
-
-.project-detail-page .ant-tabs-tab-active {
-  background: var(--active-bg);
-  border: 2px solid var(--border-color);
-  border-bottom: 2px solid var(--card-bg) !important;
-  margin-bottom: -2px !important;
-  border-top-left-radius: 10px;
-  border-top-right-radius: 10px;
-  position: relative;
-  z-index: 10;
-  box-shadow: 0 -4px 12px var(--shadow-color);
-}
-
-.project-detail-page .ant-tabs-tab-active::after,
-.project-detail-page .ant-tabs-tab-active::before {
-  display: none;
-}
-
-.project-detail-page .ant-tabs-tab-active .ant-tabs-tab-btn {
-  color: var(--active-text) !important;
-}
-
-.project-detail-page .ant-tabs-tab-active .ant-tabs-tab-btn:focus,
-.project-detail-page .ant-tabs-tab-active .ant-tabs-tab-btn:active,
-.project-detail-page .ant-tabs-tab-active .ant-tabs-tab-btn:hover {
-  color: var(--active-text) !important;
-}
-
-.project-detail-page .ant-tabs-ink-bar {
-  display: none;
-}
+/* Removed custom Project Detail Tabs styling to match settings page */
 
 
 
@@ -663,18 +602,12 @@ body {
 }
 
 .project-detail-page .ant-tabs-content-holder {
-  padding: 16px;
-  margin-top: 0 !important;
-  background: var(--card-bg);
-  border: 2px solid var(--border-color);
-  border-radius: 8px;
-  position: relative;
-  top: -2px;
-  box-shadow: 0 8px 20px var(--shadow-color);
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .project-detail-page .card-header {
@@ -733,6 +666,26 @@ body {
 .project-detail-page .ant-tabs {
   margin-top: 0;
   padding: 0 12px 12px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.project-detail-page .ant-tabs-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  height: 100%;
+}
+
+.project-detail-page .ant-tabs-tabpane-active {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  height: 100%;
+  overflow: hidden;
 }
 
 .project-detail-page .detail-form {
@@ -1327,10 +1280,12 @@ body {
 /* ==================== Terminal Fullscreen ==================== */
 
 .terminal-wrapper {
-  height: 100%;
+  flex: 1;
   display: flex;
   flex-direction: column;
   position: relative;
+  min-height: 0;
+  margin-bottom: 8px;
 }
 
 .terminal-wrapper.fullscreen {
@@ -1488,9 +1443,9 @@ body {
 .action-btn-outline:hover,
 .action-btn-outline:hover .anticon,
 .action-btn-outline:hover span {
-  background: var(--active-bg) !important;
-  color: var(--active-text) !important;
-  border-color: var(--active-bg) !important;
+  background: var(--text-primary) !important;
+  color: var(--card-bg) !important;
+  border-color: var(--text-primary) !important;
 }
 
 .action-btn-outline.danger:hover,
