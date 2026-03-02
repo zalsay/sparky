@@ -85,3 +85,4 @@ fi
 
 echo "✨ Artifacts exported to $(pwd)/release:"
 ls -lh release/
+open "$(pwd)/release"

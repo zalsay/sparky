@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize, PtyPair, Child};
 use std::io::{Read, Write};
@@ -7,50 +7,94 @@ use tauri::{Emitter, Manager};
 use rusqlite::params;
 
 pub struct PtyManager {
-    pty_pairs: Mutex<HashMap<String, PtyPair>>,
+    masters: Mutex<HashMap<String, Box<dyn portable_pty::MasterPty + Send>>>,
     children: Mutex<HashMap<String, Box<dyn Child + Send + Sync>>>,
     writers: Mutex<HashMap<String, Box<dyn Write + Send>>>,
+    project_terminals: Mutex<HashMap<String, Vec<String>>>,
+    spawning: Mutex<HashSet<String>>,
 }
 
 impl PtyManager {
     pub fn new() -> Self {
         PtyManager {
-            pty_pairs: Mutex::new(HashMap::new()),
+            masters: Mutex::new(HashMap::new()),
             children: Mutex::new(HashMap::new()),
             writers: Mutex::new(HashMap::new()),
+            project_terminals: Mutex::new(HashMap::new()),
+            spawning: Mutex::new(HashSet::new()),
         }
     }
 
-    pub fn add_pty(&self, project_path: String, pair: PtyPair, child: Box<dyn Child + Send + Sync>) {
+    pub fn add_pty(&self, project_path: String, terminal_id: String, pair: PtyPair, child: Box<dyn Child + Send + Sync>) {
+        log::info!("[add_pty] start for terminal: {}", terminal_id);
         // Remove existing PTY if any
-        let _ = self.remove_pty(&project_path);
+        let _ = self.remove_pty(&terminal_id);
 
         // Create writer immediately and store it
         let writer = pair.master.take_writer().expect("Failed to take writer");
-        self.writers.lock().unwrap().insert(project_path.clone(), writer);
+        log::info!("[add_pty] storing writer for terminal: {}", terminal_id);
+        self.writers.lock().unwrap().insert(terminal_id.clone(), writer);
 
-        self.pty_pairs.lock().unwrap().insert(project_path.clone(), pair);
-        self.children.lock().unwrap().insert(project_path, child);
+        // Keep only master to drop the slave
+        log::info!("[add_pty] storing master for terminal: {}", terminal_id);
+        self.masters.lock().unwrap().insert(terminal_id.clone(), pair.master);
+        log::info!("[add_pty] storing child for terminal: {}", terminal_id);
+        self.children.lock().unwrap().insert(terminal_id.clone(), child);
+        
+        // Lock project_terminals, update, then DROP the lock BEFORE update_active_ptys_in_db
+        {
+            let mut pt = self.project_terminals.lock().unwrap();
+            let terminals = pt.entry(project_path.clone()).or_insert_with(Vec::new);
+            if !terminals.contains(&terminal_id) {
+                terminals.push(terminal_id.clone());
+            }
+        } // <-- lock dropped here
+
         self.update_active_ptys_in_db();
+        log::info!("[add_pty] done for terminal: {}", terminal_id);
     }
 
-    pub fn write(&self, project_path: &str, data: &str) -> Result<(), String> {
+    pub fn write(&self, terminal_id: &str, data: &str) -> Result<(), String> {
         let mut writers = self.writers.lock().unwrap();
-        if let Some(writer) = writers.get_mut(project_path) {
+        if let Some(writer) = writers.get_mut(terminal_id) {
             writer.write_all(data.as_bytes()).map_err(|e| format!("Write error: {}", e))?;
             writer.flush().map_err(|e| format!("Flush error: {}", e))?;
             Ok(())
         } else {
-            Err(format!("Writer not found for project: {}", project_path))
+            Err(format!("Writer not found for terminal: {}", terminal_id))
         }
     }
 
-    pub fn remove_pty(&self, project_path: &str) -> Option<(PtyPair, Box<dyn Child + Send + Sync>)> {
-        let pair = self.pty_pairs.lock().unwrap().remove(project_path);
-        let child = self.children.lock().unwrap().remove(project_path);
-        let _writer = self.writers.lock().unwrap().remove(project_path);
-        let removed = match (pair, child) {
-            (Some(pair), Some(child)) => Some((pair, child)),
+    pub fn remove_pty(&self, terminal_id: &str) -> Option<(Box<dyn portable_pty::MasterPty + Send>, Box<dyn Child + Send + Sync>)> {
+        let master = self.masters.lock().unwrap().remove(terminal_id);
+        let child = self.children.lock().unwrap().remove(terminal_id);
+        // Use try_lock to avoid blocking if the command poller is mid-write
+        match self.writers.try_lock() {
+            Ok(mut w) => { w.remove(terminal_id); }
+            Err(_) => {
+                log::warn!("Could not acquire writers lock for terminal: {}, will be cleaned up later", terminal_id);
+            }
+        }
+        
+        let mut to_remove_project = None;
+        {
+            let mut pt = self.project_terminals.lock().unwrap();
+            for (project, terminals) in pt.iter_mut() {
+                if let Some(pos) = terminals.iter().position(|x| x == terminal_id) {
+                    terminals.remove(pos);
+                    if terminals.is_empty() {
+                        to_remove_project = Some(project.clone());
+                    }
+                    break;
+                }
+            }
+            if let Some(ref p) = to_remove_project {
+                pt.remove(p);
+            }
+        } // <-- lock dropped here BEFORE update_active_ptys_in_db
+        
+        let removed = match (master, child) {
+            (Some(master), Some(child)) => Some((master, child)),
             _ => None,
         };
         if removed.is_some() {
@@ -59,14 +103,19 @@ impl PtyManager {
         removed
     }
 
-    pub fn has_pty(&self, project_path: &str) -> bool {
-        self.pty_pairs.lock().unwrap().contains_key(project_path)
+    pub fn has_pty(&self, terminal_id: &str) -> bool {
+        self.masters.lock().unwrap().contains_key(terminal_id)
     }
 
     pub fn get_active_projects(&self) -> Vec<String> {
-        let mut projects: Vec<String> = self.writers.lock().unwrap().keys().cloned().collect();
+        let mut projects: Vec<String> = self.project_terminals.lock().unwrap().keys().cloned().collect();
         projects.sort();
         projects
+    }
+    
+    pub fn get_primary_terminal_for_project(&self, project_path: &str) -> Option<String> {
+        let pt = self.project_terminals.lock().unwrap();
+        pt.get(project_path).and_then(|terminals| terminals.first().cloned())
     }
 
     fn update_active_ptys_in_db(&self) {
@@ -99,8 +148,20 @@ pub async fn pty_spawn(
     cols: u16,
     rows: u16,
     project_path: String,
+    terminal_id: String,
 ) -> Result<String, String> {
-    log::info!("Spawning PTY: program={}, args={:?}, cwd={}, project={}", program, args, cwd, project_path);
+    // Atomic spawn lock: prevent concurrent duplicate spawns for same terminal
+    {
+        let manager = app.state::<PtyManager>();
+        let mut spawning = manager.spawning.lock().unwrap();
+        if spawning.contains(&terminal_id) || manager.has_pty(&terminal_id) {
+            log::info!("[pty_spawn] SKIP duplicate for terminal: {}", terminal_id);
+            return Ok(terminal_id);
+        }
+        spawning.insert(terminal_id.clone());
+    }
+
+    log::info!("Spawning PTY: program={}, args={:?}, cwd={}, project={}, terminal={}", program, args, cwd, project_path, terminal_id);
 
     let pty_system = native_pty_system();
 
@@ -129,9 +190,12 @@ pub async fn pty_spawn(
 
     // Store the pair and child with project path as key
     let manager = app.state::<PtyManager>();
-    manager.add_pty(project_path.clone(), pair, child);
+    manager.add_pty(project_path.clone(), terminal_id.clone(), pair, child);
 
-    log::info!("PTY spawned for project: {}", project_path);
+    // Remove from spawning set
+    manager.spawning.lock().unwrap().remove(&terminal_id);
+
+    log::info!("[pty_spawn] PTY stored for terminal: {}", terminal_id);
 
     // Spawn a task to read from the PTY
     let app_handle = app.clone();
@@ -139,14 +203,15 @@ pub async fn pty_spawn(
     // Get a reader clone
     let master_reader = {
         let manager = app.state::<PtyManager>();
-        let pair_guard = manager.pty_pairs.lock().unwrap();
-        let pair = pair_guard.get(&project_path).unwrap();
-        pair.master.try_clone_reader().map_err(|e| format!("Failed to clone master: {}", e))?
+        let master_guard = manager.masters.lock().unwrap();
+        let master = master_guard.get(&terminal_id).unwrap();
+        master.try_clone_reader().map_err(|e| format!("Failed to clone master: {}", e))?
     };
 
     // PTY Reader Thread
     let project_path_clone = project_path.clone();
-    let log_path = get_pty_log_path(&project_path);
+    let terminal_id_clone = terminal_id.clone();
+    let log_path = get_pty_log_path(&project_path); // Might want to add terminal_id to log path?
     
     // Ensure directory exists
     if let Some(parent) = log_path.parent() {
@@ -183,6 +248,7 @@ pub async fn pty_spawn(
                                 if !valid.is_empty() {
                                     let _ = app_handle.emit("pty-data", serde_json::json!({
                                         "projectPath": project_path_clone,
+                                        "terminalId": terminal_id_clone,
                                         "data": valid
                                     }));
                                 }
@@ -195,6 +261,7 @@ pub async fn pty_spawn(
                                     let valid = unsafe { std::str::from_utf8_unchecked(&pending[..valid_up_to]) };
                                     let _ = app_handle.emit("pty-data", serde_json::json!({
                                         "projectPath": project_path_clone,
+                                        "terminalId": terminal_id_clone,
                                         "data": valid
                                     }));
                                 }
@@ -202,6 +269,7 @@ pub async fn pty_spawn(
                                     pending.drain(0..valid_up_to + error_len);
                                     let _ = app_handle.emit("pty-data", serde_json::json!({
                                         "projectPath": project_path_clone,
+                                        "terminalId": terminal_id_clone,
                                         "data": ""
                                     }));
                                     continue;
@@ -221,28 +289,43 @@ pub async fn pty_spawn(
                 if !valid.is_empty() {
                      let _ = app_handle.emit("pty-data", serde_json::json!({
                         "projectPath": project_path_clone,
+                        "terminalId": terminal_id_clone,
                         "data": valid
                     }));
                 }
             }
         }
-        log::info!("PTY reader thread exiting for project: {}", project_path_clone);
+        log::info!("PTY reader thread exiting for terminal: {}", terminal_id_clone);
+        let _ = app_handle.emit("pty-exit", serde_json::json!({
+            "projectPath": project_path_clone,
+            "terminalId": terminal_id_clone,
+        }));
     });
 
     // Spawn a task to poll for remote commands from DB
+    // Only one poller per project is needed, but we currently spawn per pty.
+    // To handle multiple terminals cleanly, we can still run it, but we should make sure we only write to the 'primary' terminal.
     let app_handle_for_poll = app.clone();
     let project_path_for_poll = project_path.clone();
+    let terminal_id_for_poll = terminal_id.clone();
     
     thread::spawn(move || {
-        log::info!("PTY command poller started for project: {}", project_path_for_poll);
+        log::info!("PTY command poller started for terminal: {}", terminal_id_for_poll);
         loop {
             thread::sleep(std::time::Duration::from_millis(500));
             
-            // Check if PTY still exists
+            // Check if THIS PTY still exists
             let manager = app_handle_for_poll.state::<PtyManager>();
-            if !manager.has_pty(&project_path_for_poll) {
-                log::info!("PTY closed, stopping command poller for: {}", project_path_for_poll);
+            if !manager.has_pty(&terminal_id_for_poll) {
+                log::info!("PTY closed, stopping command poller for terminal: {}", terminal_id_for_poll);
                 break;
+            }
+
+            // check if this is the primary terminal. If not we just sleep and continue, so we don't multiply execute commands.
+            let primary_terminal_id = manager.get_primary_terminal_for_project(&project_path_for_poll);
+            if primary_terminal_id != Some(terminal_id_for_poll.clone()) {
+                // Not the primary terminal, don't poll
+                continue;
             }
 
             // Open DB connection
@@ -272,19 +355,17 @@ pub async fn pty_spawn(
             .unwrap_or_default();
 
             for (id, cmd) in commands {
-                log::info!("Executing remote command: {} (id={})", cmd, id);
+                log::info!("Executing remote command: {} (id={}) on primary terminal {}", cmd, id, terminal_id_for_poll);
                 
-                // Construct input (do not append newline as per user request)
-                // However, for Feishu forwarded commands, we *do* need them to execute.
-                // We will append \r to simulate hitting the enter key.
+                // Construct input
                 let mut input = cmd.to_string();
                 if !input.ends_with('\r') && !input.ends_with('\n') {
                     input.push('\r');
                 }
                 
                 // Write to PTY
-                if let Err(e) = manager.write(&project_path_for_poll, &input) {
-                    log::error!("Failed to write to PTY: {}", e);
+                if let Err(e) = manager.write(&terminal_id_for_poll, &input) {
+                    log::error!("Failed to write to primary PTY: {}", e);
                 } else {
                     log::info!("Successfully wrote '{}' to PTY for project: {}", input, project_path_for_poll);
                     // Mark as processed
@@ -297,7 +378,7 @@ pub async fn pty_spawn(
         }
     });
 
-    Ok(project_path)
+    Ok(terminal_id)
 }
 
 fn get_pty_log_path(project_path: &str) -> std::path::PathBuf {
@@ -307,34 +388,86 @@ fn get_pty_log_path(project_path: &str) -> std::path::PathBuf {
 }
 
 #[tauri::command]
-pub fn pty_write(app: tauri::AppHandle, project_path: String, data: String) -> Result<(), String> {
-    log::debug!("PTY write: project={}, data={}", project_path, data);
+pub fn pty_write(app: tauri::AppHandle, terminal_id: String, data: String) -> Result<(), String> {
+    log::debug!("PTY write: terminal={}, data={}", terminal_id, data);
 
     let manager = app.state::<PtyManager>();
-    manager.write(&project_path, &data)
+    manager.write(&terminal_id, &data)
 }
 
 #[tauri::command]
-pub fn pty_kill(app: tauri::AppHandle, project_path: String) -> Result<(), String> {
-    log::info!("PTY kill: project={}", project_path);
+pub fn pty_kill(app: tauri::AppHandle, terminal_id: String) -> Result<(), String> {
+    log::info!("[pty_kill] START terminal={}", terminal_id);
 
     let manager = app.state::<PtyManager>();
-    if let Some((_pair, mut child)) = manager.remove_pty(&project_path) {
-        let _ = child.kill();
-        log::info!("PTY process killed for project: {}", project_path);
+    
+    log::info!("[pty_kill] acquiring masters lock...");
+    let master = manager.masters.lock().unwrap().remove(&terminal_id);
+    log::info!("[pty_kill] masters done, master found={}", master.is_some());
+    
+    log::info!("[pty_kill] acquiring children lock...");
+    let child = manager.children.lock().unwrap().remove(&terminal_id);
+    log::info!("[pty_kill] children done, child found={}", child.is_some());
+    
+    log::info!("[pty_kill] trying writers lock...");
+    match manager.writers.try_lock() {
+        Ok(mut w) => { 
+            w.remove(&terminal_id); 
+            log::info!("[pty_kill] writers removed");
+        }
+        Err(_) => { 
+            log::warn!("[pty_kill] writers lock CONTENDED, skipping for: {}", terminal_id); 
+        }
     }
+    
+    log::info!("[pty_kill] acquiring project_terminals lock...");
+    {
+        let mut pt = manager.project_terminals.lock().unwrap();
+        let mut to_remove = None;
+        for (project, terminals) in pt.iter_mut() {
+            if let Some(pos) = terminals.iter().position(|x| x == &terminal_id) {
+                terminals.remove(pos);
+                if terminals.is_empty() {
+                    to_remove = Some(project.clone());
+                }
+                break;
+            }
+        }
+        if let Some(ref p) = to_remove {
+            pt.remove(p);
+        }
+    }
+    log::info!("[pty_kill] project_terminals done");
+    
+    manager.update_active_ptys_in_db();
+
+    if let (Some(master), Some(mut child)) = (master, child) {
+        log::info!("[pty_kill] spawning background kill thread...");
+        let tid = terminal_id.clone();
+        std::thread::spawn(move || {
+            log::info!("[pty_kill bg] calling child.kill() for: {}", tid);
+            let _ = child.kill();
+            log::info!("[pty_kill bg] child.kill() done, dropping master for: {}", tid);
+            drop(master);
+            log::info!("[pty_kill bg] COMPLETE for: {}", tid);
+        });
+    } else {
+        log::warn!("[pty_kill] PTY not found for: {}", terminal_id);
+    }
+
+    log::info!("[pty_kill] returning Ok for: {}", terminal_id);
     Ok(())
 }
 
 #[tauri::command]
-pub fn pty_resize(app: tauri::AppHandle, project_path: String, cols: u16, rows: u16) -> Result<(), String> {
-    log::info!("PTY resize: project={}, cols={}, rows={}", project_path, cols, rows);
+pub fn pty_resize(app: tauri::AppHandle, terminal_id: String, cols: u16, rows: u16) -> Result<(), String> {
+    log::info!("PTY resize: terminal={}, cols={}, rows={}", terminal_id, cols, rows);
 
     let manager = app.state::<PtyManager>();
-    let mut pairs = manager.pty_pairs.lock().unwrap();
+    let mut masters = manager.masters.lock().unwrap();
 
-    if let Some(pair) = pairs.get_mut(&project_path) {
-        pair.master
+    if let Some(master) = masters.get_mut(&terminal_id) {
+        master
             .resize(PtySize {
                 rows,
                 cols,
@@ -344,12 +477,12 @@ pub fn pty_resize(app: tauri::AppHandle, project_path: String, cols: u16, rows: 
             .map_err(|e| format!("Resize error: {}", e))?;
         Ok(())
     } else {
-        Err(format!("PTY not found for project: {}", project_path))
+        Err(format!("PTY not found for terminal: {}", terminal_id))
     }
 }
 
 #[tauri::command]
-pub fn pty_exists(app: tauri::AppHandle, project_path: String) -> bool {
+pub fn pty_exists(app: tauri::AppHandle, terminal_id: String) -> bool {
     let manager = app.state::<PtyManager>();
-    manager.has_pty(&project_path)
+    manager.has_pty(&terminal_id)
 }

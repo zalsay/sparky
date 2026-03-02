@@ -27,7 +27,9 @@ fn get_ws_connected(state: tauri::State<'_, WsConnectionState>) -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default)]
     pub app_id: String,
+    #[serde(default)]
     pub app_secret: String,
     pub app_name: Option<String>,
     pub encrypt_key: Option<String>,

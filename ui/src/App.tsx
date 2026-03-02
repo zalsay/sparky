@@ -2,9 +2,10 @@ import { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider } from 'antd';
 import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { usePty } from './hooks/usePty';
-import TerminalComponent, { clearTerminalCache } from './components/Terminal';
+
+import TerminalComponent from './components/Terminal';
 import logo from '../../logo.png';
 import './App.css';
 
@@ -59,7 +60,15 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [terminalFullscreen, setTerminalFullscreen] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
-  const [terminalHistory, setTerminalHistory] = useState<string[]>([]);
+  const [terminalHistory, setTerminalHistory] = useState<Record<string, string[]>>({});
+
+  interface TerminalTab {
+    id: string;
+    title: string;
+  }
+  const [projectTerminals, setProjectTerminals] = useState<Record<string, TerminalTab[]>>({});
+  const [activeTerminalId, setActiveTerminalId] = useState<Record<string, string>>({});
+
   const [hookRecords, setHookRecords] = useState<HookRecord[]>([]);
   const [hookRecordsTotal, setHookRecordsTotal] = useState(0);
   const [hookRecordsPage, setHookRecordsPage] = useState(1);
@@ -73,10 +82,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const watchedFgColor = Form.useWatch('terminal_fg_color', form);
   const watchedFontSize = Form.useWatch('terminal_font_size', form);
 
-  const { startPty, write, clearPty } = usePty();
   const tauriAvailable = isTauri();
-  const inputBufferRef = useRef('');
-  const [lastCommand, setLastCommand] = useState('');
+  const inputBufferRef = useRef<Record<string, string>>({});
+  const [lastCommand, setLastCommand] = useState<Record<string, string>>({});
   const [wsConnected, setWsConnected] = useState(false);
   const [activeProjects, setActiveProjects] = useState<string[]>([]);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
@@ -121,26 +129,58 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     }
     loadConfig();
     fetchProjects();
-  }, []);
 
-  // 打开项目详情时启动 PTY
-  useEffect(() => {
-    if (activeMenu === 'project-detail' && selectedProject && tauriAvailable) {
-      startPty(selectedProject.path);
-    }
-  }, [activeMenu, selectedProject]);
+    const unlistenPromise = listen<{ projectPath: string; terminalId: string }>('pty-exit', (event) => {
+      const { projectPath, terminalId } = event.payload;
+
+      setProjectTerminals(prev => {
+        const next = (prev[projectPath] || []).filter(t => t.id !== terminalId);
+
+        setActiveTerminalId(activePrev => {
+          if (activePrev[projectPath] === terminalId) {
+            return {
+              ...activePrev,
+              [projectPath]: next.length > 0 ? next[next.length - 1].id : ''
+            };
+          }
+          return activePrev;
+        });
+
+        return { ...prev, [projectPath]: next };
+      });
+    });
+
+    return () => {
+      unlistenPromise.then(unlisten => unlisten());
+    };
+  }, []);
 
   useEffect(() => {
     if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject) {
-      setTerminalHistory([]);
       return;
     }
+
+    // 初始化项目的终端
+    const pTerminals = projectTerminals[selectedProject.path] || [];
+    if (pTerminals.length === 0) {
+      const newId = crypto.randomUUID();
+      setProjectTerminals(prev => ({
+        ...prev,
+        [selectedProject.path]: [{ id: newId, title: '终端 1' }]
+      }));
+      setActiveTerminalId(prev => ({
+        ...prev,
+        [selectedProject.path]: newId
+      }));
+    }
+
+    // load history
     invoke<string[]>('get_terminal_history', { projectPath: selectedProject.path })
       .then((history) => {
-        setTerminalHistory(history);
+        setTerminalHistory(prev => ({ ...prev, [selectedProject.path]: history }));
       })
       .catch(() => {
-        setTerminalHistory([]);
+        setTerminalHistory(prev => ({ ...prev, [selectedProject.path]: [] }));
       });
   }, [activeMenu, selectedProject, tauriAvailable]);
 
@@ -156,11 +196,13 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   }, [activeMenu, selectedProject, tauriAvailable]);
 
   const handleTerminalInput = (data: string) => {
-    write(data);
     if (!tauriAvailable || !selectedProject) {
       return;
     }
-    let buffer = inputBufferRef.current;
+    const currentTerminal = activeTerminalId[selectedProject.path];
+    if (!currentTerminal) return;
+
+    let buffer = inputBufferRef.current[currentTerminal] || '';
     let i = 0;
     while (i < data.length) {
       const code = data.charCodeAt(i);
@@ -177,7 +219,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       }
       if (data[i] === '\r' || data[i] === '\n') {
         if (buffer.trim()) {
-          setLastCommand(buffer.trim());
+          const finalBuffer = buffer.trim();
+          setLastCommand(prev => ({ ...prev, [currentTerminal]: finalBuffer }));
         }
         buffer = '';
         i++;
@@ -195,7 +238,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       buffer += data[i];
       i++;
     }
-    inputBufferRef.current = buffer;
+    inputBufferRef.current[currentTerminal] = buffer;
   };
 
   const handleEnterProject = (project: Project) => {
@@ -211,11 +254,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const handleCloseTerminal = async () => {
     if (!selectedProject || !tauriAvailable) return;
     try {
-      await invoke('pty_kill', { projectPath: selectedProject.path });
-      clearTerminalCache(selectedProject.path); // Free resources and clear unexecuted input
-      clearPty();
+      const pTerminals = projectTerminals[selectedProject.path] || [];
+      for (const t of pTerminals) {
+        await invoke('pty_kill', { terminalId: t.id });
+      }
       messageApi.success(`项目 ${selectedProject.name} 已关闭`);
       // Update UI optimistically
+      setProjectTerminals(prev => ({ ...prev, [selectedProject.path]: [] }));
+      setActiveTerminalId(prev => ({ ...prev, [selectedProject.path]: '' }));
       setActiveProjects(activeProjects.filter(p => p !== selectedProject.path));
       setActiveMenu('project');
       setSelectedProject(null);
@@ -662,13 +708,22 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                       />
                       <span className="header-divider" />
                       <span className="project-title-badge">{selectedProject.name}</span>
-                      <Button size="small" type="default" onClick={() => write('claude\n')} className="action-btn-outline" style={{ marginLeft: 8 }}>
+                      <Button size="small" type="default" onClick={() => {
+                        const tid = activeTerminalId[selectedProject.path];
+                        if (tid) invoke('pty_write', { terminalId: tid, data: 'claude\n' });
+                      }} className="action-btn-outline" style={{ marginLeft: 8 }}>
                         正常启动
                       </Button>
-                      <Button size="small" type="default" onClick={() => write('claude --dangerously-skip-permissions\n')} className="action-btn-outline danger" style={{ marginLeft: 4 }}>
+                      <Button size="small" type="default" onClick={() => {
+                        const tid = activeTerminalId[selectedProject.path];
+                        if (tid) invoke('pty_write', { terminalId: tid, data: 'claude --dangerously-skip-permissions\n' });
+                      }} className="action-btn-outline danger" style={{ marginLeft: 4 }}>
                         放权启动
                       </Button>
-                      <Button size="small" type="default" onClick={() => write('claude --dangerously-skip-permissions --continue\n')} className="action-btn-outline danger" style={{ marginLeft: 4 }}>
+                      <Button size="small" type="default" onClick={() => {
+                        const tid = activeTerminalId[selectedProject.path];
+                        if (tid) invoke('pty_write', { terminalId: tid, data: 'claude --dangerously-skip-permissions --continue\n' });
+                      }} className="action-btn-outline danger" style={{ marginLeft: 4 }}>
                         放权continue
                       </Button>
                       <span className={`ws-status-badge ${wsConnected ? 'connected' : 'disconnected'}`}>
@@ -685,10 +740,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                         style={{ marginLeft: 12 }}
                       />
                     </div>
-                    {lastCommand && (
+                    {lastCommand[activeTerminalId[selectedProject.path]] && (
                       <div className="last-input-bar">
                         <span className="last-input-label">最近输入</span>
-                        <code className="last-input-content">{lastCommand}</code>
+                        <code className="last-input-content">{lastCommand[activeTerminalId[selectedProject.path]]}</code>
                       </div>
                     )}
                     <Tabs
@@ -700,7 +755,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           key: 'claude',
                           label: 'Claude',
                           children: (
-                            <Card className="projects-card channel-card" variant="borderless" style={{ flex: 1, height: 'auto', padding: 0 }}>
+                            <Card className="projects-card channel-card" variant="borderless" style={{ flex: 1, height: 'auto', padding: 0, background: 'transparent' }}>
                               <div className={`terminal-wrapper ${terminalFullscreen ? 'fullscreen' : ''}`}>
                                 <Button
                                   type="text"
@@ -708,22 +763,77 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   style={{
                                     position: 'absolute',
                                     right: 16,
-                                    top: 16,
+                                    top: terminalFullscreen ? 16 : 48,
                                     zIndex: 100,
                                     color: 'rgba(255, 255, 255, 0.65)',
                                     background: 'rgba(0, 0, 0, 0.2)'
                                   }}
                                   onClick={() => setTerminalFullscreen(!terminalFullscreen)}
                                 />
-                                <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                                  <TerminalComponent projectPath={selectedProject.path} onData={handleTerminalInput} mergeTop historyLines={terminalHistory} fullscreen={terminalFullscreen}
-                                    theme={{
-                                      background: appConfig?.terminal_bg_color,
-                                      foreground: appConfig?.terminal_fg_color,
-                                      fontSize: appConfig?.terminal_font_size,
-                                    }}
-                                  />
-                                </div>
+                                <Tabs
+                                  type="editable-card"
+                                  size="small"
+                                  activeKey={activeTerminalId[selectedProject.path] || ''}
+                                  onChange={(key) => setActiveTerminalId(prev => ({ ...prev, [selectedProject.path]: key }))}
+                                  onEdit={(targetKey, action) => {
+                                    if (action === 'add') {
+                                      const newId = crypto.randomUUID();
+                                      const current = projectTerminals[selectedProject!.path] || [];
+                                      setProjectTerminals(prev => ({
+                                        ...prev,
+                                        [selectedProject!.path]: [...current, { id: newId, title: `终端 ${current.length + 1}` }]
+                                      }));
+                                      setActiveTerminalId(prev => ({
+                                        ...prev,
+                                        [selectedProject!.path]: newId
+                                      }));
+                                    } else if (action === 'remove' && typeof targetKey === 'string') {
+                                      invoke('pty_kill', { terminalId: targetKey });
+                                      setProjectTerminals(prev => {
+                                        const next = prev[selectedProject!.path].filter(t => t.id !== targetKey);
+                                        return { ...prev, [selectedProject!.path]: next };
+                                      });
+                                      if (activeTerminalId[selectedProject!.path] === targetKey) {
+                                        const remaining = projectTerminals[selectedProject!.path].filter(t => t.id !== targetKey);
+                                        if (remaining.length > 0) {
+                                          setActiveTerminalId(prev => ({
+                                            ...prev,
+                                            [selectedProject!.path]: remaining[remaining.length - 1].id
+                                          }));
+                                        } else {
+                                          setActiveTerminalId(prev => ({
+                                            ...prev,
+                                            [selectedProject!.path]: ''
+                                          }));
+                                        }
+                                      }
+                                    }
+                                  }}
+                                  style={{ flex: 1, display: 'flex', flexDirection: 'column' }}
+                                  className="terminal-tabs-inner"
+                                  items={(projectTerminals[selectedProject.path] || []).map(term => ({
+                                    key: term.id,
+                                    label: term.title,
+                                    children: (
+                                      <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                                        <TerminalComponent
+                                          projectPath={selectedProject!.path}
+                                          terminalId={term.id}
+                                          title={term.title}
+                                          onData={handleTerminalInput}
+                                          mergeTop
+                                          historyLines={terminalHistory[selectedProject!.path] || []}
+                                          fullscreen={terminalFullscreen}
+                                          theme={{
+                                            background: appConfig?.terminal_bg_color,
+                                            foreground: appConfig?.terminal_fg_color,
+                                            fontSize: appConfig?.terminal_font_size,
+                                          }}
+                                        />
+                                      </div>
+                                    ),
+                                  }))}
+                                />
                               </div>
                             </Card>
                           ),

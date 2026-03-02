@@ -4,9 +4,12 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 
 import { invoke } from '@tauri-apps/api/core';
+import { usePty } from '../hooks/usePty';
 
 interface TerminalProps {
   projectPath: string;
+  terminalId: string;
+  title?: string;
   onData?: (data: string) => void;
   mergeTop?: boolean;
   historyLines?: string[];
@@ -25,19 +28,13 @@ interface TerminalCacheItem {
 }
 
 const terminalCache = new Map<string, TerminalCacheItem>();
-let activeProjectPath: string | null = null;
+
 let globalWriterReady = false;
 
-export function clearTerminalCache(projectPath: string) {
-  const cached = terminalCache.get(projectPath);
-  if (cached) {
-    cached.term.dispose(); // Cleanup xterm resources
-    terminalCache.delete(projectPath);
-  }
-}
 
-function getOrCreateTerminal(projectPath: string, themeVals?: { background?: string; foreground?: string; fontSize?: number }) {
-  const cached = terminalCache.get(projectPath);
+
+function getOrCreateTerminal(terminalId: string, title?: string, themeVals?: { background?: string; foreground?: string; fontSize?: number }) {
+  const cached = terminalCache.get(terminalId);
   if (cached) {
     if (themeVals) {
       cached.term.options.theme = {
@@ -60,7 +57,7 @@ function getOrCreateTerminal(projectPath: string, themeVals?: { background?: str
     fontWeight: 'bold',
     fontWeightBold: '900',
     theme: {
-      background: themeVals?.background || '#1e1e1e',
+      background: 'transparent',
       foreground: themeVals?.foreground || '#e0e0e0',
       cursor: '#ffffff',
       cursorAccent: '#1e1e1e',
@@ -89,18 +86,24 @@ function getOrCreateTerminal(projectPath: string, themeVals?: { background?: str
 
   const fit = new FitAddon();
   term.loadAddon(fit);
-  term.writeln('正在启动终端...');
+  term.writeln(`正在启动 ${title || '终端'}...`);
 
   const created = { term, fit, historyApplied: false };
-  terminalCache.set(projectPath, created);
+  terminalCache.set(terminalId, created);
   return created;
 }
 
-export default function TerminalComponent({ projectPath, onData, mergeTop, historyLines, fullscreen, theme }: TerminalProps) {
+export default function TerminalComponent({ projectPath, terminalId, title, onData, mergeTop, historyLines, fullscreen, theme }: TerminalProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const onDataRef = useRef(onData);
+
+  const { startPty, write, clearPty } = usePty((data) => {
+    if (onDataRef.current) {
+      onDataRef.current(data);
+    }
+  });
 
   useEffect(() => {
     onDataRef.current = onData;
@@ -116,11 +119,8 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
 
   useEffect(() => {
     if (!globalWriterReady) {
-      (window as any).__terminalWrite = (data: string) => {
-        if (!activeProjectPath) {
-          return;
-        }
-        const cached = terminalCache.get(activeProjectPath);
+      (window as any).__terminalWrite = (tid: string, data: string) => {
+        const cached = terminalCache.get(tid);
         if (cached) {
           cached.term.write(data);
         }
@@ -131,27 +131,20 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
 
   useEffect(() => {
     if (!terminalRef.current) return;
+    let disposed = false;
+    let ptyReady = false;
 
-    activeProjectPath = projectPath;
     notifyBackendActiveProject(projectPath);
 
     const container = terminalRef.current;
     container.innerHTML = '';
 
-    const cached = getOrCreateTerminal(projectPath, theme);
+    const cached = getOrCreateTerminal(terminalId, title, theme);
     if (cached.term.element) {
       container.appendChild(cached.term.element);
     } else {
       cached.term.open(container);
     }
-
-    setTimeout(() => {
-      try {
-        cached.fit.fit();
-      } catch (e) {
-        // ignore
-      }
-    }, 100);
 
     cached.term.focus();
 
@@ -159,65 +152,92 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
     fitRef.current = cached.fit;
 
     cached.term.attachCustomKeyEventHandler(() => {
-      // Allow Xterm to handle all keys natively to ensure proper IME and Selection syncing.
       return true;
     });
 
     const dataDisposable = cached.term.onData((data) => {
+      write(data);
       if (onDataRef.current) {
         onDataRef.current(data);
       }
     });
 
-    const handleResize = () => {
+    const resizeDisposable = cached.term.onResize(async ({ cols, rows }) => {
+      if (disposed || !ptyReady) return;
       try {
-        cached.fit.fit();
+        await invoke('pty_resize', { terminalId, cols, rows });
       } catch (e) {
         // ignore
       }
-    };
+    });
 
-    const resizeDisposable = cached.term.onResize(async ({ cols, rows }) => {
-      try {
-        await invoke('pty_resize', { projectPath, cols, rows });
-      } catch (e) {
-        console.error('Failed to resize pty:', e);
+    // ResizeObserver: only fit after PTY is ready, debounced
+    let resizeRaf = 0;
+    const resizeObserver = new ResizeObserver(() => {
+      if (disposed || !ptyReady) return;
+      cancelAnimationFrame(resizeRaf);
+      resizeRaf = requestAnimationFrame(() => {
+        if (disposed || !ptyReady) return;
+        if (container && container.clientWidth > 0 && container.clientHeight > 0) {
+          try {
+            cached.fit.fit();
+          } catch (e) {
+            // ignore
+          }
+        }
+      });
+    });
+    resizeObserver.observe(container);
+
+    // Start PTY, then mark ready and do initial fit
+    startPty(projectPath, terminalId).then(() => {
+      if (!disposed) {
+        ptyReady = true;
+        setTimeout(() => {
+          if (!disposed) {
+            try {
+              cached.fit.fit();
+            } catch (e) {
+              // ignore
+            }
+          }
+        }, 50);
       }
     });
 
-    // 监听窗口尺寸变化，并执行 fit 来刷新 term 行列
-    window.addEventListener('resize', handleResize);
-
     return () => {
-      window.removeEventListener('resize', handleResize);
+      disposed = true;
+      ptyReady = false;
+      resizeObserver.disconnect();
       dataDisposable.dispose();
       resizeDisposable.dispose();
+      clearPty();
+      // Don't delete from cache - keep terminal state for when user navigates back
       if (container) {
         container.innerHTML = '';
       }
       termRef.current = null;
     };
-  }, [projectPath]);
+  }, [terminalId, projectPath]);
 
-  // 当 theme 改变时，动态更新终端颜色
+  // 当 theme 改变时，更新外层容器背景色，xterm 保持透明
   useEffect(() => {
-    const cached = terminalCache.get(projectPath);
+    const cached = terminalCache.get(terminalId);
     if (cached && theme) {
       cached.term.options.theme = {
         ...cached.term.options.theme,
-        // background: theme.background || '#1e1e1e',
+        background: 'transparent',
         foreground: theme.foreground || '#e0e0e0',
       };
-      // 同步更新容器背景色
       if (terminalRef.current) {
         terminalRef.current.style.backgroundColor = theme.background || '#1e1e1e';
       }
     }
-  }, [theme?.background, theme?.foreground, projectPath]);
+  }, [theme?.background, theme?.foreground, terminalId]);
 
   // 当 fontSize 改变时，动态更新终端字体大小
   useEffect(() => {
-    const cached = terminalCache.get(projectPath);
+    const cached = terminalCache.get(terminalId);
     if (cached && theme?.fontSize) {
       cached.term.options.fontSize = theme.fontSize;
       // 字体大小变化后需要重新 fit
@@ -229,7 +249,7 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
         }
       }, 50);
     }
-  }, [theme?.fontSize, projectPath]);
+  }, [theme?.fontSize, terminalId]);
 
   useEffect(() => {
     // 当 fullscreen 状态改变时，重新适应大小
@@ -246,17 +266,16 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
     if (!historyLines || historyLines.length === 0) {
       return;
     }
-    const cached = terminalCache.get(projectPath);
+    const cached = terminalCache.get(terminalId);
     if (!cached || cached.historyApplied) {
       return;
     }
     cached.term.write(`${historyLines.join('\r\n')}\r\n`);
     cached.historyApplied = true;
-  }, [historyLines, projectPath]);
+  }, [historyLines, terminalId]);
 
   const handleClick = () => {
     termRef.current?.focus();
-    activeProjectPath = projectPath;
     notifyBackendActiveProject(projectPath);
   };
 
@@ -267,7 +286,7 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
         height: '100%',
         minHeight: '0',
         backgroundColor: theme?.background || '#1e1e1e',
-        padding: '12px',
+        padding: '8px 12px',
         boxSizing: 'border-box',
         overflow: 'hidden',
         cursor: 'text',
@@ -290,7 +309,6 @@ export default function TerminalComponent({ projectPath, onData, mergeTop, histo
         tabIndex={0}
         onClick={handleClick}
         onKeyDown={(e) => {
-          // 阻止 Shift+Key 事件冒泡到 Tauri/浏览器层，确保 xterm 能正常处理
           if (e.shiftKey) {
             e.stopPropagation();
           }

@@ -512,9 +512,22 @@ body {
 
 .ant-tabs-tabpane {
   flex: 1;
-  display: flex;
   flex-direction: column;
   height: 100%;
+}
+
+.ant-tabs-tabpane.ant-tabs-tabpane-active {
+  display: flex;
+}
+
+.terminal-tabs-inner .ant-tabs-nav {
+  margin-bottom: 0 !important;
+}
+.terminal-tabs-inner .ant-tabs-content-holder {
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  background: transparent !important;
 }
 
 /* ==================== Settings Tabs ==================== */
