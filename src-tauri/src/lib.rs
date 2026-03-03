@@ -335,6 +335,17 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
         [],
     )?;
 
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS testing_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_path TEXT NOT NULL UNIQUE,
+            session_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )",
+        [],
+    )?;
+
     Ok(())
 }
 
@@ -944,6 +955,130 @@ fn open_folder(path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct McpStatus {
+    installed: bool,
+    running: bool,
+    path: String,
+}
+
+#[tauri::command]
+fn run_curl_command(command: String, cwd: String) -> Result<String, String> {
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&command)
+        .current_dir(&cwd)
+        .output()
+        .map_err(|e| format!("Failed to execute command: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if !stderr.is_empty() && stdout.is_empty() {
+        Ok(format!("[stderr]\n{}", stderr))
+    } else if !stderr.is_empty() {
+        Ok(format!("{}\n\n[stderr]\n{}", stdout, stderr))
+    } else {
+        Ok(stdout)
+    }
+}
+
+#[tauri::command]
+fn check_mcp_status() -> Result<McpStatus, String> {
+    // Check if chrome-devtools-mcp is installed
+    let which_output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("which chrome-devtools-mcp 2>/dev/null || echo ''")
+        .output()
+        .map_err(|e| format!("Failed to check MCP installation: {}", e))?;
+    let path = String::from_utf8_lossy(&which_output.stdout).trim().to_string();
+    let installed = !path.is_empty();
+
+    // Check if chrome-devtools-mcp is running
+    let pgrep_output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("pgrep -f chrome-devtools-mcp 2>/dev/null")
+        .output()
+        .map_err(|e| format!("Failed to check MCP process: {}", e))?;
+    let running = pgrep_output.status.success()
+        && !String::from_utf8_lossy(&pgrep_output.stdout).trim().is_empty();
+
+    Ok(McpStatus {
+        installed,
+        running,
+        path,
+    })
+}
+
+#[tauri::command]
+fn start_mcp_server() -> Result<String, String> {
+    // First check if already running
+    let pgrep_output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("pgrep -f chrome-devtools-mcp 2>/dev/null")
+        .output()
+        .map_err(|e| format!("Failed to check MCP process: {}", e))?;
+
+    if pgrep_output.status.success()
+        && !String::from_utf8_lossy(&pgrep_output.stdout).trim().is_empty()
+    {
+        return Ok("chrome-devtools-mcp 已经在运行中".to_string());
+    }
+
+    // Start chrome-devtools-mcp in background
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg("nohup chrome-devtools-mcp > /tmp/chrome-devtools-mcp.log 2>&1 &")
+        .spawn()
+        .map_err(|e| format!("Failed to start MCP server: {}", e))?;
+
+    // Wait a moment for startup
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Verify it started
+    let verify = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("pgrep -f chrome-devtools-mcp 2>/dev/null")
+        .output()
+        .map_err(|e| format!("Failed to verify MCP process: {}", e))?;
+
+    if verify.status.success() && !String::from_utf8_lossy(&verify.stdout).trim().is_empty() {
+        Ok("chrome-devtools-mcp 启动成功".to_string())
+    } else {
+        Err("chrome-devtools-mcp 启动失败，请检查日志: /tmp/chrome-devtools-mcp.log".to_string())
+    }
+}
+
+#[tauri::command]
+fn get_testing_session(project_path: String) -> Result<Option<String>, String> {
+    let conn = open_db()?;
+    let result = conn.query_row(
+        "SELECT session_id FROM testing_sessions WHERE project_path = ?1",
+        params![project_path],
+        |row| row.get::<_, String>(0),
+    );
+    match result {
+        Ok(session_id) => Ok(Some(session_id)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+fn save_testing_session(project_path: String, session_id: String) -> Result<(), String> {
+    let conn = open_db()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+    conn.execute(
+        "INSERT INTO testing_sessions (project_path, session_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?3)
+         ON CONFLICT(project_path) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at",
+        params![project_path, session_id, now],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
 
 fn build_hook_command() -> Result<String, String> {
     if let Ok(cmd) = std::env::var("CLAUDE_MONITOR_HOOK_COMMAND") {
@@ -2075,7 +2210,12 @@ pub fn run() {
             set_active_project,
             get_active_projects,
             save_window_size,
-            get_project_sessions
+            get_project_sessions,
+            run_curl_command,
+            check_mcp_status,
+            start_mcp_server,
+            get_testing_session,
+            save_testing_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

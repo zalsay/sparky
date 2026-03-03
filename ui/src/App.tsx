@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -112,6 +112,15 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       return saved ? JSON.parse(saved) : {};
     } catch { return {}; }
   });
+
+  // Testing state
+  const [testModalOpen, setTestModalOpen] = useState(false);
+  const [curlCommand, setCurlCommand] = useState('curl -s https://httpbin.org/get');
+  const [curlResult, setCurlResult] = useState('');
+  const [curlLoading, setCurlLoading] = useState(false);
+  const [mcpStatus, setMcpStatus] = useState<{ installed: boolean; running: boolean; path: string } | null>(null);
+  const [mcpLoading, setMcpLoading] = useState(false);
+  const [mcpStarting, setMcpStarting] = useState(false);
 
   useEffect(() => {
     localStorage.setItem('sparky-sidebar-collapsed', String(sidebarCollapsed));
@@ -756,6 +765,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                       }} icon={<HistoryOutlined />} className="action-btn-outline" style={{ marginLeft: 4 }}>
                         继续会话
                       </Button>
+                      <Button size="middle" type="default" onClick={() => {
+                        setTestModalOpen(true);
+                        if (tauriAvailable) {
+                          invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status').then(setMcpStatus).catch(() => { });
+                        }
+                      }} icon={<ExperimentOutlined />} className="action-btn-outline" style={{ marginLeft: 4 }}>
+                        测试
+                      </Button>
                       <Tooltip title="完全授权模式 (--dangerously-skip-permissions)">
                         <Switch
                           size="default"
@@ -853,6 +870,256 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                         />
                       )}
                     </Modal>
+
+                    {/* Testing Modal */}
+                    <Modal
+                      title={
+                        <Space>
+                          <ExperimentOutlined style={{ color: 'var(--ant-color-primary)' }} />
+                          <span>项目测试</span>
+                        </Space>
+                      }
+                      open={testModalOpen}
+                      onCancel={() => { setTestModalOpen(false); setCurlResult(''); }}
+                      footer={null}
+                      width={720}
+                      destroyOnClose
+                      className="test-modal"
+                    >
+                      <Tabs
+                        defaultActiveKey="curl"
+                        items={[
+                          {
+                            key: 'curl',
+                            label: <span><ApiOutlined /> 接口测试 (curl)</span>,
+                            children: (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                <div>
+                                  <label style={{ fontWeight: 500, marginBottom: 6, display: 'block' }}>curl 命令</label>
+                                  <Input.TextArea
+                                    value={curlCommand}
+                                    onChange={(e) => setCurlCommand(e.target.value)}
+                                    placeholder="输入 curl 命令，例如: curl -s https://httpbin.org/get"
+                                    autoSize={{ minRows: 3, maxRows: 8 }}
+                                    style={{ fontFamily: 'monospace', fontSize: 13 }}
+                                  />
+                                </div>
+                                <div>
+                                  <Button
+                                    type="primary"
+                                    icon={curlLoading ? <LoadingOutlined /> : <ThunderboltOutlined />}
+                                    loading={curlLoading}
+                                    onClick={async () => {
+                                      if (!tauriAvailable || !selectedProject) return;
+                                      setCurlLoading(true);
+                                      setCurlResult('');
+                                      try {
+                                        const result = await invoke<string>('run_curl_command', {
+                                          command: curlCommand,
+                                          cwd: selectedProject.path,
+                                        });
+                                        setCurlResult(result);
+                                      } catch (err) {
+                                        setCurlResult(`执行失败: ${err}`);
+                                      } finally {
+                                        setCurlLoading(false);
+                                      }
+                                    }}
+                                  >
+                                    执行
+                                  </Button>
+                                </div>
+                                {curlResult && (
+                                  <div className="curl-result-box">
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                                      <span style={{ fontWeight: 500, fontSize: 13 }}>执行结果</span>
+                                      <Button
+                                        size="small"
+                                        type="text"
+                                        icon={<CopyOutlined />}
+                                        onClick={() => {
+                                          navigator.clipboard.writeText(curlResult);
+                                          messageApi.success('已复制到剪贴板');
+                                        }}
+                                      >
+                                        复制
+                                      </Button>
+                                    </div>
+                                    <pre className="curl-result-pre">{curlResult}</pre>
+                                  </div>
+                                )}
+                              </div>
+                            ),
+                          },
+                          {
+                            key: 'mcp',
+                            label: <span><EyeOutlined /> 页面测试 (MCP)</span>,
+                            children: (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                                <Card size="small" className="mcp-status-card" variant="borderless">
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                      <span style={{ fontWeight: 500 }}>Chrome DevTools MCP 状态</span>
+                                      <Button
+                                        size="small"
+                                        icon={<ReloadOutlined />}
+                                        loading={mcpLoading}
+                                        onClick={async () => {
+                                          if (!tauriAvailable) return;
+                                          setMcpLoading(true);
+                                          try {
+                                            const status = await invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status');
+                                            setMcpStatus(status);
+                                          } catch (err) {
+                                            messageApi.error(`检查失败: ${err}`);
+                                          } finally {
+                                            setMcpLoading(false);
+                                          }
+                                        }}
+                                      >
+                                        刷新状态
+                                      </Button>
+                                    </div>
+                                    {mcpStatus ? (
+                                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                          {mcpStatus.installed
+                                            ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                                            : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
+                                          <span>安装状态：{mcpStatus.installed ? '已安装' : '未安装'}</span>
+                                        </div>
+                                        {mcpStatus.installed && (
+                                          <div style={{ fontSize: 12, color: 'var(--text-secondary)', paddingLeft: 22 }}>
+                                            路径: {mcpStatus.path}
+                                          </div>
+                                        )}
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                          {mcpStatus.running
+                                            ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                                            : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
+                                          <span>运行状态：{mcpStatus.running ? '运行中' : '未运行'}</span>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div style={{ color: 'var(--text-secondary)' }}>点击刷新状态以检查</div>
+                                    )}
+                                  </div>
+                                </Card>
+                                <Button
+                                  type="primary"
+                                  size="large"
+                                  icon={<ExperimentOutlined />}
+                                  loading={mcpStarting}
+                                  onClick={async () => {
+                                    if (!tauriAvailable || !selectedProject) return;
+                                    setMcpStarting(true);
+                                    try {
+                                      // 1. Check & start MCP if not running
+                                      const status = await invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status');
+                                      setMcpStatus(status);
+                                      if (!status.installed) {
+                                        messageApi.error('chrome-devtools-mcp 未安装，请先安装');
+                                        return;
+                                      }
+                                      if (!status.running) {
+                                        try {
+                                          await invoke<string>('start_mcp_server');
+                                          const newStatus = await invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status');
+                                          setMcpStatus(newStatus);
+                                        } catch (err) {
+                                          messageApi.error(`MCP 启动失败: ${err}`);
+                                          return;
+                                        }
+                                      }
+
+                                      // 2. Create a new terminal tab named "MCP 测试"
+                                      const newId = crypto.randomUUID();
+                                      const current = projectTerminals[selectedProject.path] || [];
+                                      setProjectTerminals(prev => ({
+                                        ...prev,
+                                        [selectedProject.path]: [...current, { id: newId, title: 'MCP 测试' }]
+                                      }));
+                                      setActiveTerminalId(prev => ({
+                                        ...prev,
+                                        [selectedProject.path]: newId
+                                      }));
+
+                                      // 3. Close the test modal and switch to claude tab
+                                      setTestModalOpen(false);
+
+                                      // 4. Wait for terminal to be ready, then send claude command
+                                      setTimeout(async () => {
+                                        try {
+                                          // Check for existing testing session
+                                          const existingSession = await invoke<string | null>('get_testing_session', {
+                                            projectPath: selectedProject.path,
+                                          });
+
+                                          const isFullAuth = fullAuth[selectedProject.path] || false;
+                                          let cmd: string;
+
+                                          if (existingSession) {
+                                            // Resume existing testing session
+                                            cmd = isFullAuth
+                                              ? `claude --dangerously-skip-permissions --resume ${existingSession}\n`
+                                              : `claude --resume ${existingSession}\n`;
+                                            messageApi.info(`恢复测试会话: ${existingSession.slice(0, 12)}...`);
+                                          } else {
+                                            // Start new claude session - we'll capture the session ID from the session list later
+                                            cmd = isFullAuth
+                                              ? 'claude --dangerously-skip-permissions\n'
+                                              : 'claude\n';
+                                            messageApi.info('启动新的 MCP 测试会话');
+
+                                            // Save a placeholder session - will be updated when session starts
+                                            // We monitor the sessions table and save the latest one
+                                            setTimeout(async () => {
+                                              try {
+                                                const sessions = await invoke<SessionInfo[]>('get_project_sessions', {
+                                                  projectPath: selectedProject.path,
+                                                });
+                                                if (sessions.length > 0 && sessions[0].session_id) {
+                                                  await invoke('save_testing_session', {
+                                                    projectPath: selectedProject.path,
+                                                    sessionId: sessions[0].session_id,
+                                                  });
+                                                  messageApi.success(`测试会话已记录: ${sessions[0].session_id.slice(0, 12)}...`);
+                                                }
+                                              } catch { /* ignore */ }
+                                            }, 5000);
+                                          }
+
+                                          await invoke('pty_write', { terminalId: newId, data: cmd });
+                                        } catch (err) {
+                                          messageApi.error(`启动会话失败: ${err}`);
+                                        }
+                                      }, 1500);
+                                    } catch (err) {
+                                      messageApi.error(`操作失败: ${err}`);
+                                    } finally {
+                                      setMcpStarting(false);
+                                    }
+                                  }}
+                                  style={{ height: 48, fontSize: 16 }}
+                                >
+                                  开启 MCP 测试
+                                </Button>
+                                {!mcpStatus?.installed && (
+                                  <div style={{ padding: '12px 16px', background: 'var(--bg-secondary, #f5f5f5)', borderRadius: 8, fontSize: 13 }}>
+                                    <strong>安装说明：</strong>
+                                    <br />
+                                    请运行以下命令安装 chrome-devtools-mcp：
+                                    <pre style={{ margin: '8px 0 0', padding: '8px 12px', background: 'var(--bg-tertiary, #e8e8e8)', borderRadius: 4, fontSize: 12 }}>
+                                      npm install -g @anthropic-ai/chrome-devtools-mcp</pre>
+                                  </div>
+                                )}
+                              </div>
+                            ),
+                          },
+                        ]}
+                      />
+                    </Modal>
+
                     {lastCommand[activeTerminalId[selectedProject.path]] && (
                       <div className="last-input-bar">
                         <span className="last-input-label">最近输入</span>

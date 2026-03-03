@@ -1719,3 +1719,51 @@ body {
   align-items: center !important;
   vertical-align: middle !important;
 }
+
+/* ==================== Test Modal ==================== */
+
+.test-modal .ant-modal-body {
+  padding-top: 8px;
+}
+
+.curl-result-box {
+  background: var(--bg-secondary, #f6f8fa);
+  border: 1px solid var(--border-light, #e1e4e8);
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+
+.dark-mode .curl-result-box {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.curl-result-pre {
+  margin: 0;
+  padding: 12px;
+  background: var(--bg-tertiary, #eef0f2);
+  border-radius: 6px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-primary);
+}
+
+.dark-mode .curl-result-pre {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.mcp-status-card {
+  background: var(--bg-secondary, #f6f8fa) !important;
+  border: 1px solid var(--border-light, #e1e4e8) !important;
+  border-radius: 8px !important;
+}
+
+.dark-mode .mcp-status-card {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
