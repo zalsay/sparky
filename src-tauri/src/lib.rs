@@ -174,6 +174,16 @@ pub struct WssStatus {
     pub last_open_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionInfo {
+    pub id: i64,
+    pub session_id: String,
+    pub project_path: String,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub reason: Option<String>,
+}
+
 fn get_db_path() -> PathBuf {
     let base_dir = dirs::home_dir()
         .expect("Failed to get home directory")
@@ -309,6 +319,18 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
         "CREATE TABLE IF NOT EXISTS db_meta (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            project_path TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            ended_at INTEGER,
+            reason TEXT
         )",
         [],
     )?;
@@ -995,7 +1017,7 @@ fn check_hooks_installed_for_path(project_path: &str) -> Result<bool, String> {
 }
 
 fn is_hooks_config_complete(settings: &serde_json::Value) -> bool {
-    let required = ["Notification", "PermissionRequest", "Stop", "UserPromptSubmit"];
+    let required = ["Notification", "PermissionRequest", "Stop", "UserPromptSubmit", "SessionStart", "SessionEnd"];
     if let Some(obj) = settings.as_object() {
         if required.iter().all(|key| obj.contains_key(*key)) {
             if required.iter().all(|key| is_hooks_event_complete(&obj[*key])) {
@@ -1085,7 +1107,27 @@ fn install_hooks(project_path: String) -> Result<(), String> {
                 "hooks": [
                     {
                         "type": "command",
-                        "command": hook_command
+                        "command": hook_command.clone()
+                    }
+                ]
+            }
+        ],
+        "SessionStart": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": hook_command.clone()
+                    }
+                ]
+            }
+        ],
+        "SessionEnd": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": hook_command.clone()
                     }
                 ]
             }
@@ -1107,7 +1149,7 @@ fn install_hooks(project_path: String) -> Result<(), String> {
 
         if let Some(obj) = settings.as_object_mut() {
             // 移除旧的顶层 hook 事件 key（兼容旧格式）
-            for key in ["Notification", "PermissionRequest", "Stop", "UserPromptSubmit"] {
+            for key in ["Notification", "PermissionRequest", "Stop", "UserPromptSubmit", "SessionStart", "SessionEnd"] {
                 obj.remove(key);
             }
             // 设置/覆盖 "hooks" key
@@ -1171,6 +1213,8 @@ fn uninstall_hooks(project_path: String) -> Result<(), String> {
         obj.remove("PermissionRequest");
         obj.remove("Stop");
         obj.remove("UserPromptSubmit");
+        obj.remove("SessionStart");
+        obj.remove("SessionEnd");
         obj.remove("hooks");
     }
 
@@ -1457,6 +1501,39 @@ fn get_hook_status(project_path: String) -> Result<HookStatus, String> {
             last_event_at: None,
         })
     }
+}
+
+#[tauri::command]
+fn get_project_sessions(project_path: String) -> Result<Vec<SessionInfo>, String> {
+    let conn = open_db()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, session_id, project_path, started_at, ended_at, reason
+             FROM sessions
+             WHERE project_path = ?1
+             ORDER BY started_at DESC
+             LIMIT 50"
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(params![project_path], |row| {
+            Ok(SessionInfo {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                project_path: row.get(2)?,
+                started_at: row.get(3)?,
+                ended_at: row.get(4)?,
+                reason: row.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut sessions = Vec::new();
+    for session in rows {
+        sessions.push(session.map_err(|e| e.to_string())?);
+    }
+    Ok(sessions)
 }
 
 #[tauri::command]
@@ -1997,7 +2074,8 @@ pub fn run() {
             notify_project_active,
             set_active_project,
             get_active_projects,
-            save_window_size
+            save_window_size,
+            get_project_sessions
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

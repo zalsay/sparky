@@ -523,6 +523,7 @@ body {
 .terminal-tabs-inner .ant-tabs-nav {
   margin-bottom: 0 !important;
 }
+
 .terminal-tabs-inner .ant-tabs-content-holder {
   border: none !important;
   box-shadow: none !important;
@@ -1283,7 +1284,6 @@ body {
 
 .ant-switch-checked {
   background-color: var(--active-bg) !important;
-  border: 1px solid var(--border-color);
 }
 
 .ant-switch-checked:hover {
@@ -1700,4 +1700,22 @@ body {
 .ant-table-cell.column-summary.ant-table-cell-ellipsis,
 .ant-table-cell.column-result.ant-table-cell-ellipsis {
   white-space: nowrap !important;
+}
+
+/* Custom Switch Colors */
+.danger-switch.ant-switch-checked {
+  background-color: #ff4d4f !important;
+  border-color: #ff4d4f !important;
+}
+
+.danger-switch.ant-switch-checked:hover {
+  background-color: #ff7875 !important;
+  border-color: #ff7875 !important;
+}
+
+/* Ensure switch handle and inner text are centered */
+.ant-switch {
+  display: inline-flex !important;
+  align-items: center !important;
+  vertical-align: middle !important;
 }

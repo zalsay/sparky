@@ -16,6 +16,7 @@ export function usePty(onData?: (data: string, projectPath: string, terminalId: 
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const onDataRef = useRef(onData);
   const tauriAvailable = isTauri();
+  const listenerGenRef = useRef(0);
 
   useEffect(() => {
     onDataRef.current = onData;
@@ -40,8 +41,12 @@ export function usePty(onData?: (data: string, projectPath: string, terminalId: 
       return;
     }
     cleanupListener();
+    // Increment generation to detect stale async listeners
+    const gen = ++listenerGenRef.current;
 
     const unlisten = await listen<{ projectPath: string; terminalId: string; data: string }>('pty-data', (event) => {
+      // Ignore if this listener is stale (a newer one was created)
+      if (listenerGenRef.current !== gen) return;
       // 这里的逻辑是过滤属于当前这个 terminalId 的事件
       if (event.payload.terminalId === terminalId) {
         if ((window as any).__terminalWrite) {
@@ -52,6 +57,12 @@ export function usePty(onData?: (data: string, projectPath: string, terminalId: 
         }
       }
     });
+
+    // If another setupListener was called while we awaited, discard this listener
+    if (listenerGenRef.current !== gen) {
+      unlisten();
+      return;
+    }
 
     unlistenRef.current = unlisten;
   }, [cleanupListener]);

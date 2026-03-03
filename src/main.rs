@@ -77,25 +77,73 @@ async fn main() -> Result<()> {
     tracing::info!("[main] Args: {:?}", args);
 
     let cli = Cli::parse();
-    let config = config::Config::load()?;
 
     match cli.command {
         Commands::Hook => {
-            if let Err(e) = run_hook(&config).await {
+            // Read hook input first to check event type
+            let hook_input = hooks::read_hook_input()?;
+            let event_name = hook_input.hook_event_name.clone();
+
+            // Session events don't need Feishu config - handle them early
+            if event_name == "SessionStart" || event_name == "SessionEnd" {
+                tracing::info!("[main] Handling session event: {}", event_name);
+                append_hook_log(&format!("📥 Hook触发(session): event={}, session={}, cwd={}", event_name, hook_input.session_id, hook_input.cwd));
+
+                if event_name == "SessionStart" {
+                    if let Err(e) = save_session(&hook_input.cwd, &hook_input.session_id) {
+                        tracing::error!("[main] Failed to save session: {:?}", e);
+                        append_hook_log(&format!("❌ Session save failed: {}", e));
+                    } else {
+                        append_hook_log(&format!("✅ Session saved: {}", hook_input.session_id));
+                    }
+                } else {
+                    let reason = hook_input.reason.clone().unwrap_or_else(|| "other".to_string());
+                    if let Err(e) = end_session(&hook_input.cwd, &hook_input.session_id, &reason) {
+                        tracing::error!("[main] Failed to end session: {:?}", e);
+                        append_hook_log(&format!("❌ Session end failed: {}", e));
+                    } else {
+                        append_hook_log(&format!("✅ Session ended: {}, reason={}", hook_input.session_id, reason));
+                    }
+                }
+
+                // Output success so Claude Code continues
+                let output = hooks::HookOutput::success();
+                println!("{}", serde_json::to_string(&output).unwrap_or_default());
+                return Ok(());
+            }
+
+            // For all other events, load Feishu config
+            let config = match config::Config::load() {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("[main] Config load failed (Feishu not configured?): {:?}", e);
+                    append_hook_log(&format!("⚠️ Config load failed: {}, skipping event: {}", e, event_name));
+                    // Output success so Claude Code continues normally
+                    let output = hooks::HookOutput::success();
+                    println!("{}", serde_json::to_string(&output).unwrap_or_default());
+                    return Ok(());
+                }
+            };
+            if let Err(e) = run_hook_with_input(&config, hook_input).await {
                 tracing::error!("[main] run_hook failed: {:?}", e);
                 return Err(e);
             }
         }
-        Commands::Test { chat_id } => run_test(&config, chat_id).await?,
-        Commands::Connect => run_connect(&config).await?,
+        Commands::Test { chat_id } => {
+            let config = config::Config::load()?;
+            run_test(&config, chat_id).await?;
+        }
+        Commands::Connect => {
+            let config = config::Config::load()?;
+            run_connect(&config).await?;
+        }
     }
 
     Ok(())
 }
 
-async fn run_hook(config: &config::Config) -> Result<()> {
+async fn run_hook_with_input(config: &config::Config, hook_input: hooks::HookInput) -> Result<()> {
     tracing::info!("[run_hook] starting hook processing");
-    let hook_input = hooks::read_hook_input()?;
     tracing::info!(
         "[run_hook] event={}, session={}, cwd={}, notification_len={}, final_response_len={}, last_assistant_msg_len={}, tool={:?}",
         hook_input.hook_event_name,
@@ -112,6 +160,8 @@ async fn run_hook(config: &config::Config) -> Result<()> {
         hook_input.tool_name.as_deref().unwrap_or("-"),
         hook_input.cwd
     ));
+
+    let event_name = hook_input.hook_event_name.clone();
 
     // 检查事件类型是否在过滤列表中
     if let Some(ref filter) = config.hook_events_filter {
@@ -137,7 +187,6 @@ async fn run_hook(config: &config::Config) -> Result<()> {
     let notification_text = hook_input.notification_text.clone().unwrap_or_default();
     let final_response = hook_input.final_response.clone().unwrap_or_default();
     let last_assistant_message = hook_input.last_assistant_message.clone().unwrap_or_default();
-    let event_name = hook_input.hook_event_name.clone();
 
     // 对于 PermissionRequest，提取 tool 信息作为摘要
     let permission_summary = if event_name == "PermissionRequest" {
@@ -774,6 +823,62 @@ fn update_hook_record(
             return Err(e.into());
         }
     }
+    Ok(())
+}
+
+fn save_session(project_path: &str, session_id: &str) -> Result<()> {
+    append_hook_log(&format!("💾 Attempting to save session: {} for path: {}", session_id, project_path));
+    let db_path = get_db_path();
+    append_hook_log(&format!("📂 DB Path: {:?}", db_path));
+    
+    let conn = Connection::open(&db_path)?;
+    // Ensure sessions table exists (in case the Tauri app hasn't created it yet)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            project_path TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            ended_at INTEGER,
+            reason TEXT
+        )",
+        [],
+    )?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    
+    match conn.execute(
+        "INSERT INTO sessions (session_id, project_path, started_at) VALUES (?1, ?2, ?3)",
+        params![session_id, project_path, now],
+    ) {
+        Ok(_) => {
+            append_hook_log(&format!("✅ Session saved to DB: {}", session_id));
+            tracing::info!("[db:session] saved session_id={}, project_path={}", session_id, project_path);
+        },
+        Err(e) => {
+            append_hook_log(&format!("❌ Failed to insert session: {}", e));
+            return Err(e.into());
+        }
+    }
+    Ok(())
+}
+
+fn end_session(project_path: &str, session_id: &str, reason: &str) -> Result<()> {
+    append_hook_log(&format!("🔚 Attempting to end session: {}, reason: {}", session_id, reason));
+    let db_path = get_db_path();
+    let conn = Connection::open(&db_path)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let affected = conn.execute(
+        "UPDATE sessions SET ended_at = ?1, reason = ?2 WHERE session_id = ?3 AND project_path = ?4 AND ended_at IS NULL",
+        params![now, reason, session_id, project_path],
+    )?;
+    append_hook_log(&format!("✅ Session end updated, affected rows: {}", affected));
+    tracing::info!("[db:session] ended session_id={}, reason={}, affected={}", session_id, reason, affected);
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -51,6 +51,15 @@ interface HookRecordsResponse {
   page_size: number;
 }
 
+interface SessionInfo {
+  id: number;
+  session_id: string;
+  project_path: string;
+  started_at: number;
+  ended_at: number | null;
+  reason: string | null;
+}
+
 function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsDarkMode: (v: boolean) => void }) {
   const { message: messageApi, modal: modalApi } = AntApp.useApp();
   const [form] = Form.useForm();
@@ -94,9 +103,23 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     return saved === 'true';
   });
 
+  // Session management state
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [sessionModalOpen, setSessionModalOpen] = useState(false);
+  const [fullAuth, setFullAuth] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem('sparky-full-auth');
+      return saved ? JSON.parse(saved) : {};
+    } catch { return {}; }
+  });
+
   useEffect(() => {
     localStorage.setItem('sparky-sidebar-collapsed', String(sidebarCollapsed));
   }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem('sparky-full-auth', JSON.stringify(fullAuth));
+  }, [fullAuth]);
 
   // Poll WebSocket connection status and active projects
   useEffect(() => {
@@ -322,6 +345,17 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const formatHookTime = (value: number) => {
     const time = value > 1_000_000_000_000 ? value : value * 1000;
     return new Date(time).toLocaleString();
+  };
+
+  const fetchSessions = async (projectPath: string) => {
+    if (!tauriAvailable) return;
+    try {
+      const result = await invoke<SessionInfo[]>('get_project_sessions', { projectPath });
+      setSessions(result);
+    } catch (error) {
+      console.error('Failed to fetch sessions:', error);
+      setSessions([]);
+    }
   };
 
   const handleDeleteHookRecord = async (id: number) => {
@@ -708,24 +742,31 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                       />
                       <span className="header-divider" />
                       <span className="project-title-badge">{selectedProject.name}</span>
-                      <Button size="small" type="default" onClick={() => {
+                      <Button size="middle" type="primary" icon={<PlayCircleOutlined />} onClick={() => {
                         const tid = activeTerminalId[selectedProject.path];
-                        if (tid) invoke('pty_write', { terminalId: tid, data: 'claude\n' });
+                        const isFullAuth = fullAuth[selectedProject.path] || false;
+                        const cmd = isFullAuth ? 'claude --dangerously-skip-permissions\n' : 'claude\n';
+                        if (tid) invoke('pty_write', { terminalId: tid, data: cmd });
                       }} className="action-btn-outline" style={{ marginLeft: 8 }}>
-                        正常启动
+                        新建会话
                       </Button>
-                      <Button size="small" type="default" onClick={() => {
-                        const tid = activeTerminalId[selectedProject.path];
-                        if (tid) invoke('pty_write', { terminalId: tid, data: 'claude --dangerously-skip-permissions\n' });
-                      }} className="action-btn-outline danger" style={{ marginLeft: 4 }}>
-                        放权启动
+                      <Button size="middle" type="default" onClick={async () => {
+                        await fetchSessions(selectedProject.path);
+                        setSessionModalOpen(true);
+                      }} icon={<HistoryOutlined />} className="action-btn-outline" style={{ marginLeft: 4 }}>
+                        继续会话
                       </Button>
-                      <Button size="small" type="default" onClick={() => {
-                        const tid = activeTerminalId[selectedProject.path];
-                        if (tid) invoke('pty_write', { terminalId: tid, data: 'claude --dangerously-skip-permissions --continue\n' });
-                      }} className="action-btn-outline danger" style={{ marginLeft: 4 }}>
-                        放权continue
-                      </Button>
+                      <Tooltip title="完全授权模式 (--dangerously-skip-permissions)">
+                        <Switch
+                          size="default"
+                          className={fullAuth[selectedProject.path] ? 'danger-switch' : ''}
+                          checked={fullAuth[selectedProject.path] || false}
+                          onChange={(checked) => setFullAuth(prev => ({ ...prev, [selectedProject.path]: checked }))}
+                          checkedChildren="授权"
+                          unCheckedChildren="安全"
+                          style={{ marginLeft: 12 }}
+                        />
+                      </Tooltip>
                       <span className={`ws-status-badge ${wsConnected ? 'connected' : 'disconnected'}`}>
                         <span className="ws-status-dot" />
                         {wsConnected ? '已连接' : '未连接'}
@@ -740,6 +781,78 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                         style={{ marginLeft: 12 }}
                       />
                     </div>
+
+                    {/* Session Picker Modal */}
+                    <Modal
+                      title="选择要继续的会话"
+                      open={sessionModalOpen}
+                      onCancel={() => setSessionModalOpen(false)}
+                      footer={null}
+                      width={600}
+                    >
+                      {sessions.length === 0 ? (
+                        <Empty description="暂无历史会话" />
+                      ) : (
+                        <Table
+                          dataSource={sessions}
+                          rowKey="id"
+                          size="small"
+                          pagination={{ pageSize: 10 }}
+                          columns={[
+                            {
+                              title: 'Session ID',
+                              dataIndex: 'session_id',
+                              key: 'session_id',
+                              width: 200,
+                              render: (text: string) => (
+                                <Typography.Text copyable style={{ fontSize: 12 }}>
+                                  {text.length > 12 ? text.slice(0, 12) + '...' : text}
+                                </Typography.Text>
+                              ),
+                            },
+                            {
+                              title: '开始时间',
+                              dataIndex: 'started_at',
+                              key: 'started_at',
+                              width: 160,
+                              render: (value: number) => formatHookTime(value),
+                            },
+                            {
+                              title: '状态',
+                              key: 'status',
+                              width: 100,
+                              render: (_: any, record: SessionInfo) => (
+                                <Tag color={record.ended_at ? 'default' : 'green'}>
+                                  {record.ended_at ? (record.reason || '已结束') : '运行中'}
+                                </Tag>
+                              ),
+                            },
+                            {
+                              title: '操作',
+                              key: 'action',
+                              width: 80,
+                              render: (_: any, record: SessionInfo) => (
+                                <Button
+                                  size="small"
+                                  type="primary"
+                                  onClick={() => {
+                                    const tid = activeTerminalId[selectedProject.path];
+                                    const isFullAuth = fullAuth[selectedProject.path] || false;
+                                    const cmd = isFullAuth
+                                      ? `claude --dangerously-skip-permissions --resume ${record.session_id}\n`
+                                      : `claude --resume ${record.session_id}\n`;
+                                    if (tid) invoke('pty_write', { terminalId: tid, data: cmd });
+                                    setSessionModalOpen(false);
+                                  }}
+                                >
+                                  继续
+                                </Button>
+                              ),
+                            },
+                          ]}
+                        />
+                      )}
+                    </Modal>
                     {lastCommand[activeTerminalId[selectedProject.path]] && (
                       <div className="last-input-bar">
                         <span className="last-input-label">最近输入</span>
