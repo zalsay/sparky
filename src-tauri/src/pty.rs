@@ -174,7 +174,13 @@ pub async fn pty_spawn(
         })
         .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
-    let mut cmd = CommandBuilder::new(&program);
+    let actual_program = if program.is_empty() {
+        std::env::var("SHELL").unwrap_or_else(|_| if cfg!(target_os = "windows") { "cmd.exe".to_string() } else { "sh".to_string() })
+    } else {
+        program.clone()
+    };
+
+    let mut cmd = CommandBuilder::new(&actual_program);
     cmd.args(&args);
     cmd.cwd(&cwd);
     // 继承父进程环境变量，再覆盖指定的
