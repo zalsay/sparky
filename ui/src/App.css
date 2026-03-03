@@ -161,7 +161,6 @@ body {
 }
 
 .active-project-tag:hover {
-  background: var(--hover-bg) !important;
   border-color: var(--text-secondary) !important;
 }
 
@@ -240,10 +239,7 @@ body {
 }
 
 .app-sidebar .ant-menu-item:hover {
-  background: var(--active-text) !important;
-  color: var(--active-bg) !important;
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(255, 255, 255, 0.15);
 }
 
 .app-sidebar .ant-menu-item:hover .anticon {
@@ -311,14 +307,11 @@ body {
 }
 
 .app-sidebar .ant-menu-item:hover {
-  background-color: rgba(0, 0, 0, 0.04) !important;
   transform: translateY(-2px);
   box-shadow: 0 4px 12px var(--shadow-color);
 }
 
-.dark-mode .app-sidebar .ant-menu-item:hover {
-  background-color: rgba(255, 255, 255, 0.08) !important;
-}
+.dark-mode .app-sidebar .ant-menu-item:hover {}
 
 .app-sidebar .ant-menu-item-selected::after {
   display: none;
@@ -661,14 +654,11 @@ body {
 }
 
 .project-detail-header .back-button:hover {
-  background: rgba(0, 0, 0, 0.08);
   color: var(--text-primary);
   transform: translateX(-2px);
 }
 
-.dark-mode .project-detail-header .back-button:hover {
-  background: rgba(255, 255, 255, 0.1);
-}
+.dark-mode .project-detail-header .back-button:hover {}
 
 .project-detail-header .header-divider {
   width: 1px;
@@ -1227,9 +1217,7 @@ body {
   background: var(--card-bg);
 }
 
-.ant-table-tbody>tr:hover>td {
-  background: var(--hover-bg) !important;
-}
+.ant-table-tbody>tr:hover>td {}
 
 .ant-btn {
   transition: all 0.3s cubic-bezier(0.645, 0.045, 0.355, 1) !important;
@@ -1453,20 +1441,22 @@ body {
   border-color: rgba(255, 255, 255, 0.2) !important;
 }
 
-.action-btn-outline:hover,
-.action-btn-outline:hover .anticon,
-.action-btn-outline:hover span {
-  background: var(--text-primary) !important;
-  color: var(--card-bg) !important;
+.ant-btn.action-btn-outline:hover,
+.ant-btn.action-btn-outline:hover .anticon,
+.ant-btn.action-btn-outline:hover span {
+  background: transparent !important;
+  color: var(--text-primary) !important;
   border-color: var(--text-primary) !important;
+  box-shadow: none !important;
 }
 
-.action-btn-outline.danger:hover,
-.action-btn-outline.danger:hover .anticon,
-.action-btn-outline.danger:hover span {
-  background: #ef4444 !important;
-  color: var(--active-text) !important;
+.ant-btn.action-btn-outline.danger:hover,
+.ant-btn.action-btn-outline.danger:hover .anticon,
+.ant-btn.action-btn-outline.danger:hover span {
+  background: transparent !important;
+  color: #ef4444 !important;
   border-color: #ef4444 !important;
+  box-shadow: none !important;
 }
 
 /* ==================== Last Input Bar ==================== */
@@ -1549,6 +1539,17 @@ body {
   border-radius: 12px;
   overflow: hidden;
   background: var(--card-bg);
+}
+
+.hook-detail-modal .ant-modal-header,
+.test-modal .ant-modal-header {
+  background: transparent !important;
+  border-bottom: none !important;
+  padding: 20px 24px 0 !important;
+}
+
+.test-modal .ant-modal-title {
+  background: transparent !important;
 }
 
 .hook-detail-modal .ant-modal-header {

@@ -1080,7 +1080,7 @@ fn save_testing_session(project_path: String, session_id: String) -> Result<(), 
     Ok(())
 }
 
-fn build_hook_command() -> Result<String, String> {
+pub fn build_hook_command() -> Result<String, String> {
     if let Ok(cmd) = std::env::var("CLAUDE_MONITOR_HOOK_COMMAND") {
         if !cmd.trim().is_empty() {
             return Ok(cmd);

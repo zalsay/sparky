@@ -187,8 +187,17 @@ pub async fn pty_spawn(
     for (key, value) in std::env::vars() {
         cmd.env(&key, &value);
     }
+    let mut has_hook = false;
     for (key, value) in envs {
+        if key == "CLAUDE_MONITOR_HOOK_COMMAND" {
+            has_hook = true;
+        }
         cmd.env(&key, &value);
+    }
+    if !has_hook {
+        if let Ok(hook_cmd) = crate::build_hook_command() {
+            cmd.env("CLAUDE_MONITOR_HOOK_COMMAND", hook_cmd);
+        }
     }
 
     let child = pair.slave.spawn_command(cmd)

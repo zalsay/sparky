@@ -198,7 +198,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       const newId = crypto.randomUUID();
       setProjectTerminals(prev => ({
         ...prev,
-        [selectedProject.path]: [{ id: newId, title: '终端 1' }]
+        [selectedProject.path]: [{ id: newId, title: 'Claude-1' }]
       }));
       setActiveTerminalId(prev => ({
         ...prev,
@@ -884,73 +884,11 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                       footer={null}
                       width={720}
                       destroyOnClose
-                      className="test-modal"
+                      className="test-modal" styles={{ mask: { backdropFilter: "blur(4px)" }, header: { background: "transparent", borderBottom: 0, marginBottom: 0, paddingBottom: 0 }, content: { background: "var(--header-bg)" } }}
                     >
                       <Tabs
-                        defaultActiveKey="curl"
+                        defaultActiveKey="mcp"
                         items={[
-                          {
-                            key: 'curl',
-                            label: <span><ApiOutlined /> 接口测试 (curl)</span>,
-                            children: (
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                                <div>
-                                  <label style={{ fontWeight: 500, marginBottom: 6, display: 'block' }}>curl 命令</label>
-                                  <Input.TextArea
-                                    value={curlCommand}
-                                    onChange={(e) => setCurlCommand(e.target.value)}
-                                    placeholder="输入 curl 命令，例如: curl -s https://httpbin.org/get"
-                                    autoSize={{ minRows: 3, maxRows: 8 }}
-                                    style={{ fontFamily: 'monospace', fontSize: 13 }}
-                                  />
-                                </div>
-                                <div>
-                                  <Button
-                                    type="primary"
-                                    icon={curlLoading ? <LoadingOutlined /> : <ThunderboltOutlined />}
-                                    loading={curlLoading}
-                                    onClick={async () => {
-                                      if (!tauriAvailable || !selectedProject) return;
-                                      setCurlLoading(true);
-                                      setCurlResult('');
-                                      try {
-                                        const result = await invoke<string>('run_curl_command', {
-                                          command: curlCommand,
-                                          cwd: selectedProject.path,
-                                        });
-                                        setCurlResult(result);
-                                      } catch (err) {
-                                        setCurlResult(`执行失败: ${err}`);
-                                      } finally {
-                                        setCurlLoading(false);
-                                      }
-                                    }}
-                                  >
-                                    执行
-                                  </Button>
-                                </div>
-                                {curlResult && (
-                                  <div className="curl-result-box">
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                                      <span style={{ fontWeight: 500, fontSize: 13 }}>执行结果</span>
-                                      <Button
-                                        size="small"
-                                        type="text"
-                                        icon={<CopyOutlined />}
-                                        onClick={() => {
-                                          navigator.clipboard.writeText(curlResult);
-                                          messageApi.success('已复制到剪贴板');
-                                        }}
-                                      >
-                                        复制
-                                      </Button>
-                                    </div>
-                                    <pre className="curl-result-pre">{curlResult}</pre>
-                                  </div>
-                                )}
-                              </div>
-                            ),
-                          },
                           {
                             key: 'mcp',
                             label: <span><EyeOutlined /> 页面测试 (MCP)</span>,
@@ -1032,16 +970,22 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         }
                                       }
 
-                                      // 2. Create a new terminal tab named "MCP 测试"
-                                      const newId = crypto.randomUUID();
+                                      // 2. Create or reuse terminal tab named "MCP 测试"
                                       const current = projectTerminals[selectedProject.path] || [];
-                                      setProjectTerminals(prev => ({
-                                        ...prev,
-                                        [selectedProject.path]: [...current, { id: newId, title: 'MCP 测试' }]
-                                      }));
+                                      const existingTab = current.find(t => t.title === "MCP 测试");
+                                      let targetTerminalId = existingTab?.id;
+
+                                      if (!targetTerminalId) {
+                                        targetTerminalId = crypto.randomUUID();
+                                        setProjectTerminals(prev => ({
+                                          ...prev,
+                                          [selectedProject.path]: [...current, { id: targetTerminalId, title: "MCP 测试" }]
+                                        }));
+                                      }
+
                                       setActiveTerminalId(prev => ({
                                         ...prev,
-                                        [selectedProject.path]: newId
+                                        [selectedProject.path]: targetTerminalId
                                       }));
 
                                       // 3. Close the test modal and switch to claude tab
@@ -1065,20 +1009,27 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                               : `claude --resume ${existingSession}\n`;
                                             messageApi.info(`恢复测试会话: ${existingSession.slice(0, 12)}...`);
                                           } else {
-                                            // Start new claude session - we'll capture the session ID from the session list later
+                                            // Start new claude session - capture current sessions first to avoid saving old session
+                                            const currentSessions = await invoke<SessionInfo[]>('get_project_sessions', {
+                                              projectPath: selectedProject.path,
+                                            }).catch(() => [] as SessionInfo[]);
+                                            const topId = currentSessions.length > 0 ? currentSessions[0].id : 0;
+
                                             cmd = isFullAuth
                                               ? 'claude --dangerously-skip-permissions\n'
                                               : 'claude\n';
-                                            messageApi.info('启动新的 MCP 测试会话');
+                                            messageApi.info('启动新的 MCP 测试会话，正在连接...');
 
-                                            // Save a placeholder session - will be updated when session starts
-                                            // We monitor the sessions table and save the latest one
-                                            setTimeout(async () => {
+                                            // Poll for up to 15 seconds to find the newly created session
+                                            let attempts = 0;
+                                            const pollInterval = setInterval(async () => {
+                                              attempts++;
                                               try {
                                                 const sessions = await invoke<SessionInfo[]>('get_project_sessions', {
                                                   projectPath: selectedProject.path,
                                                 });
-                                                if (sessions.length > 0 && sessions[0].session_id) {
+                                                if (sessions.length > 0 && sessions[0].id > topId && sessions[0].session_id) {
+                                                  clearInterval(pollInterval);
                                                   await invoke('save_testing_session', {
                                                     projectPath: selectedProject.path,
                                                     sessionId: sessions[0].session_id,
@@ -1086,10 +1037,15 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                                   messageApi.success(`测试会话已记录: ${sessions[0].session_id.slice(0, 12)}...`);
                                                 }
                                               } catch { /* ignore */ }
-                                            }, 5000);
+
+                                              if (attempts >= 15) {
+                                                clearInterval(pollInterval);
+                                                console.log("MCP Test session polling timed out");
+                                              }
+                                            }, 1000);
                                           }
 
-                                          await invoke('pty_write', { terminalId: newId, data: cmd });
+                                          await invoke('pty_write', { terminalId: targetTerminalId, data: cmd });
                                         } catch (err) {
                                           messageApi.error(`启动会话失败: ${err}`);
                                         }
@@ -1111,6 +1067,68 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                     请运行以下命令安装 chrome-devtools-mcp：
                                     <pre style={{ margin: '8px 0 0', padding: '8px 12px', background: 'var(--bg-tertiary, #e8e8e8)', borderRadius: 4, fontSize: 12 }}>
                                       npm install -g @anthropic-ai/chrome-devtools-mcp</pre>
+                                  </div>
+                                )}
+                              </div>
+                            ),
+                          },
+                          {
+                            key: 'curl',
+                            label: <span><ApiOutlined /> 接口测试 (curl)</span>,
+                            children: (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                <div>
+                                  <label style={{ fontWeight: 500, marginBottom: 6, display: 'block' }}>curl 命令</label>
+                                  <Input.TextArea
+                                    value={curlCommand}
+                                    onChange={(e) => setCurlCommand(e.target.value)}
+                                    placeholder="输入 curl 命令，例如: curl -s https://httpbin.org/get"
+                                    autoSize={{ minRows: 3, maxRows: 8 }}
+                                    style={{ fontFamily: 'monospace', fontSize: 13 }}
+                                  />
+                                </div>
+                                <div>
+                                  <Button
+                                    type="primary"
+                                    icon={curlLoading ? <LoadingOutlined /> : <ThunderboltOutlined />}
+                                    loading={curlLoading}
+                                    onClick={async () => {
+                                      if (!tauriAvailable || !selectedProject) return;
+                                      setCurlLoading(true);
+                                      setCurlResult('');
+                                      try {
+                                        const result = await invoke<string>('run_curl_command', {
+                                          command: curlCommand,
+                                          cwd: selectedProject.path,
+                                        });
+                                        setCurlResult(result);
+                                      } catch (err) {
+                                        setCurlResult(`执行失败: ${err}`);
+                                      } finally {
+                                        setCurlLoading(false);
+                                      }
+                                    }}
+                                  >
+                                    执行
+                                  </Button>
+                                </div>
+                                {curlResult && (
+                                  <div className="curl-result-box">
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                                      <span style={{ fontWeight: 500, fontSize: 13 }}>执行结果</span>
+                                      <Button
+                                        size="small"
+                                        type="text"
+                                        icon={<CopyOutlined />}
+                                        onClick={() => {
+                                          navigator.clipboard.writeText(curlResult);
+                                          messageApi.success('已复制到剪贴板');
+                                        }}
+                                      >
+                                        复制
+                                      </Button>
+                                    </div>
+                                    <pre className="curl-result-pre">{curlResult}</pre>
                                   </div>
                                 )}
                               </div>
@@ -1161,7 +1179,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                       const current = projectTerminals[selectedProject!.path] || [];
                                       setProjectTerminals(prev => ({
                                         ...prev,
-                                        [selectedProject!.path]: [...current, { id: newId, title: `终端 ${current.length + 1}` }]
+                                        [selectedProject!.path]: [...current, { id: newId, title: `Claude-${current.length + 1}` }]
                                       }));
                                       setActiveTerminalId(prev => ({
                                         ...prev,
