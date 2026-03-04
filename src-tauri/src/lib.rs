@@ -183,6 +183,7 @@ pub struct SessionInfo {
     pub ended_at: Option<i64>,
     pub reason: Option<String>,
     pub name: Option<String>,
+    pub project_name: Option<String>,
 }
 
 fn get_db_path() -> PathBuf {
@@ -332,7 +333,8 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
             started_at INTEGER NOT NULL,
             ended_at INTEGER,
             reason TEXT,
-            name TEXT
+            name TEXT,
+            project_name TEXT
         )",
         [],
     )?;
@@ -357,6 +359,7 @@ pub(crate) fn open_db() -> Result<Connection, String> {
     
     // Add missing names column to active databases
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN name TEXT", []);
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN project_name TEXT", []);
 
     // Remove duplicates keeping the first one, then enforce unique constraint
     let _ = conn.execute(
@@ -1661,7 +1664,7 @@ fn get_project_sessions(project_path: String) -> Result<Vec<SessionInfo>, String
     let conn = open_db()?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, session_id, project_path, started_at, ended_at, reason, name
+            "SELECT id, session_id, project_path, started_at, ended_at, reason, name, project_name
              FROM sessions
              WHERE project_path = ?1
              ORDER BY started_at DESC
@@ -1679,6 +1682,7 @@ fn get_project_sessions(project_path: String) -> Result<Vec<SessionInfo>, String
                 ended_at: row.get(4)?,
                 reason: row.get(5)?,
                 name: row.get(6)?,
+                project_name: row.get(7)?,
             })
         })
         .map_err(|e| e.to_string())?;

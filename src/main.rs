@@ -90,11 +90,15 @@ async fn main() -> Result<()> {
                 append_hook_log(&format!("📥 Hook触发(session): event={}, session={}, cwd={}", event_name, hook_input.session_id, hook_input.cwd));
 
                 if event_name == "SessionStart" {
-                    if let Err(e) = save_session(&hook_input.cwd, &hook_input.session_id) {
+                    let project_name = std::path::Path::new(&hook_input.cwd)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("Unknown");
+                    if let Err(e) = save_session(&hook_input.cwd, &hook_input.session_id, project_name) {
                         tracing::error!("[main] Failed to save session: {:?}", e);
                         append_hook_log(&format!("❌ Session save failed: {}", e));
                     } else {
-                        append_hook_log(&format!("✅ Session saved: {}", hook_input.session_id));
+                        append_hook_log(&format!("✅ Session saved: {} ({})", hook_input.session_id, project_name));
                     }
                 } else {
                     let reason = hook_input.reason.clone().unwrap_or_else(|| "other".to_string());
@@ -826,7 +830,7 @@ fn update_hook_record(
     Ok(())
 }
 
-fn save_session(project_path: &str, session_id: &str) -> Result<()> {
+fn save_session(project_path: &str, session_id: &str, project_name: &str) -> Result<()> {
     append_hook_log(&format!("💾 Attempting to save session: {} for path: {}", session_id, project_path));
     let db_path = get_db_path();
     append_hook_log(&format!("📂 DB Path: {:?}", db_path));
@@ -840,18 +844,20 @@ fn save_session(project_path: &str, session_id: &str) -> Result<()> {
             project_path TEXT NOT NULL,
             started_at INTEGER NOT NULL,
             ended_at INTEGER,
-            reason TEXT
+            reason TEXT,
+            project_name TEXT
         )",
         [],
     )?;
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN project_name TEXT", []);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
     
     match conn.execute(
-        "INSERT OR IGNORE INTO sessions (session_id, project_path, started_at) VALUES (?1, ?2, ?3)",
-        params![session_id, project_path, now],
+        "INSERT OR IGNORE INTO sessions (session_id, project_path, started_at, project_name) VALUES (?1, ?2, ?3, ?4)",
+        params![session_id, project_path, now, project_name],
     ) {
         Ok(_) => {
             append_hook_log(&format!("✅ Session saved to DB: {}", session_id));

@@ -59,6 +59,7 @@ interface SessionInfo {
   ended_at: number | null;
   reason: string | null;
   name: string | null;
+  project_name: string | null;
 }
 
 function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsDarkMode: (v: boolean) => void }) {
@@ -366,11 +367,15 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const fetchSessions = async (projectPath: string) => {
-    if (!tauriAvailable) return;
+    if (!tauriAvailable || !selectedProject) return;
     try {
       const result = await invoke<SessionInfo[]>('get_project_sessions', { project_path: projectPath });
-      // Deduplicate sessions by ID
-      const uniqueSessions = Array.from(new Map(result.map(s => [s.session_id, s])).values());
+      // Deduplicate sessions by ID and filter by project name if present
+      const filteredResult = result.filter(s => {
+        if (!s.project_name) return true; // Keep old sessions without project_name
+        return s.project_name === selectedProject.name;
+      });
+      const uniqueSessions = Array.from(new Map(filteredResult.map(s => [s.session_id, s])).values());
       setSessions(uniqueSessions);
     } catch (error) {
       console.error('Failed to fetch sessions:', error);
