@@ -2155,6 +2155,20 @@ pub fn run() {
                 }
             }
 
+            // 启动 code-server（完整的 VSCode Web IDE）
+            std::thread::spawn(|| {
+                log::info!("Starting code-server on 127.0.0.1:18080...");
+                match std::process::Command::new("code-server")
+                    .args(["--auth", "none", "--bind-addr", "127.0.0.1:18080"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    Ok(_) => log::info!("code-server started successfully"),
+                    Err(e) => log::error!("Failed to start code-server: {}", e),
+                }
+            });
+
             // 启动时自动连接飞书 WSS
             let app_handle_for_ws = app.handle().clone();
             tauri::async_runtime::spawn(async move {

@@ -5,7 +5,7 @@
   "identifier": "com.sparky.desktop",
   "build": {
     "frontendDist": "../ui/dist",
-    "devUrl": "http://localhost:5176",
+    "devUrl": "http://localhost:51760",
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "cargo build --release --bin sparky-server --manifest-path Cargo.toml && cp -f target/release/sparky-server target/release/sparky-server-aarch64-apple-darwin || true && npm run build"
   },

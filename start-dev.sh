@@ -2,6 +2,12 @@
 
 echo "🚀 Starting Claude Monitor Development..."
 
+# 检查是否安装了 code-server
+if ! command -v code-server &>/dev/null; then
+    echo "⚠️  code-server not found. Installing..."
+    brew install code-server
+fi
+
 # 检查是否安装了依赖
 if [ ! -d "ui/node_modules" ]; then
     echo "📦 Installing frontend dependencies..."

@@ -1566,6 +1566,26 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                               </Card>
                             ),
                           },
+                          {
+                            key: 'vscode',
+                            label: 'Code Server',
+                            closable: false,
+                            children: (
+                              <Card className="projects-card config-card" variant="borderless" style={{ flex: 1, height: '100%', padding: 0, overflow: 'hidden' }}>
+                                <iframe
+                                  src="http://127.0.0.1:18080"
+                                  title="Code Server"
+                                  style={{
+                                    width: '100%',
+                                    height: 'calc(100vh - 120px)',
+                                    border: 'none',
+                                    display: 'block',
+                                  }}
+                                  allow="clipboard-read; clipboard-write"
+                                />
+                              </Card>
+                            )
+                          }
                         ]}
                       />
                     </div>
