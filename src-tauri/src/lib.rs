@@ -949,6 +949,31 @@ fn save_config(config: AppConfig) -> Result<(), String> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+async fn open_in_coder(file_path: String) -> Result<(), String> {
+    log::info!("Attempting to open file in code-server: {}", file_path);
+    let output = std::process::Command::new("code-server")
+        .args(["-r", &file_path])
+        .output()
+        .map_err(|e| {
+            let err_msg = format!("Failed to execute code-server command: {}", e);
+            log::error!("{}", err_msg);
+            err_msg
+        })?;
+
+    if output.status.success() {
+        log::info!("code-server command executed successfully for path: {}", file_path);
+        Ok(())
+    } else {
+        let err_msg = format!(
+            "code-server exited with error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        log::error!("{}", err_msg);
+        Err(err_msg)
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
 fn open_folder(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -2253,6 +2278,7 @@ pub fn run() {
             delete_project,
             set_project_hooks_status,
             open_folder,
+            open_in_coder,
             get_ws_connected,
             notify_project_active,
             set_active_project,

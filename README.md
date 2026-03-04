@@ -25,6 +25,16 @@
 
 ## 🚀 快速开始
 
+### 0. 前置依赖 (重要)
+Sparky 内置了强大的 **Coder IDE** 项目内嵌开发环境。为了正常使用该功能，您需要全局安装 `code-server`：
+```bash
+# macOS 推荐使用 Homebrew 安装：
+brew install code-server
+
+# 或者使用 npm 全局安装：
+npm install -g code-server
+```
+
 ### 1. 配置飞书机器人
 1. 前往 [飞书开放平台](https://open.feishu.cn/) 创建一个 **企业自建应用**。
 2. 在应用功能中开启 **机器人** 能力，并申请接收消息相关权限。

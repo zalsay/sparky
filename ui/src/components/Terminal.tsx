@@ -11,6 +11,7 @@ interface TerminalProps {
   terminalId: string;
   title?: string;
   onData?: (data: string) => void;
+  onLinkClick?: (path: string) => void;
   mergeTop?: boolean;
   historyLines?: string[];
   fullscreen?: boolean;
@@ -97,11 +98,12 @@ function getOrCreateTerminal(terminalId: string, title?: string, themeVals?: { b
   return created;
 }
 
-export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent({ projectPath, terminalId, title, onData, mergeTop, historyLines, fullscreen, theme }: TerminalProps, ref) {
+export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent({ projectPath, terminalId, title, onData, onLinkClick, mergeTop, historyLines, fullscreen, theme }: TerminalProps, ref) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const onDataRef = useRef(onData);
+  const onLinkClickRef = useRef(onLinkClick);
 
   const { startPty, write, clearPty } = usePty();
 
@@ -114,6 +116,10 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
   useEffect(() => {
     onDataRef.current = onData;
   }, [onData]);
+
+  useEffect(() => {
+    onLinkClickRef.current = onLinkClick;
+  }, [onLinkClick]);
 
   const notifyBackendActiveProject = async (path: string) => {
     try {
@@ -159,6 +165,65 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
 
     cached.term.attachCustomKeyEventHandler(() => {
       return true;
+    });
+
+    // Register link provider for file paths
+    const linkProvider = cached.term.registerLinkProvider({
+      provideLinks(bufferLineNumber: number, callback: (links: any[] | undefined) => void) {
+        const line = cached.term.buffer.active.getLine(bufferLineNumber - 1);
+        if (!line) { callback(undefined); return; }
+        const lineText = line.translateToString(true);
+        const links: any[] = [];
+
+        // Match Linux/Mac paths (absolute, relative, home)
+        const pathRegex = /(?:^|\s)(\/?|\.\/|\.\.\/|~\/)([a-zA-Z0-9_.\-]+(?:\/[a-zA-Z0-9_.\-]+)+)(?::\d+)?/g;
+        let match;
+
+        while ((match = pathRegex.exec(lineText)) !== null) {
+          const prefix = match[1];
+          const pathBody = match[2];
+          const matchText = prefix + pathBody; // The actual path part, excluding leading spaces
+          const matchedFull = match[0];
+
+          let startIndex = match.index;
+          const spaceMatch = matchedFull.match(/^\s/);
+          if (spaceMatch) startIndex += spaceMatch[0].length;
+
+          const startX = startIndex + 1; // xterm is 1-indexed
+          const endX = startIndex + matchText.length;
+
+          links.push({
+            range: {
+              start: { x: startX, y: bufferLineNumber },
+              end: { x: endX, y: bufferLineNumber },
+            },
+            text: matchText,
+            decorations: { underline: true, pointerCursor: true },
+            activate: (_event: MouseEvent, text: string) => {
+              // Strip line:col suffix for path resolution
+              const cleanPath = text.replace(/:\d+(:\d+)?$/, '');
+              let resolvedPath = cleanPath;
+              if (cleanPath.startsWith('~/')) {
+                // Cannot resolve ~ on frontend, pass as-is
+                resolvedPath = cleanPath;
+              } else if (cleanPath.startsWith('/')) {
+                // Absolute path: pass as-is
+                resolvedPath = cleanPath;
+              } else {
+                // Relative path: resolve against project path
+                resolvedPath = projectPath + '/' + cleanPath.replace(/^\.\//, '');
+              }
+              console.log('Terminal Link Clicked:', { text, cleanPath, resolvedPath });
+              if (onLinkClickRef.current) {
+                onLinkClickRef.current(resolvedPath);
+              }
+            },
+            hover: () => { },
+            leave: () => { },
+          });
+        }
+        callback(links.length > 0 ? links : undefined);
+      }
     });
 
     const dataDisposable = cached.term.onData((data) => {
@@ -215,6 +280,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
       disposed = true;
       ptyReady = false;
       resizeObserver.disconnect();
+      linkProvider.dispose();
       dataDisposable.dispose();
       resizeDisposable.dispose();
       clearPty();

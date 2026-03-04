@@ -1,12 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
-import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined } from '@ant-design/icons';
+import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown } from 'antd';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 
 import TerminalComponent from './components/Terminal';
 import logo from '../../logo.png';
+import codeIcon from './assets/Code.svg';
+import claudeIcon from './assets/Claude.svg';
+import claudeDeactiveIcon from './assets/claude-deactive.svg';
 import './App.css';
 
 interface AppConfig {
@@ -69,16 +72,19 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [testingConnection, setTestingConnection] = useState(false);
   const [activeMenu, setActiveMenu] = useState<string>('project');
   const [terminalFullscreen, setTerminalFullscreen] = useState(false);
+  const [showCoderIde, setShowCoderIde] = useState(true);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [terminalHistory, setTerminalHistory] = useState<Record<string, string[]>>({});
 
   interface TerminalTab {
     id: string;
-    title: string;
+    title: string | React.ReactNode;
   }
   const [projectTerminals, setProjectTerminals] = useState<Record<string, TerminalTab[]>>({});
   const [activeTerminalId, setActiveTerminalId] = useState<Record<string, string>>({});
+  const [externalFileTabs, setExternalFileTabs] = useState<{ path: string, folderPath: string }[]>([]);
+  const [showDetailTab, setShowDetailTab] = useState<Record<string, boolean>>({});
 
   const [hookRecords, setHookRecords] = useState<HookRecord[]>([]);
   const [hookRecordsTotal, setHookRecordsTotal] = useState(0);
@@ -622,13 +628,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                 <h1>Sparky</h1>
                 {activeProjects.length > 0 && (
                   <div className="header-active-projects-inline">
-                    <span style={{ fontSize: 12, color: 'var(--text-secondary)', marginRight: 4 }}>运行中:</span>
+                    <span style={{ fontSize: 13, color: 'var(--text-secondary)', marginRight: 6, fontWeight: 500 }}>运行中:</span>
                     {activeProjects.map(path => {
                       const name = path.split('/').pop() || path;
+                      const isActive = selectedProject?.path === path;
                       return (
                         <Tag
                           key={path}
-                          className="active-project-tag"
+                          className={isActive ? "active-project-tag" : "inactive-project-tag"}
                           style={{ cursor: 'pointer' }}
                           onClick={() => {
                             const proj = projects.find(p => p.path === path);
@@ -645,7 +652,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                   </div>
                 )}
               </div>
-              <p className="subtitle">多渠道集成 · 随时随地链接 Claude Code</p>
+              {/* <p className="subtitle">多渠道集成 · 随时随地链接 Claude Code</p> */}
             </div>
             <Switch
               className="theme-switch"
@@ -815,28 +822,74 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           {fullAuth[selectedProject.path] ? '完全授权' : '安全模式'}
                         </Button>
                       </Tooltip>
-                      <Divider type="vertical" style={{ marginLeft: 12 }} />
-                      <Button size="small" type="default" icon={<ReloadOutlined />} onClick={() => {
-                        const tid = activeTerminalId[selectedProject.path];
-                        if (tid) invoke('pty_write', { terminal_id: tid, data: 'claude update\n' });
-                      }} className="action-btn-outline" style={{ marginLeft: 0, marginRight: 8 }}>
-                        更新 Claude
-                      </Button>
 
+                      <Button
+                        size="small"
+                        type={activeTerminalId[selectedProject.path] === 'vscode' ? 'primary' : 'default'}
+                        onClick={() => {
+                          setShowCoderIde(true);
+                          setActiveTerminalId(prev => ({
+                            ...prev,
+                            [selectedProject.path]: 'vscode'
+                          }));
+                        }}
+                        className="action-btn-outline"
+                        style={{ marginRight: 12, display: 'flex', alignItems: 'center', gap: 8 }}
+                      >
+                        <img src={codeIcon} width={18} height={18} alt="Coder IDE" />
+                        Coder IDE
+                      </Button>
 
                       <span className={`ws-status-badge ${wsConnected ? 'connected' : 'disconnected'}`}>
                         <span className="ws-status-dot" />
                         {wsConnected ? '已连接' : '未连接'}
                       </span>
-                      <Button
-                        type="text"
-                        size="small"
-                        danger
-                        icon={<PoweroffOutlined />}
-                        onClick={handleCloseTerminal}
-                        title="关闭并退出终端"
-                        style={{ marginLeft: 12 }}
-                      />
+                      <Dropdown
+                        menu={{
+                          items: [
+                            {
+                              key: 'update',
+                              label: '更新 Claude',
+                              icon: <ReloadOutlined />,
+                              onClick: () => {
+                                const tid = activeTerminalId[selectedProject.path];
+                                if (tid) invoke('pty_write', { terminal_id: tid, data: 'claude update\n' });
+                              }
+                            },
+                            {
+                              key: 'records',
+                              label: 'Claude 记录',
+                              icon: <HistoryOutlined />,
+                              onClick: () => {
+                                setShowDetailTab(prev => ({ ...prev, [selectedProject.path]: true }));
+                                setActiveTerminalId(prev => ({
+                                  ...prev,
+                                  [selectedProject.path]: 'detail'
+                                }));
+                              }
+                            },
+                            {
+                              type: 'divider'
+                            },
+                            {
+                              key: 'close',
+                              label: '关闭项目',
+                              icon: <PoweroffOutlined />,
+                              danger: true,
+                              onClick: handleCloseTerminal
+                            }
+                          ]
+                        }}
+                        placement="bottomRight"
+                        trigger={['click']}
+                      >
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<MenuOutlined />}
+                          style={{ marginLeft: 12 }}
+                        />
+                      </Dropdown>
                     </div>
 
                     {/* Session Picker Modal */}
@@ -1227,18 +1280,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                       />
                     </Modal>
 
-                    {(() => {
-                      const displayCmd = activeTerminalId[selectedProject.path] === 'detail'
-                        ? lastCommand[selectedProject.path]
-                        : lastCommand[activeTerminalId[selectedProject.path]];
-                      return displayCmd ? (
-                        <div className="last-input-bar" style={{ flexShrink: 0 }}>
-                          <span className="last-input-label">最近输入</span>
-                          <code className="last-input-content">{displayCmd}</code>
-                        </div>
-                      ) : null;
-                    })()}
-                    <div className={`terminal-wrapper ${terminalFullscreen ? 'fullscreen' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                    <div className={`terminal-wrapper ${terminalFullscreen ? 'fullscreen' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
                       <Tabs
                         type="editable-card"
                         size="small"
@@ -1256,7 +1298,29 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                               ...prev,
                               [selectedProject!.path]: newId
                             }));
-                          } else if (action === 'remove' && typeof targetKey === 'string' && targetKey !== 'detail') {
+                          } else if (action === 'remove' && typeof targetKey === 'string') {
+                            if (targetKey === 'vscode') {
+                              setShowCoderIde(false);
+                              if (activeTerminalId[selectedProject!.path] === 'vscode') {
+                                setActiveTerminalId(prev => ({ ...prev, [selectedProject!.path]: 'detail' }));
+                              }
+                              return;
+                            }
+                            if (targetKey === 'detail') {
+                              setShowDetailTab(prev => ({ ...prev, [selectedProject!.path]: false }));
+                              if (activeTerminalId[selectedProject!.path] === 'detail') {
+                                setActiveTerminalId(prev => ({ ...prev, [selectedProject!.path]: projectTerminals[selectedProject!.path]?.[0]?.id || 'vscode' }));
+                              }
+                              return;
+                            }
+                            if (targetKey.startsWith('vscode-external-')) {
+                              const pathToRemove = targetKey.replace('vscode-external-', '');
+                              setExternalFileTabs(prev => prev.filter(tab => tab.path !== pathToRemove));
+                              if (activeTerminalId[selectedProject!.path] === targetKey) {
+                                setActiveTerminalId(prev => ({ ...prev, [selectedProject!.path]: 'detail' }));
+                              }
+                              return;
+                            }
                             invoke('pty_kill', { terminal_id: targetKey });
                             setProjectTerminals(prev => {
                               const next = prev[selectedProject!.path].filter(t => t.id !== targetKey);
@@ -1281,19 +1345,157 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                         style={{ flex: 1, display: 'flex', flexDirection: 'column', marginTop: 12 }}
                         className="terminal-tabs-inner settings-tabs"
                         items={[
-                          ...(projectTerminals[selectedProject.path] || []).map(term => ({
-                            key: term.id,
-                            label: term.title,
+                          ...(projectTerminals[selectedProject.path] || []).map(term => {
+                            const isActive = activeTerminalId[selectedProject.path] === term.id;
+                            return {
+                              key: term.id,
+                              label: (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                  <img src={isActive ? claudeIcon : claudeDeactiveIcon} width={18} height={18} alt="Claude" />
+                                  <span>{term.title}</span>
+                                </div>
+                              ),
+                              closable: true,
+                              children: (
+                                <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                                  {lastCommand[term.id] && (
+                                    <div className="last-input-bar">
+                                      <span className="last-input-label">最近输入</span>
+                                      <code className="last-input-content">{lastCommand[term.id]}</code>
+                                    </div>
+                                  )}
+                                  <Button
+                                    type="text"
+                                    icon={terminalFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+                                    style={{
+                                      position: 'absolute',
+                                      right: 16,
+                                      top: terminalFullscreen ? 30 : 30,
+                                      zIndex: 100,
+                                      color: 'rgba(255, 255, 255, 0.65)',
+                                      background: 'rgba(0, 0, 0, 0.2)'
+                                    }}
+                                    onClick={() => setTerminalFullscreen(!terminalFullscreen)}
+                                  />
+                                  <Button
+                                    type="text"
+                                    icon={<ArrowDownOutlined />}
+                                    style={{
+                                      position: 'absolute',
+                                      right: 56,
+                                      top: terminalFullscreen ? 30 : 30,
+                                      zIndex: 100,
+                                      color: 'rgba(255, 255, 255, 0.65)',
+                                      background: 'rgba(0, 0, 0, 0.2)'
+                                    }}
+                                    title="滚动到底部"
+                                    onClick={() => terminalRefs.current[term.id]?.scrollToBottom()}
+                                  />
+                                  <TerminalComponent
+                                    projectPath={selectedProject!.path}
+                                    terminalId={term.id}
+                                    title={term.title as string}
+                                    onData={handleTerminalInput}
+                                    onLinkClick={(path) => {
+                                      if (path.startsWith(selectedProject!.path)) {
+                                        // File is inside the current project, open in Coder IDE
+                                        setShowCoderIde(true);
+                                        setActiveTerminalId(prev => ({
+                                          ...prev,
+                                          [selectedProject!.path]: 'vscode'
+                                        }));
+                                        // Tell code-server to open the file via its API
+                                        console.log('Invoking open_in_coder with path:', path);
+                                        invoke('open_in_coder', { file_path: path }).catch((err) => {
+                                          console.error('Failed to open file in Coder IDE:', err);
+                                        });
+                                      } else {
+                                        // File is outside the project, open in a new tab
+                                        console.log('Path is outside project, opening in new tab:', path);
+
+                                        // Get directory of the file for the iframe folder parameter
+                                        const folderPath = path.substring(0, path.lastIndexOf('/'));
+
+                                        setExternalFileTabs(prev => {
+                                          // Avoid duplicate tabs for the same file
+                                          if (!prev.some(tab => tab.path === path)) {
+                                            return [...prev, { path, folderPath }];
+                                          }
+                                          return prev;
+                                        });
+
+                                        setActiveTerminalId(prev => ({
+                                          ...prev,
+                                          [selectedProject!.path]: `vscode-external-${path}`
+                                        }));
+
+                                        // Give time for iframe to mount, then instruct it to open the file via API
+                                        setTimeout(() => {
+                                          invoke('open_in_coder', { file_path: path }).catch((err) => {
+                                            console.error('Failed to open external file in Coder IDE:', err);
+                                          });
+                                        }, 500);
+                                      }
+                                    }}
+                                    mergeTop
+                                    historyLines={terminalHistory[selectedProject!.path] || []}
+                                    fullscreen={terminalFullscreen}
+                                    theme={{
+                                      background: appConfig?.terminal_bg_color,
+                                      foreground: appConfig?.terminal_fg_color,
+                                      fontSize: appConfig?.terminal_font_size,
+                                    }}
+                                    ref={(el) => {
+                                      if (el) terminalRefs.current[term.id] = el;
+                                    }}
+                                  />
+                                </div>
+                              ),
+                            };
+                          }).concat(externalFileTabs.map(tab => ({
+                            key: `vscode-external-${tab.path}`,
+                            label: (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <img src={codeIcon} width={18} height={18} alt="Coder IDE" />
+                                <span title={tab.path}>{tab.path.split('/').pop()}</span>
+                              </div>
+                            ),
                             closable: true,
                             children: (
-                              <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                              <div style={{ width: '100%', height: '100%', background: 'var(--bg-primary)' }}>
+                                <iframe
+                                  title={`Coder IDE - ${tab.path}`}
+                                  src={`http://127.0.0.1:18080/?folder=${encodeURIComponent(tab.folderPath)}`}
+                                  style={{ width: '100%', height: '100%', border: 'none' }}
+                                  allow="clipboard-read; clipboard-write"
+                                />
+                              </div>
+                            )
+                          }))),
+                          ...(showDetailTab[selectedProject.path] ? [{
+                            key: 'detail',
+                            label: (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <HistoryOutlined />
+                                <span>Claude 记录</span>
+                              </div>
+                            ),
+                            closable: true,
+                            children: (
+                              <Card className="projects-card config-card" variant="borderless" style={{ flex: 1, height: 'auto', overflow: 'auto', position: 'relative' }}>
+                                {lastCommand[selectedProject.path] && (
+                                  <div className="last-input-bar">
+                                    <span className="last-input-label">最近输入</span>
+                                    <code className="last-input-content">{lastCommand[selectedProject.path]}</code>
+                                  </div>
+                                )}
                                 <Button
                                   type="text"
                                   icon={terminalFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
                                   style={{
                                     position: 'absolute',
                                     right: 16,
-                                    top: terminalFullscreen ? 16 : 16,
+                                    top: 30,
                                     zIndex: 100,
                                     color: 'rgba(255, 255, 255, 0.65)',
                                     background: 'rgba(0, 0, 0, 0.2)'
@@ -1306,40 +1508,16 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   style={{
                                     position: 'absolute',
                                     right: 56,
-                                    top: terminalFullscreen ? 16 : 16,
+                                    top: 30,
                                     zIndex: 100,
                                     color: 'rgba(255, 255, 255, 0.65)',
                                     background: 'rgba(0, 0, 0, 0.2)'
                                   }}
                                   title="滚动到底部"
-                                  onClick={() => terminalRefs.current[term.id]?.scrollToBottom()}
-                                />
-                                <TerminalComponent
-                                  projectPath={selectedProject!.path}
-                                  terminalId={term.id}
-                                  title={term.title}
-                                  onData={handleTerminalInput}
-                                  mergeTop
-                                  historyLines={terminalHistory[selectedProject!.path] || []}
-                                  fullscreen={terminalFullscreen}
-                                  theme={{
-                                    background: appConfig?.terminal_bg_color,
-                                    foreground: appConfig?.terminal_fg_color,
-                                    fontSize: appConfig?.terminal_font_size,
-                                  }}
-                                  ref={(el) => {
-                                    if (el) terminalRefs.current[term.id] = el;
+                                  onClick={() => {
+                                    // scrollToBottom might not be easily accessible for detail tab, but adding the button for consistency
                                   }}
                                 />
-                              </div>
-                            ),
-                          })),
-                          {
-                            key: 'detail',
-                            label: 'Claude 记录',
-                            closable: false,
-                            children: (
-                              <Card className="projects-card config-card" variant="borderless" style={{ flex: 1, height: 'auto', overflow: 'auto' }}>
                                 <div className="detail-form">
                                   <div className="status-row">
                                     <span className="status-label">项目名称</span>
@@ -1565,16 +1743,21 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 </div>
                               </Card>
                             ),
-                          },
-                          {
+                          }] : []),
+                          ...(showCoderIde ? [{
                             key: 'vscode',
-                            label: 'Code Server',
-                            closable: false,
+                            label: (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <img src={codeIcon} width={18} height={18} alt="Coder IDE" />
+                                <span>Coder IDE</span>
+                              </div>
+                            ),
+                            closable: true,
                             children: (
                               <Card className="projects-card config-card" variant="borderless" style={{ flex: 1, height: '100%', padding: 0, overflow: 'hidden' }}>
                                 <iframe
-                                  src="http://127.0.0.1:18080"
-                                  title="Code Server"
+                                  src={`http://127.0.0.1:18080/?folder=${encodeURIComponent(selectedProject.path)}`}
+                                  title="Coder IDE"
                                   style={{
                                     width: '100%',
                                     height: 'calc(100vh - 120px)',
@@ -1585,7 +1768,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 />
                               </Card>
                             )
-                          }
+                          }] : [])
                         ]}
                       />
                     </div>
@@ -1849,11 +2032,11 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
               )}
             </div>
           </div>
-        </main>
+        </main >
 
 
-      </div>
-    </ConfigProvider>
+      </div >
+    </ConfigProvider >
   );
 }
 
