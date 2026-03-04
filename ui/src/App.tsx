@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -138,9 +138,24 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     localStorage.setItem('sparky-sidebar-collapsed', String(sidebarCollapsed));
   }, [sidebarCollapsed]);
 
+  // Dependency check
+  const [missingDependencies, setMissingDependencies] = useState<{ claude: boolean, code_server: boolean } | null>(null);
+
   useEffect(() => {
     localStorage.setItem('sparky-full-auth', JSON.stringify(fullAuth));
   }, [fullAuth]);
+
+  // Check dependencies once on mount
+  useEffect(() => {
+    if (!tauriAvailable) return;
+    invoke<{ claude: boolean, code_server: boolean }>('check_dependencies')
+      .then((status) => {
+        if (!status.claude || !status.code_server) {
+          setMissingDependencies(status);
+        }
+      })
+      .catch((e) => console.error('Failed to check dependencies:', e));
+  }, [tauriAvailable]);
 
   // Poll WebSocket connection status and active projects
   useEffect(() => {
@@ -2034,6 +2049,65 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
           </div>
         </main >
 
+        <Modal
+          title={(
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <WarningOutlined style={{ color: '#faad14', fontSize: '20px' }} />
+              <span>缺少必要依赖环境</span>
+            </div>
+          )}
+          open={missingDependencies !== null}
+          onCancel={() => setMissingDependencies(null)}
+          footer={[
+            <Button key="close" type="primary" onClick={() => setMissingDependencies(null)}>
+              我知道了
+            </Button>
+          ]}
+          width={500}
+        >
+          <div style={{ marginTop: '16px', fontSize: '14px', lineHeight: '1.6' }}>
+            <p>Sparky 需要以下全局工具才能正常运行。检测到您的系统缺少以下依赖：</p>
+
+            {missingDependencies && !missingDependencies.claude && (
+              <div style={{ marginTop: '16px', background: 'var(--bg-secondary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                <h4 style={{ margin: '0 0 8px 0', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <img src={claudeIcon} width={16} height={16} alt="Claude" />
+                  Claude Code (必须)
+                </h4>
+                <p style={{ margin: '0 0 8px 0', fontSize: '13px', color: 'var(--text-secondary)' }}>用于在终端中执行 AI 交互逻辑。</p>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <code style={{ flex: 1, padding: '6px 10px', background: 'rgba(0,0,0,0.2)', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)' }}>npm install -g @anthropic-ai/claude-code</code>
+                  <Button size="small" icon={<CopyOutlined />} onClick={() => navigator.clipboard.writeText('npm install -g @anthropic-ai/claude-code')} />
+                </div>
+              </div>
+            )}
+
+            {missingDependencies && !missingDependencies.code_server && (
+              <div style={{ marginTop: '16px', background: 'var(--bg-secondary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                <h4 style={{ margin: '0 0 8px 0', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <img src={codeIcon} width={16} height={16} alt="IDE" />
+                  Coder IDE (必须)
+                </h4>
+                <p style={{ margin: '0 0 8px 0', fontSize: '13px', color: 'var(--text-secondary)' }}>用于提供沉浸式的项目内联编辑器体验。</p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <code style={{ flex: 1, padding: '6px 10px', background: 'rgba(0,0,0,0.2)', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)' }}>brew install code-server</code>
+                    <Button size="small" icon={<CopyOutlined />} onClick={() => navigator.clipboard.writeText('brew install code-server')} />
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>或使用 npm:</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <code style={{ flex: 1, padding: '6px 10px', background: 'rgba(0,0,0,0.2)', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)' }}>npm install -g code-server</code>
+                    <Button size="small" icon={<CopyOutlined />} onClick={() => navigator.clipboard.writeText('npm install -g code-server')} />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <p style={{ marginTop: '20px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+              请在操作系统的终端中运行上述安装命令。安装完成后，您需要<strong>完全重新启动</strong> Sparky 以使环境变量生效。
+            </p>
+          </div>
+        </Modal>
 
       </div >
     </ConfigProvider >

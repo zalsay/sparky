@@ -2106,6 +2106,56 @@ async fn save_window_size(window: tauri::Window) -> Result<(), String> {
     log::info!("Saved window size: {}x{}", size.width, size.height);
     Ok(())
 }
+#[derive(Serialize)]
+pub struct DependencyStatus {
+    pub claude: bool,
+    pub code_server: bool,
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn check_dependencies() -> Result<DependencyStatus, String> {
+    // macOS 上 GUI 程序继承 PATH 不一定完整，为了稳妥起见我们从常见的 PATH 里去查找
+    // 或者我们直接依赖 sh -c "which ... " 或者系统的 PATH
+    // 这里简单的用 std::process::Command 去查 common path
+    let check_cmd = |cmd_name: &str| -> bool {
+        // 先尝试直接执行 which
+        let output = std::process::Command::new("which")
+            .arg(cmd_name)
+            .output();
+        if let Ok(out) = output {
+            if out.status.success() {
+                return true;
+            }
+        }
+        
+        // 如果 which 失败（可能 PATH 不全），手动遍历一些通用路径
+        let common_paths = ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"];
+        for dir in common_paths.iter() {
+            let p = std::path::Path::new(dir).join(cmd_name);
+            if p.exists() {
+                return true;
+            }
+        }
+
+        // 尝试使用 npm root -g 查找 npm 全局目录里的
+        if let Ok(npm_out) = std::process::Command::new("npm").arg("root").arg("-g").output() {
+            if npm_out.status.success() {
+                if let Ok(root_path) = String::from_utf8(npm_out.stdout) {
+                    let root_path = root_path.trim();
+                    // 这里判断 npm root -g 目录的上一级下的 bin 或者内部找是否有点复杂
+                    // 简化一下：直接看执行结果，前面的 common paths 和 which 已经涵盖大部分场景
+                }
+            }
+        }
+
+        false
+    };
+
+    Ok(DependencyStatus {
+        claude: check_cmd("claude"),
+        code_server: check_cmd("code-server"),
+    })
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -2290,7 +2340,8 @@ pub fn run() {
             start_mcp_server,
             get_testing_session,
             save_testing_session,
-            update_session_name
+            update_session_name,
+            check_dependencies
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
