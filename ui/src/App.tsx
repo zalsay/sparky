@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -58,6 +58,7 @@ interface SessionInfo {
   started_at: number;
   ended_at: number | null;
   reason: string | null;
+  name: string | null;
 }
 
 function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsDarkMode: (v: boolean) => void }) {
@@ -86,12 +87,16 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [hookDetailOpen, setHookDetailOpen] = useState(false);
   const [hookDetailRecord, setHookDetailRecord] = useState<HookRecord | null>(null);
 
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingSessionName, setEditingSessionName] = useState('');
+
   // Watch color picker fields to dynamically display color tags
   const watchedBgColor = Form.useWatch('terminal_bg_color', form);
   const watchedFgColor = Form.useWatch('terminal_fg_color', form);
   const watchedFontSize = Form.useWatch('terminal_font_size', form);
 
   const tauriAvailable = isTauri();
+  const terminalRefs = useRef<Record<string, { scrollToBottom: () => void }>>({});
   const inputBufferRef = useRef<Record<string, string>>({});
   const [lastCommand, setLastCommand] = useState<Record<string, string>>({});
   const [wsConnected, setWsConnected] = useState(false);
@@ -207,7 +212,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     }
 
     // load history
-    invoke<string[]>('get_terminal_history', { projectPath: selectedProject.path })
+    invoke<string[]>('get_terminal_history', { project_path: selectedProject.path })
       .then((history) => {
         setTerminalHistory(prev => ({ ...prev, [selectedProject.path]: history }));
       })
@@ -252,7 +257,11 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       if (data[i] === '\r' || data[i] === '\n') {
         if (buffer.trim()) {
           const finalBuffer = buffer.trim();
-          setLastCommand(prev => ({ ...prev, [currentTerminal]: finalBuffer }));
+          setLastCommand(prev => ({
+            ...prev,
+            [currentTerminal]: finalBuffer,
+            [selectedProject.path]: finalBuffer
+          }));
         }
         buffer = '';
         i++;
@@ -288,7 +297,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     try {
       const pTerminals = projectTerminals[selectedProject.path] || [];
       for (const t of pTerminals) {
-        await invoke('pty_kill', { terminalId: t.id });
+        await invoke('pty_kill', { terminal_id: t.id });
       }
       messageApi.success(`项目 ${selectedProject.name} 已关闭`);
       // Update UI optimistically
@@ -338,7 +347,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     }
     setHookRecordsLoading(true);
     try {
-      const response = await invoke<HookRecordsResponse>('get_hook_records', { projectPath: selectedProject.path, page, pageSize: 20 });
+      const response = await invoke<HookRecordsResponse>('get_hook_records', { project_path: selectedProject.path, page, page_size: 20 });
       setHookRecords(response.records);
       setHookRecordsTotal(response.total);
       setHookRecordsPage(response.page);
@@ -359,11 +368,26 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const fetchSessions = async (projectPath: string) => {
     if (!tauriAvailable) return;
     try {
-      const result = await invoke<SessionInfo[]>('get_project_sessions', { projectPath });
-      setSessions(result);
+      const result = await invoke<SessionInfo[]>('get_project_sessions', { project_path: projectPath });
+      // Deduplicate sessions by ID
+      const uniqueSessions = Array.from(new Map(result.map(s => [s.session_id, s])).values());
+      setSessions(uniqueSessions);
     } catch (error) {
       console.error('Failed to fetch sessions:', error);
       setSessions([]);
+    }
+  };
+
+  const handleUpdateSessionName = async (session_id: string, newName: string) => {
+    if (!tauriAvailable || !selectedProject) return;
+    try {
+      await invoke('update_session_name', { session_id, name: newName });
+      messageApi.success('会话名称更新成功');
+      setEditingSessionId(null);
+      fetchSessions(selectedProject.path);
+    } catch (error) {
+      console.error('Failed to update session name:', error);
+      messageApi.error('更新会话名称失败');
     }
   };
 
@@ -377,7 +401,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       content: '确定要删除这条 Hooks 记录吗？',
       onOk: async () => {
         try {
-          await invoke('delete_hook_record', { projectPath: selectedProject.path, id });
+          await invoke('delete_hook_record', { project_path: selectedProject.path, id });
           messageApi.success('删除成功');
           setHookRecordSelection((prev) => prev.filter((item) => item !== id));
           fetchHookRecords(hookRecordsPage);
@@ -401,7 +425,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       content: `确定要删除选中的 ${hookRecordSelection.length} 条 Hooks 记录吗？`,
       onOk: async () => {
         try {
-          await invoke('delete_hook_records', { projectPath: selectedProject.path, ids: hookRecordSelection });
+          await invoke('delete_hook_records', { project_path: selectedProject.path, ids: hookRecordSelection });
           messageApi.success('批量删除成功');
           setHookRecordSelection([]);
           fetchHookRecords(hookRecordsPage);
@@ -468,7 +492,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
     setTestingConnection(true);
     try {
-      const result = await invoke<string>('test_feishu_connection', { appId, appSecret });
+      const result = await invoke<string>('test_feishu_connection', { app_id: appId, app_secret: appSecret });
       messageApi.success(result);
     } catch (error) {
       messageApi.error(`测试失败: ${error}`);
@@ -525,8 +549,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       return;
     }
     try {
-      await invoke('install_hooks', { projectPath: project.path });
-      await invoke('set_project_hooks_status', { id: project.id, hooksInstalled: true });
+      await invoke('install_hooks', { project_path: project.path });
+      await invoke('set_project_hooks_status', { id: project.id, hooks_installed: true });
       setProjects(projects.map(p => p.id === project.id ? { ...p, hooks_installed: true } : p));
       messageApi.success('Hooks 安装成功');
     } catch (error) {
@@ -540,8 +564,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       return;
     }
     try {
-      await invoke('uninstall_hooks', { projectPath: project.path });
-      await invoke('set_project_hooks_status', { id: project.id, hooksInstalled: false });
+      await invoke('uninstall_hooks', { project_path: project.path });
+      await invoke('set_project_hooks_status', { id: project.id, hooks_installed: false });
       setProjects(projects.map(p => p.id === project.id ? { ...p, hooks_installed: false } : p));
       messageApi.success('Hooks 已卸载');
     } catch (error) {
@@ -552,7 +576,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const handleToggleAgentTeams = async (project: Project) => {
     if (!tauriAvailable) return;
     try {
-      const nextValue = await invoke<boolean>('toggle_agent_teams', { projectPath: project.path });
+      const nextValue = await invoke<boolean>('toggle_agent_teams', { project_path: project.path });
       setProjects(projects.map(p =>
         p.id === project.id ? { ...p, agent_teams_enabled: nextValue } : p
       ));
@@ -578,7 +602,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
           },
           Tabs: {
             itemColor: isDarkMode ? '#a0a0a0' : '#000000',
-            itemSelectedColor: isDarkMode ? '#ffffff' : '#ffffff',
+            itemSelectedColor: isDarkMode ? '#ffffff' : '#000000',
             itemHoverColor: isDarkMode ? '#ffffff' : '#000000',
           }
         }
@@ -751,39 +775,50 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                       />
                       <span className="header-divider" />
                       <span className="project-title-badge">{selectedProject.name}</span>
-                      <Button size="middle" type="primary" icon={<PlayCircleOutlined />} onClick={() => {
+                      <Button size="small" type="primary" icon={<PlayCircleOutlined />} onClick={() => {
                         const tid = activeTerminalId[selectedProject.path];
                         const isFullAuth = fullAuth[selectedProject.path] || false;
                         const cmd = isFullAuth ? 'claude --dangerously-skip-permissions\n' : 'claude\n';
-                        if (tid) invoke('pty_write', { terminalId: tid, data: cmd });
+                        if (tid) invoke('pty_write', { terminal_id: tid, data: cmd });
                       }} className="action-btn-outline" style={{ marginLeft: 8 }}>
                         新建会话
                       </Button>
-                      <Button size="middle" type="default" onClick={async () => {
+                      <Button size="small" type="default" onClick={async () => {
                         await fetchSessions(selectedProject.path);
                         setSessionModalOpen(true);
                       }} icon={<HistoryOutlined />} className="action-btn-outline" style={{ marginLeft: 4 }}>
                         继续会话
                       </Button>
-                      <Button size="middle" type="default" onClick={() => {
+                      <Button size="small" type="default" onClick={() => {
                         setTestModalOpen(true);
                         if (tauriAvailable) {
                           invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status').then(setMcpStatus).catch(() => { });
                         }
                       }} icon={<ExperimentOutlined />} className="action-btn-outline" style={{ marginLeft: 4 }}>
-                        测试
+                        测试会话
                       </Button>
-                      <Tooltip title="完全授权模式 (--dangerously-skip-permissions)">
-                        <Switch
-                          size="default"
-                          className={fullAuth[selectedProject.path] ? 'danger-switch' : ''}
-                          checked={fullAuth[selectedProject.path] || false}
-                          onChange={(checked) => setFullAuth(prev => ({ ...prev, [selectedProject.path]: checked }))}
-                          checkedChildren="授权"
-                          unCheckedChildren="安全"
-                          style={{ marginLeft: 12 }}
-                        />
+                      <Divider type="vertical" style={{ marginLeft: 16, marginRight: 12 }} />
+                      <Tooltip title={fullAuth[selectedProject.path] ? '完全授权模式 (--dangerously-skip-permissions)' : '安全模式 (进行权限管控)'}>
+                        <Button
+                          size="small"
+                          type={fullAuth[selectedProject.path] ? 'primary' : 'default'}
+                          danger={fullAuth[selectedProject.path] || false}
+                          className={fullAuth[selectedProject.path] ? 'auth-btn-danger' : 'action-btn-outline'}
+                          onClick={() => setFullAuth(prev => ({ ...prev, [selectedProject.path]: !(prev[selectedProject.path] || false) }))}
+                          style={{ margin: '0 4px' }}
+                        >
+                          {fullAuth[selectedProject.path] ? '完全授权' : '安全模式'}
+                        </Button>
                       </Tooltip>
+                      <Divider type="vertical" style={{ marginLeft: 12 }} />
+                      <Button size="small" type="default" icon={<ReloadOutlined />} onClick={() => {
+                        const tid = activeTerminalId[selectedProject.path];
+                        if (tid) invoke('pty_write', { terminal_id: tid, data: 'claude update\n' });
+                      }} className="action-btn-outline" style={{ marginLeft: 0, marginRight: 8 }}>
+                        更新 Claude
+                      </Button>
+
+
                       <span className={`ws-status-badge ${wsConnected ? 'connected' : 'disconnected'}`}>
                         <span className="ws-status-dot" />
                         {wsConnected ? '已连接' : '未连接'}
@@ -817,13 +852,62 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           pagination={{ pageSize: 10 }}
                           columns={[
                             {
+                              title: '会话名称',
+                              dataIndex: 'name',
+                              key: 'name',
+                              width: 220,
+                              render: (text: string | null, record: SessionInfo) => (
+                                editingSessionId === record.session_id ? (
+                                  <Space.Compact style={{ width: '100%' }}>
+                                    <Input
+                                      size="small"
+                                      autoFocus
+                                      value={editingSessionName}
+                                      onChange={(e) => setEditingSessionName(e.target.value)}
+                                      onPressEnter={() => handleUpdateSessionName(record.session_id, editingSessionName)}
+                                    />
+                                    <Button
+                                      size="small"
+                                      type="primary"
+                                      icon={<CheckOutlined />}
+                                      onClick={() => handleUpdateSessionName(record.session_id, editingSessionName)}
+                                    />
+                                    <Button
+                                      size="small"
+                                      icon={<CloseOutlined />}
+                                      onClick={() => setEditingSessionId(null)}
+                                    />
+                                  </Space.Compact>
+                                ) : (
+                                  <Space>
+                                    <span style={{ fontWeight: 500 }}>
+                                      {text || (
+                                        <Typography.Text type="secondary" style={{ fontSize: 12, fontStyle: 'italic' }}>
+                                          未命名会话
+                                        </Typography.Text>
+                                      )}
+                                    </span>
+                                    <Button
+                                      type="text"
+                                      size="small"
+                                      icon={<EditOutlined style={{ fontSize: 12 }} />}
+                                      onClick={() => {
+                                        setEditingSessionName(text || '');
+                                        setEditingSessionId(record.session_id);
+                                      }}
+                                    />
+                                  </Space>
+                                )
+                              ),
+                            },
+                            {
                               title: 'Session ID',
                               dataIndex: 'session_id',
                               key: 'session_id',
-                              width: 200,
+                              width: 140,
                               render: (text: string) => (
                                 <Typography.Text copyable style={{ fontSize: 12 }}>
-                                  {text.length > 12 ? text.slice(0, 12) + '...' : text}
+                                  {text.length > 8 ? text.slice(0, 8) + '...' : text}
                                 </Typography.Text>
                               ),
                             },
@@ -858,7 +942,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                     const cmd = isFullAuth
                                       ? `claude --dangerously-skip-permissions --resume ${record.session_id}\n`
                                       : `claude --resume ${record.session_id}\n`;
-                                    if (tid) invoke('pty_write', { terminalId: tid, data: cmd });
+                                    if (tid) invoke('pty_write', { terminal_id: tid, data: cmd });
                                     setSessionModalOpen(false);
                                   }}
                                 >
@@ -979,7 +1063,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         targetTerminalId = crypto.randomUUID();
                                         setProjectTerminals(prev => ({
                                           ...prev,
-                                          [selectedProject.path]: [...current, { id: targetTerminalId, title: "MCP 测试" }]
+                                          [selectedProject.path]: [...current, { id: targetTerminalId as string, title: "MCP 测试" }]
                                         }));
                                       }
 
@@ -996,7 +1080,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         try {
                                           // Check for existing testing session
                                           const existingSession = await invoke<string | null>('get_testing_session', {
-                                            projectPath: selectedProject.path,
+                                            project_path: selectedProject.path,
                                           });
 
                                           const isFullAuth = fullAuth[selectedProject.path] || false;
@@ -1011,7 +1095,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                           } else {
                                             // Start new claude session - capture current sessions first to avoid saving old session
                                             const currentSessions = await invoke<SessionInfo[]>('get_project_sessions', {
-                                              projectPath: selectedProject.path,
+                                              project_path: selectedProject.path,
                                             }).catch(() => [] as SessionInfo[]);
                                             const topId = currentSessions.length > 0 ? currentSessions[0].id : 0;
 
@@ -1026,13 +1110,13 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                               attempts++;
                                               try {
                                                 const sessions = await invoke<SessionInfo[]>('get_project_sessions', {
-                                                  projectPath: selectedProject.path,
+                                                  project_path: selectedProject.path,
                                                 });
                                                 if (sessions.length > 0 && sessions[0].id > topId && sessions[0].session_id) {
                                                   clearInterval(pollInterval);
                                                   await invoke('save_testing_session', {
-                                                    projectPath: selectedProject.path,
-                                                    sessionId: sessions[0].session_id,
+                                                    project_path: selectedProject.path,
+                                                    session_id: sessions[0].session_id,
                                                   });
                                                   messageApi.success(`测试会话已记录: ${sessions[0].session_id.slice(0, 12)}...`);
                                                 }
@@ -1045,7 +1129,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                             }, 1000);
                                           }
 
-                                          await invoke('pty_write', { terminalId: targetTerminalId, data: cmd });
+                                          await invoke('pty_write', { terminal_id: targetTerminalId, data: cmd });
                                         } catch (err) {
                                           messageApi.error(`启动会话失败: ${err}`);
                                         }
@@ -1066,7 +1150,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                     <br />
                                     请运行以下命令安装 chrome-devtools-mcp：
                                     <pre style={{ margin: '8px 0 0', padding: '8px 12px', background: 'var(--bg-tertiary, #e8e8e8)', borderRadius: 4, fontSize: 12 }}>
-                                      npm install -g @anthropic-ai/chrome-devtools-mcp</pre>
+                                      npm install -g chrome-devtools-mcp</pre>
                                   </div>
                                 )}
                               </div>
@@ -1138,337 +1222,348 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                       />
                     </Modal>
 
-                    {lastCommand[activeTerminalId[selectedProject.path]] && (
-                      <div className="last-input-bar">
-                        <span className="last-input-label">最近输入</span>
-                        <code className="last-input-content">{lastCommand[activeTerminalId[selectedProject.path]]}</code>
-                      </div>
-                    )}
-                    <Tabs
-                      defaultActiveKey="claude"
-                      className="settings-tabs"
-                      style={{ flex: 1, display: 'flex', flexDirection: 'column' }}
-                      items={[
-                        {
-                          key: 'claude',
-                          label: 'Claude',
-                          children: (
-                            <Card className="projects-card channel-card" variant="borderless" style={{ flex: 1, height: 'auto', padding: 0, background: 'transparent' }}>
-                              <div className={`terminal-wrapper ${terminalFullscreen ? 'fullscreen' : ''}`}>
+                    {(() => {
+                      const displayCmd = activeTerminalId[selectedProject.path] === 'detail'
+                        ? lastCommand[selectedProject.path]
+                        : lastCommand[activeTerminalId[selectedProject.path]];
+                      return displayCmd ? (
+                        <div className="last-input-bar" style={{ flexShrink: 0 }}>
+                          <span className="last-input-label">最近输入</span>
+                          <code className="last-input-content">{displayCmd}</code>
+                        </div>
+                      ) : null;
+                    })()}
+                    <div className={`terminal-wrapper ${terminalFullscreen ? 'fullscreen' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                      <Tabs
+                        type="editable-card"
+                        size="small"
+                        activeKey={activeTerminalId[selectedProject.path] || 'detail'}
+                        onChange={(key) => setActiveTerminalId(prev => ({ ...prev, [selectedProject.path]: key }))}
+                        onEdit={(targetKey, action) => {
+                          if (action === 'add') {
+                            const newId = crypto.randomUUID();
+                            const current = projectTerminals[selectedProject!.path] || [];
+                            setProjectTerminals(prev => ({
+                              ...prev,
+                              [selectedProject!.path]: [...current, { id: newId, title: `Claude-${current.length + 1}` }]
+                            }));
+                            setActiveTerminalId(prev => ({
+                              ...prev,
+                              [selectedProject!.path]: newId
+                            }));
+                          } else if (action === 'remove' && typeof targetKey === 'string' && targetKey !== 'detail') {
+                            invoke('pty_kill', { terminal_id: targetKey });
+                            setProjectTerminals(prev => {
+                              const next = prev[selectedProject!.path].filter(t => t.id !== targetKey);
+                              return { ...prev, [selectedProject!.path]: next };
+                            });
+                            if (activeTerminalId[selectedProject!.path] === targetKey) {
+                              const remaining = projectTerminals[selectedProject!.path].filter(t => t.id !== targetKey);
+                              if (remaining.length > 0) {
+                                setActiveTerminalId(prev => ({
+                                  ...prev,
+                                  [selectedProject!.path]: remaining[remaining.length - 1].id
+                                }));
+                              } else {
+                                setActiveTerminalId(prev => ({
+                                  ...prev,
+                                  [selectedProject!.path]: 'detail'
+                                }));
+                              }
+                            }
+                          }
+                        }}
+                        style={{ flex: 1, display: 'flex', flexDirection: 'column', marginTop: 12 }}
+                        className="terminal-tabs-inner settings-tabs"
+                        items={[
+                          ...(projectTerminals[selectedProject.path] || []).map(term => ({
+                            key: term.id,
+                            label: term.title,
+                            closable: true,
+                            children: (
+                              <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
                                 <Button
                                   type="text"
                                   icon={terminalFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
                                   style={{
                                     position: 'absolute',
                                     right: 16,
-                                    top: terminalFullscreen ? 16 : 48,
+                                    top: terminalFullscreen ? 16 : 16,
                                     zIndex: 100,
                                     color: 'rgba(255, 255, 255, 0.65)',
                                     background: 'rgba(0, 0, 0, 0.2)'
                                   }}
                                   onClick={() => setTerminalFullscreen(!terminalFullscreen)}
                                 />
-                                <Tabs
-                                  type="editable-card"
-                                  size="small"
-                                  activeKey={activeTerminalId[selectedProject.path] || ''}
-                                  onChange={(key) => setActiveTerminalId(prev => ({ ...prev, [selectedProject.path]: key }))}
-                                  onEdit={(targetKey, action) => {
-                                    if (action === 'add') {
-                                      const newId = crypto.randomUUID();
-                                      const current = projectTerminals[selectedProject!.path] || [];
-                                      setProjectTerminals(prev => ({
-                                        ...prev,
-                                        [selectedProject!.path]: [...current, { id: newId, title: `Claude-${current.length + 1}` }]
-                                      }));
-                                      setActiveTerminalId(prev => ({
-                                        ...prev,
-                                        [selectedProject!.path]: newId
-                                      }));
-                                    } else if (action === 'remove' && typeof targetKey === 'string') {
-                                      invoke('pty_kill', { terminalId: targetKey });
-                                      setProjectTerminals(prev => {
-                                        const next = prev[selectedProject!.path].filter(t => t.id !== targetKey);
-                                        return { ...prev, [selectedProject!.path]: next };
-                                      });
-                                      if (activeTerminalId[selectedProject!.path] === targetKey) {
-                                        const remaining = projectTerminals[selectedProject!.path].filter(t => t.id !== targetKey);
-                                        if (remaining.length > 0) {
-                                          setActiveTerminalId(prev => ({
-                                            ...prev,
-                                            [selectedProject!.path]: remaining[remaining.length - 1].id
-                                          }));
-                                        } else {
-                                          setActiveTerminalId(prev => ({
-                                            ...prev,
-                                            [selectedProject!.path]: ''
-                                          }));
-                                        }
+                                <Button
+                                  type="text"
+                                  icon={<ArrowDownOutlined />}
+                                  style={{
+                                    position: 'absolute',
+                                    right: 56,
+                                    top: terminalFullscreen ? 16 : 16,
+                                    zIndex: 100,
+                                    color: 'rgba(255, 255, 255, 0.65)',
+                                    background: 'rgba(0, 0, 0, 0.2)'
+                                  }}
+                                  title="滚动到底部"
+                                  onClick={() => terminalRefs.current[term.id]?.scrollToBottom()}
+                                />
+                                <TerminalComponent
+                                  projectPath={selectedProject!.path}
+                                  terminalId={term.id}
+                                  title={term.title}
+                                  onData={handleTerminalInput}
+                                  mergeTop
+                                  historyLines={terminalHistory[selectedProject!.path] || []}
+                                  fullscreen={terminalFullscreen}
+                                  theme={{
+                                    background: appConfig?.terminal_bg_color,
+                                    foreground: appConfig?.terminal_fg_color,
+                                    fontSize: appConfig?.terminal_font_size,
+                                  }}
+                                  ref={(el) => {
+                                    if (el) terminalRefs.current[term.id] = el;
+                                  }}
+                                />
+                              </div>
+                            ),
+                          })),
+                          {
+                            key: 'detail',
+                            label: 'Claude 记录',
+                            closable: false,
+                            children: (
+                              <Card className="projects-card config-card" variant="borderless" style={{ flex: 1, height: 'auto', overflow: 'auto' }}>
+                                <div className="detail-form">
+                                  <div className="status-row">
+                                    <span className="status-label">项目名称</span>
+                                    <span className="status-value">{selectedProject.name}</span>
+                                  </div>
+                                  <div className="status-row">
+                                    <span className="status-label">项目路径</span>
+                                    <span className="status-value" style={{ fontSize: '12px', wordBreak: 'break-all' }}>{selectedProject.path}</span>
+                                  </div>
+                                  <div className="status-row">
+                                    <span className="status-label">推送服务状态</span>
+                                    <Tag color={selectedProject.hooks_installed ? 'black' : 'default'}>
+                                      {selectedProject.hooks_installed ? '已安装' : '未安装'}
+                                    </Tag>
+                                  </div>
+                                  <Divider />
+                                  <Space>
+                                    <Button type="primary" icon={<FolderOutlined />} onClick={async () => {
+                                      try {
+                                        await invoke('open_folder', { path: selectedProject.path });
+                                      } catch (error) {
+                                        messageApi.error(`无法打开文件夹: ${error}`);
                                       }
+                                    }}>
+                                      打开文件夹
+                                    </Button>
+                                    <Button icon={<SettingOutlined />} onClick={() => selectedProject.hooks_installed ? handleUninstallHooks(selectedProject) : handleInstallHooks(selectedProject)}>
+                                      {selectedProject.hooks_installed ? '卸载推送服务' : '安装推送服务'}
+                                    </Button>
+                                  </Space>
+                                  <Divider />
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                                    <h3 style={{ margin: 0 }}>Claude 记录</h3>
+                                    <Button danger disabled={hookRecordSelection.length === 0} onClick={handleDeleteHookRecords}>
+                                      批量删除
+                                    </Button>
+                                  </div>
+                                  <Table
+                                    dataSource={hookRecords}
+                                    rowKey="id"
+                                    loading={hookRecordsLoading}
+                                    tableLayout="fixed"
+                                    scroll={{ x: 1000, y: '100%' }}
+                                    style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', height: 0 }}
+                                    rowSelection={{
+                                      selectedRowKeys: hookRecordSelection,
+                                      onChange: (keys) => setHookRecordSelection(keys as number[]),
+                                    }}
+                                    pagination={{
+                                      current: hookRecordsPage,
+                                      total: hookRecordsTotal,
+                                      pageSize: 20,
+                                      showSizeChanger: false,
+                                      onChange: (page) => fetchHookRecords(page),
+                                    }}
+                                    columns={[
+                                      { title: '事件', dataIndex: 'event_name', key: 'event_name', width: 140 },
+                                      {
+                                        title: '摘要',
+                                        dataIndex: 'notification_text',
+                                        key: 'notification_text',
+                                        width: 300,
+                                        render: (text: string) => (
+                                          <div style={{ maxWidth: 268, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={text}>
+                                            {text || '-'}
+                                          </div>
+                                        ),
+                                        className: 'column-summary'
+                                      },
+                                      {
+                                        title: '结果',
+                                        dataIndex: 'result',
+                                        key: 'result',
+                                        width: 120,
+                                        render: (text: string) => (
+                                          <div style={{ maxWidth: 88, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={text}>
+                                            {text || '-'}
+                                          </div>
+                                        ),
+                                        className: 'column-result'
+                                      },
+                                      {
+                                        title: '时间',
+                                        dataIndex: 'created_at',
+                                        key: 'created_at',
+                                        width: 180,
+                                        render: (value: number) => formatHookTime(value),
+                                      },
+                                      {
+                                        title: '操作',
+                                        key: 'action',
+                                        width: 160,
+                                        render: (_: any, record: HookRecord) => (
+                                          <Space>
+                                            <Button
+                                              size="small"
+                                              className="action-btn"
+                                              onClick={() => {
+                                                setHookDetailRecord(record);
+                                                setHookDetailOpen(true);
+                                              }}
+                                            >
+                                              查看详情
+                                            </Button>
+                                            <Button
+                                              size="small"
+                                              className="action-btn danger"
+                                              onClick={() => handleDeleteHookRecord(record.id)}
+                                            >
+                                              删除
+                                            </Button>
+                                          </Space>
+                                        ),
+                                      },
+                                    ]}
+                                  />
+                                  <Modal
+                                    title={(
+                                      <Space>
+                                        <InfoCircleOutlined style={{ color: 'var(--ant-color-primary)' }} />
+                                        <span>Hooks 记录详情</span>
+                                      </Space>
+                                    )}
+                                    open={hookDetailOpen}
+                                    onCancel={() => setHookDetailOpen(false)}
+                                    footer={
+                                      <Button onClick={() => setHookDetailOpen(false)}>关闭</Button>
                                     }
-                                  }}
-                                  style={{ flex: 1, display: 'flex', flexDirection: 'column' }}
-                                  className="terminal-tabs-inner"
-                                  items={(projectTerminals[selectedProject.path] || []).map(term => ({
-                                    key: term.id,
-                                    label: term.title,
-                                    children: (
-                                      <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                                        <TerminalComponent
-                                          projectPath={selectedProject!.path}
-                                          terminalId={term.id}
-                                          title={term.title}
-                                          onData={handleTerminalInput}
-                                          mergeTop
-                                          historyLines={terminalHistory[selectedProject!.path] || []}
-                                          fullscreen={terminalFullscreen}
-                                          theme={{
-                                            background: appConfig?.terminal_bg_color,
-                                            foreground: appConfig?.terminal_fg_color,
-                                            fontSize: appConfig?.terminal_font_size,
-                                          }}
-                                        />
-                                      </div>
-                                    ),
-                                  }))}
-                                />
-                              </div>
-                            </Card>
-                          ),
-                        },
-                        {
-                          key: 'detail',
-                          label: '详情',
-                          children: (
-                            <Card className="projects-card config-card" variant="borderless" style={{ flex: 1, height: 'auto' }}>
-                              <div className="detail-form">
-                                <div className="status-row">
-                                  <span className="status-label">项目名称</span>
-                                  <span className="status-value">{selectedProject.name}</span>
-                                </div>
-                                <div className="status-row">
-                                  <span className="status-label">项目路径</span>
-                                  <span className="status-value" style={{ fontSize: '12px', wordBreak: 'break-all' }}>{selectedProject.path}</span>
-                                </div>
-                                <div className="status-row">
-                                  <span className="status-label">推送服务状态</span>
-                                  <Tag color={selectedProject.hooks_installed ? 'black' : 'default'}>
-                                    {selectedProject.hooks_installed ? '已安装' : '未安装'}
-                                  </Tag>
-                                </div>
-                                <Divider />
-                                <Space>
-                                  <Button type="primary" icon={<FolderOutlined />} onClick={async () => {
-                                    try {
-                                      await invoke('open_folder', { path: selectedProject.path });
-                                    } catch (error) {
-                                      messageApi.error(`无法打开文件夹: ${error}`);
-                                    }
-                                  }}>
-                                    打开文件夹
-                                  </Button>
-                                  <Button icon={<SettingOutlined />} onClick={() => selectedProject.hooks_installed ? handleUninstallHooks(selectedProject) : handleInstallHooks(selectedProject)}>
-                                    {selectedProject.hooks_installed ? '卸载推送服务' : '安装推送服务'}
-                                  </Button>
-                                </Space>
-                                <Divider />
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                                  <h3 style={{ margin: 0 }}>Claude 记录</h3>
-                                  <Button danger disabled={hookRecordSelection.length === 0} onClick={handleDeleteHookRecords}>
-                                    批量删除
-                                  </Button>
-                                </div>
-                                <Table
-                                  dataSource={hookRecords}
-                                  rowKey="id"
-                                  loading={hookRecordsLoading}
-                                  tableLayout="fixed"
-                                  scroll={{ x: 1000, y: '100%' }}
-                                  style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', height: 0 }}
-                                  rowSelection={{
-                                    selectedRowKeys: hookRecordSelection,
-                                    onChange: (keys) => setHookRecordSelection(keys as number[]),
-                                  }}
-                                  pagination={{
-                                    current: hookRecordsPage,
-                                    total: hookRecordsTotal,
-                                    pageSize: 20,
-                                    showSizeChanger: false,
-                                    onChange: (page) => fetchHookRecords(page),
-                                  }}
-                                  columns={[
-                                    { title: '事件', dataIndex: 'event_name', key: 'event_name', width: 140 },
-                                    {
-                                      title: '摘要',
-                                      dataIndex: 'notification_text',
-                                      key: 'notification_text',
-                                      width: 300,
-                                      render: (text: string) => (
-                                        <div style={{ maxWidth: 268, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={text}>
-                                          {text || '-'}
+                                    destroyOnClose
+                                    width={800}
+                                    className="hook-detail-modal"
+                                  >
+                                    {hookDetailRecord && (
+                                      <div className="hook-detail-content">
+                                        <div className="hook-detail-grid">
+                                          <div className="detail-item">
+                                            <span className="detail-label">事件</span>
+                                            <span className="detail-value">
+                                              <Tag color="geekblue" style={{ margin: 0 }}>{hookDetailRecord.event_name}</Tag>
+                                            </span>
+                                          </div>
+                                          <div className="detail-item">
+                                            <span className="detail-label">时间</span>
+                                            <span className="detail-value">{formatHookTime(hookDetailRecord.created_at)}</span>
+                                          </div>
+                                          <div className="detail-item">
+                                            <span className="detail-label">结果</span>
+                                            <span className="detail-value">
+                                              <Tag style={{ margin: 0 }} color={hookDetailRecord.result === 'Success' || hookDetailRecord.result === 'OK' || hookDetailRecord.result === 'success' ? 'success' : (hookDetailRecord.result ? 'error' : 'default')}>
+                                                {hookDetailRecord.result || '未知'}
+                                              </Tag>
+                                            </span>
+                                          </div>
+                                          <div className="detail-item">
+                                            <span className="detail-label">会话 ID</span>
+                                            <span className="detail-value">
+                                              <Typography.Text copyable={{ text: hookDetailRecord.session_id }} style={{ fontFamily: 'monospace', color: 'inherit' }}>
+                                                {hookDetailRecord.session_id}
+                                              </Typography.Text>
+                                            </span>
+                                          </div>
                                         </div>
-                                      ),
-                                      className: 'column-summary'
-                                    },
-                                    {
-                                      title: '结果',
-                                      dataIndex: 'result',
-                                      key: 'result',
-                                      width: 120,
-                                      render: (text: string) => (
-                                        <div style={{ maxWidth: 88, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={text}>
-                                          {text || '-'}
+
+                                        <Divider style={{ margin: '16px 0' }} />
+
+                                        <div className="detail-section">
+                                          <div className="section-header">
+                                            <h4 className="section-title">摘要</h4>
+                                          </div>
+                                          <div className="summary-box">
+                                            {hookDetailRecord.notification_text || <span style={{ color: 'var(--text-tertiary)' }}>无摘要信息</span>}
+                                          </div>
                                         </div>
-                                      ),
-                                      className: 'column-result'
-                                    },
-                                    {
-                                      title: '时间',
-                                      dataIndex: 'created_at',
-                                      key: 'created_at',
-                                      width: 180,
-                                      render: (value: number) => formatHookTime(value),
-                                    },
-                                    {
-                                      title: '操作',
-                                      key: 'action',
-                                      width: 160,
-                                      render: (_: any, record: HookRecord) => (
-                                        <Space>
-                                          <Button
-                                            size="small"
-                                            className="action-btn"
-                                            onClick={() => {
-                                              setHookDetailRecord(record);
-                                              setHookDetailOpen(true);
-                                            }}
-                                          >
-                                            查看详情
-                                          </Button>
-                                          <Button
-                                            size="small"
-                                            className="action-btn danger"
-                                            onClick={() => handleDeleteHookRecord(record.id)}
-                                          >
-                                            删除
-                                          </Button>
-                                        </Space>
-                                      ),
-                                    },
-                                  ]}
-                                />
-                                <Modal
-                                  title={(
-                                    <Space>
-                                      <InfoCircleOutlined style={{ color: 'var(--ant-color-primary)' }} />
-                                      <span>Hooks 记录详情</span>
-                                    </Space>
-                                  )}
-                                  open={hookDetailOpen}
-                                  onCancel={() => setHookDetailOpen(false)}
-                                  footer={
-                                    <Button onClick={() => setHookDetailOpen(false)}>关闭</Button>
-                                  }
-                                  destroyOnClose
-                                  width={800}
-                                  className="hook-detail-modal"
-                                >
-                                  {hookDetailRecord && (
-                                    <div className="hook-detail-content">
-                                      <div className="hook-detail-grid">
-                                        <div className="detail-item">
-                                          <span className="detail-label">事件</span>
-                                          <span className="detail-value">
-                                            <Tag color="geekblue" style={{ margin: 0 }}>{hookDetailRecord.event_name}</Tag>
-                                          </span>
+
+                                        <div className="detail-section">
+                                          <div className="section-header">
+                                            <h4 className="section-title">详细内容</h4>
+                                            <Button
+                                              size="small"
+                                              type="text"
+                                              icon={<CopyOutlined />}
+                                              onClick={() => {
+                                                navigator.clipboard.writeText(hookDetailRecord.content);
+                                                messageApi.success('已复制到剪贴板');
+                                              }}
+                                            >
+                                              复制
+                                            </Button>
+                                          </div>
+                                          <div className="code-box">
+                                            <pre>{hookDetailRecord.content}</pre>
+                                          </div>
                                         </div>
-                                        <div className="detail-item">
-                                          <span className="detail-label">时间</span>
-                                          <span className="detail-value">{formatHookTime(hookDetailRecord.created_at)}</span>
-                                        </div>
-                                        <div className="detail-item">
-                                          <span className="detail-label">结果</span>
-                                          <span className="detail-value">
-                                            <Tag style={{ margin: 0 }} color={hookDetailRecord.result === 'Success' || hookDetailRecord.result === 'OK' || hookDetailRecord.result === 'success' ? 'success' : (hookDetailRecord.result ? 'error' : 'default')}>
-                                              {hookDetailRecord.result || '未知'}
-                                            </Tag>
-                                          </span>
-                                        </div>
-                                        <div className="detail-item">
-                                          <span className="detail-label">会话 ID</span>
-                                          <span className="detail-value">
-                                            <Typography.Text copyable={{ text: hookDetailRecord.session_id }} style={{ fontFamily: 'monospace', color: 'inherit' }}>
-                                              {hookDetailRecord.session_id}
+
+                                        <div className="detail-section">
+                                          <div className="section-header">
+                                            <h4 className="section-title">Transcript 路径</h4>
+                                            <Button
+                                              size="small"
+                                              type="text"
+                                              icon={<FolderOutlined />}
+                                              onClick={async () => {
+                                                try {
+                                                  const dirPath = hookDetailRecord.transcript_path.substring(0, hookDetailRecord.transcript_path.lastIndexOf('/'));
+                                                  await invoke('open_folder', { path: dirPath });
+                                                } catch (error) {
+                                                  messageApi.error(`无法打开文件夹: ${error}`);
+                                                }
+                                              }}
+                                            >
+                                              打开目录
+                                            </Button>
+                                          </div>
+                                          <div className="path-box">
+                                            <Typography.Text copyable={{ text: hookDetailRecord.transcript_path }} style={{ color: 'inherit', wordBreak: 'break-all', fontSize: '13px' }}>
+                                              {hookDetailRecord.transcript_path}
                                             </Typography.Text>
-                                          </span>
+                                          </div>
                                         </div>
                                       </div>
-
-                                      <Divider style={{ margin: '16px 0' }} />
-
-                                      <div className="detail-section">
-                                        <div className="section-header">
-                                          <h4 className="section-title">摘要</h4>
-                                        </div>
-                                        <div className="summary-box">
-                                          {hookDetailRecord.notification_text || <span style={{ color: 'var(--text-tertiary)' }}>无摘要信息</span>}
-                                        </div>
-                                      </div>
-
-                                      <div className="detail-section">
-                                        <div className="section-header">
-                                          <h4 className="section-title">详细内容</h4>
-                                          <Button
-                                            size="small"
-                                            type="text"
-                                            icon={<CopyOutlined />}
-                                            onClick={() => {
-                                              navigator.clipboard.writeText(hookDetailRecord.content);
-                                              messageApi.success('已复制到剪贴板');
-                                            }}
-                                          >
-                                            复制
-                                          </Button>
-                                        </div>
-                                        <div className="code-box">
-                                          <pre>{hookDetailRecord.content}</pre>
-                                        </div>
-                                      </div>
-
-                                      <div className="detail-section">
-                                        <div className="section-header">
-                                          <h4 className="section-title">Transcript 路径</h4>
-                                          <Button
-                                            size="small"
-                                            type="text"
-                                            icon={<FolderOutlined />}
-                                            onClick={async () => {
-                                              try {
-                                                const dirPath = hookDetailRecord.transcript_path.substring(0, hookDetailRecord.transcript_path.lastIndexOf('/'));
-                                                await invoke('open_folder', { path: dirPath });
-                                              } catch (error) {
-                                                messageApi.error(`无法打开文件夹: ${error}`);
-                                              }
-                                            }}
-                                          >
-                                            打开目录
-                                          </Button>
-                                        </div>
-                                        <div className="path-box">
-                                          <Typography.Text copyable={{ text: hookDetailRecord.transcript_path }} style={{ color: 'inherit', wordBreak: 'break-all', fontSize: '13px' }}>
-                                            {hookDetailRecord.transcript_path}
-                                          </Typography.Text>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  )}
-                                </Modal>
-                              </div>
-                            </Card>
-                          ),
-                        },
-                      ]}
-                    />
+                                    )}
+                                  </Modal>
+                                </div>
+                              </Card>
+                            ),
+                          },
+                        ]}
+                      />
+                    </div>
                   </Card>
                 </div>
               )}
@@ -1589,7 +1684,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
                                   <Divider style={{ margin: '24px 0 16px 0' }} />
                                   <div className="action-buttons" style={{ marginTop: 0, display: 'flex', gap: '12px' }}>
-                                    <Button type="primary" icon={<SaveOutlined />} onClick={() => handleSave(form.getFieldsValue())} loading={loading} size="large">保存通用设置</Button>
+                                    <Button type="primary" icon={<SaveOutlined />} onClick={() => handleSave(form.getFieldsValue())} loading={loading} size="large">保存设置</Button>
                                     <Button type="default" onClick={async () => {
                                       try {
                                         await invoke('save_window_size');
@@ -1640,7 +1735,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                                 <Input placeholder="oc_xxxxxxxxxxxxxxxxxxxxxxxx" size="large" className="input-field" />
                                               </Form.Item>
                                               {tauriAvailable && appConfig && !appConfig.chat_id && !appConfig.open_id && (
-                                                <div style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--ant-color-warning-bg, #fffbe6)', border: '1px solid var(--ant-color-warning-border, #ffe58f)', borderRadius: 6, fontSize: 13 }}>
+                                                <div style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 6, fontSize: 13, color: 'var(--text-primary)' }}>
                                                   💡 未配置群聊 ID 也未绑定个人账号。请在飞书中向 <strong>{appConfig.app_name || 'Sparky'}</strong> 机器人发送任意消息，系统将自动绑定你的账号用于消息推送。
                                                 </div>
                                               )}
@@ -1652,9 +1747,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                               </Form.Item>
 
                                               <div className="action-buttons">
-                                                <Button type="default" onClick={handleUploadAnthropicLogo} loading={uploadingLogo} size="large">使用 Anthropic Logo</Button>
+                                                <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={loading} size="large">保存设置</Button>
                                                 <Button type="default" icon={<ApiOutlined />} onClick={handleTestConnection} loading={testingConnection} size="large">测试连接</Button>
-                                                <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={loading} size="large">保存配置</Button>
+                                                <Button type="default" onClick={handleUploadAnthropicLogo} loading={uploadingLogo} size="large">使用 Anthropic Logo</Button>
                                               </div>
                                             </div>
                                           ),

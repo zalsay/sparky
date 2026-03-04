@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -19,6 +19,10 @@ interface TerminalProps {
     foreground?: string;
     fontSize?: number;
   };
+}
+
+export interface TerminalRef {
+  scrollToBottom: () => void;
 }
 
 interface TerminalCacheItem {
@@ -93,17 +97,19 @@ function getOrCreateTerminal(terminalId: string, title?: string, themeVals?: { b
   return created;
 }
 
-export default function TerminalComponent({ projectPath, terminalId, title, onData, mergeTop, historyLines, fullscreen, theme }: TerminalProps) {
+export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent({ projectPath, terminalId, title, onData, mergeTop, historyLines, fullscreen, theme }: TerminalProps, ref) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const onDataRef = useRef(onData);
 
-  const { startPty, write, clearPty } = usePty((data) => {
-    if (onDataRef.current) {
-      onDataRef.current(data);
+  const { startPty, write, clearPty } = usePty();
+
+  useImperativeHandle(ref, () => ({
+    scrollToBottom: () => {
+      termRef.current?.scrollToBottom();
     }
-  });
+  }));
 
   useEffect(() => {
     onDataRef.current = onData;
@@ -322,4 +328,4 @@ export default function TerminalComponent({ projectPath, terminalId, title, onDa
       />
     </div>
   );
-}
+});

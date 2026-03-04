@@ -836,7 +836,7 @@ fn save_session(project_path: &str, session_id: &str) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT NOT NULL,
+            session_id TEXT NOT NULL UNIQUE,
             project_path TEXT NOT NULL,
             started_at INTEGER NOT NULL,
             ended_at INTEGER,
@@ -850,7 +850,7 @@ fn save_session(project_path: &str, session_id: &str) -> Result<()> {
         .as_millis() as i64;
     
     match conn.execute(
-        "INSERT INTO sessions (session_id, project_path, started_at) VALUES (?1, ?2, ?3)",
+        "INSERT OR IGNORE INTO sessions (session_id, project_path, started_at) VALUES (?1, ?2, ?3)",
         params![session_id, project_path, now],
     ) {
         Ok(_) => {

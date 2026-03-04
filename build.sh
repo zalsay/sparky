@@ -7,7 +7,10 @@ echo "🔨 Building Sparky..."
 
 # Build frontend
 echo "📦 Building frontend..."
-cd ui && npm install && npm run build && cd ..
+cd ui
+npm install
+npm run build
+cd ..
 
 # Function to build for a specific target
 build_target() {

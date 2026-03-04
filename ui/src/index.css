@@ -23,3 +23,15 @@ body {
 code {
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
 }
+
+/* Active Tab Underline Highlight */
+.terminal-tabs-inner .ant-tabs-nav .ant-tabs-tab-active {
+  border-bottom: 2px solid currentColor !important;
+}
+/* Theme Switch Dark Mode Customization */
+.dark-mode .theme-switch {
+  background-color: var(--ant-color-bg-container, #333) !important;
+}
+.dark-mode .theme-switch .ant-switch-handle::before {
+  background-color: #e0e0e0 !important;
+}

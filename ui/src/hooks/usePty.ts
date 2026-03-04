@@ -79,7 +79,7 @@ export function usePty(onData?: (data: string, projectPath: string, terminalId: 
     try {
       console.log('Checking if PTY exists for terminal:', terminalId);
 
-      const exists = await invoke<boolean>('pty_exists', { terminalId });
+      const exists = await invoke<boolean>('pty_exists', { terminal_id: terminalId });
       console.log('PTY exists:', exists);
 
       if (currentTerminalRef.current === terminalId && isRunning && exists) {
@@ -116,8 +116,8 @@ export function usePty(onData?: (data: string, projectPath: string, terminalId: 
         },
         cols: 100,
         rows: 30,
-        projectPath,
-        terminalId,
+        project_path: projectPath,
+        terminal_id: terminalId,
       });
 
       console.log('PTY spawned for terminal:', result);
@@ -137,7 +137,7 @@ export function usePty(onData?: (data: string, projectPath: string, terminalId: 
     if (ptyRef.current) {
       try {
         await invoke('pty_write', {
-          terminalId: ptyRef.current.terminalId,
+          terminal_id: ptyRef.current.terminalId,
           data,
         });
       } catch (error) {

@@ -20,7 +20,7 @@ use pty::{PtyManager, pty_spawn, pty_write, pty_kill, pty_resize, pty_exists};
 
 pub struct WsConnectionState(pub Arc<AtomicBool>);
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn get_ws_connected(state: tauri::State<'_, WsConnectionState>) -> bool {
     state.0.load(std::sync::atomic::Ordering::SeqCst)
 }
@@ -182,6 +182,7 @@ pub struct SessionInfo {
     pub started_at: i64,
     pub ended_at: Option<i64>,
     pub reason: Option<String>,
+    pub name: Option<String>,
 }
 
 fn get_db_path() -> PathBuf {
@@ -326,11 +327,12 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT NOT NULL,
+            session_id TEXT NOT NULL UNIQUE,
             project_path TEXT NOT NULL,
             started_at INTEGER NOT NULL,
             ended_at INTEGER,
-            reason TEXT
+            reason TEXT,
+            name TEXT
         )",
         [],
     )?;
@@ -352,6 +354,20 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
 pub(crate) fn open_db() -> Result<Connection, String> {
     let conn = Connection::open(get_db_path()).map_err(|e| e.to_string())?;
     init_db(&conn).map_err(|e| e.to_string())?;
+    
+    // Add missing names column to active databases
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN name TEXT", []);
+
+    // Remove duplicates keeping the first one, then enforce unique constraint
+    let _ = conn.execute(
+        "DELETE FROM sessions WHERE id NOT IN (SELECT MIN(id) FROM sessions GROUP BY session_id)",
+        [],
+    );
+    let _ = conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_session_id ON sessions(session_id)",
+        [],
+    );
+
     cleanup_legacy_data(&conn)?;
     migrate_app_config_table(&conn)?;
     Ok(conn)
@@ -653,7 +669,7 @@ pub fn forward_message_to_pty(app: tauri::AppHandle, message: &str, message_id: 
     let active_projects = pty_manager.get_active_projects();
 
     if active_projects.is_empty() {
-        return Err("当前没有运行中的终端。".to_string());
+        return Err("当前没有运行中的终端".to_string());
     }
 
     // 解析 "<序号>::<命令>" 格式
@@ -683,10 +699,10 @@ pub fn forward_message_to_pty(app: tauri::AppHandle, message: &str, message_id: 
     if target_project_path.is_none() {
         if active_projects.len() > 1 {
             // 发送选择列表
-            let mut reply = String::from("检测到多个运行中的终端，请使用 `序号::命令` 或回复 `序号` 来选择目标：\n");
+            let mut reply = String::from("检测到多个运行中的终端，请使用 `序号::命令` 或回复 `序号` 来选择目标:\n ");
             for (i, path) in active_projects.iter().enumerate() {
                 let name = path.split('/').last().unwrap_or(path);
-                reply.push_str(&format!("{}: {}\n", i + 1, name));
+                reply.push_str(&format!("{}: {}\n ", i + 1, name));
             }
             
             // 更新该用户的待选列表
@@ -757,7 +773,7 @@ fn save_open_id_to_db(open_id: &str) -> Result<(), String> {
 }
 
 /// 上传 Anthropic logo 到飞书，获取 img_key 并保存到 SQLite
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 async fn upload_anthropic_logo() -> Result<String, String> {
     let config = get_config()?;
 
@@ -814,7 +830,7 @@ async fn upload_anthropic_logo() -> Result<String, String> {
     Ok(img_key)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn record_terminal_input(project_path: String, input: String) -> Result<(), String> {
     let conn = open_db()?;
     let now = std::time::SystemTime::now()
@@ -843,7 +859,7 @@ fn record_terminal_input(project_path: String, input: String) -> Result<(), Stri
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn record_terminal_output(project_path: String, output: String) -> Result<(), String> {
     let conn = open_db()?;
     let now = std::time::SystemTime::now()
@@ -872,7 +888,7 @@ fn record_terminal_output(project_path: String, output: String) -> Result<(), St
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn get_terminal_history(project_path: String) -> Result<Vec<String>, String> {
     let conn = open_db()?;
     let mut stmt = conn
@@ -892,7 +908,7 @@ fn get_terminal_history(project_path: String) -> Result<Vec<String>, String> {
     Ok(items)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn get_wss_status() -> Result<WssStatus, String> {
     let config_dir = dirs::config_dir()
         .ok_or("Failed to get config directory")?
@@ -912,7 +928,7 @@ fn get_wss_status() -> Result<WssStatus, String> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn get_config() -> Result<AppConfig, String> {
     let conn = open_db()?;
     if let Some(config) = load_config_from_db(&conn)? {
@@ -922,14 +938,14 @@ fn get_config() -> Result<AppConfig, String> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn save_config(config: AppConfig) -> Result<(), String> {
     let conn = open_db()?;
     upsert_config(&conn, &config)?;
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn open_folder(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -962,7 +978,7 @@ struct McpStatus {
     path: String,
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn run_curl_command(command: String, cwd: String) -> Result<String, String> {
     let output = std::process::Command::new("sh")
         .arg("-c")
@@ -983,11 +999,12 @@ fn run_curl_command(command: String, cwd: String) -> Result<String, String> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn check_mcp_status() -> Result<McpStatus, String> {
     // Check if chrome-devtools-mcp is installed
+    // Use login shell (-lc) so user's PATH (including npm global bin) is available in release builds
     let which_output = std::process::Command::new("sh")
-        .arg("-c")
+        .arg("-lc")
         .arg("which chrome-devtools-mcp 2>/dev/null || echo ''")
         .output()
         .map_err(|e| format!("Failed to check MCP installation: {}", e))?;
@@ -996,7 +1013,7 @@ fn check_mcp_status() -> Result<McpStatus, String> {
 
     // Check if chrome-devtools-mcp is running
     let pgrep_output = std::process::Command::new("sh")
-        .arg("-c")
+        .arg("-lc")
         .arg("pgrep -f chrome-devtools-mcp 2>/dev/null")
         .output()
         .map_err(|e| format!("Failed to check MCP process: {}", e))?;
@@ -1010,11 +1027,11 @@ fn check_mcp_status() -> Result<McpStatus, String> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn start_mcp_server() -> Result<String, String> {
     // First check if already running
     let pgrep_output = std::process::Command::new("sh")
-        .arg("-c")
+        .arg("-lc")
         .arg("pgrep -f chrome-devtools-mcp 2>/dev/null")
         .output()
         .map_err(|e| format!("Failed to check MCP process: {}", e))?;
@@ -1026,8 +1043,9 @@ fn start_mcp_server() -> Result<String, String> {
     }
 
     // Start chrome-devtools-mcp in background
+    // Use login shell so PATH includes npm global bin
     std::process::Command::new("sh")
-        .arg("-c")
+        .arg("-lc")
         .arg("nohup chrome-devtools-mcp > /tmp/chrome-devtools-mcp.log 2>&1 &")
         .spawn()
         .map_err(|e| format!("Failed to start MCP server: {}", e))?;
@@ -1037,7 +1055,7 @@ fn start_mcp_server() -> Result<String, String> {
 
     // Verify it started
     let verify = std::process::Command::new("sh")
-        .arg("-c")
+        .arg("-lc")
         .arg("pgrep -f chrome-devtools-mcp 2>/dev/null")
         .output()
         .map_err(|e| format!("Failed to verify MCP process: {}", e))?;
@@ -1049,7 +1067,7 @@ fn start_mcp_server() -> Result<String, String> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn get_testing_session(project_path: String) -> Result<Option<String>, String> {
     let conn = open_db()?;
     let result = conn.query_row(
@@ -1064,7 +1082,7 @@ fn get_testing_session(project_path: String) -> Result<Option<String>, String> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn save_testing_session(project_path: String, session_id: String) -> Result<(), String> {
     let conn = open_db()?;
     let now = std::time::SystemTime::now()
@@ -1128,7 +1146,7 @@ pub fn build_hook_command() -> Result<String, String> {
     Ok(format!("{} hook", cli_bin_name))
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn check_hooks_installed(project_path: String) -> Result<bool, String> {
     check_hooks_installed_for_path(&project_path)
 }
@@ -1193,7 +1211,7 @@ fn is_hooks_event_complete(value: &serde_json::Value) -> bool {
     true
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn install_hooks(project_path: String) -> Result<(), String> {
     let settings_path = std::path::Path::new(&project_path)
         .join(".claude")
@@ -1327,7 +1345,7 @@ fn check_agent_teams_enabled_for_path(project_path: &str) -> Result<bool, String
     Ok(expected_files.iter().all(|f| agents_dir.join(f).exists()))
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn uninstall_hooks(project_path: String) -> Result<(), String> {
     let settings_path = std::path::Path::new(&project_path)
         .join(".claude")
@@ -1363,7 +1381,7 @@ fn uninstall_hooks(project_path: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 async fn test_feishu_connection(app_id: String, app_secret: String) -> Result<String, String> {
     let client = reqwest::Client::new();
     
@@ -1393,7 +1411,7 @@ async fn test_feishu_connection(app_id: String, app_secret: String) -> Result<St
     Ok("飞书应用配置验证成功".to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 async fn send_feishu_message(
     app_id: String,
     app_secret: String,
@@ -1462,7 +1480,7 @@ pub struct HookRecordsResponse {
     pub page_size: u32,
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 async fn notify_project_active(
     project_name: String,
     project_path: String,
@@ -1537,7 +1555,7 @@ async fn notify_project_active(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn get_hook_records(project_path: String, page: Option<u32>, page_size: Option<u32>) -> Result<HookRecordsResponse, String> {
     let conn = open_db()?;
     let table_name = project_hooks_table_name(&project_path);
@@ -1586,7 +1604,7 @@ fn get_hook_records(project_path: String, page: Option<u32>, page_size: Option<u
     })
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn delete_hook_record(project_path: String, id: i64) -> Result<(), String> {
     let conn = open_db()?;
     let table_name = project_hooks_table_name(&project_path);
@@ -1596,7 +1614,7 @@ fn delete_hook_record(project_path: String, id: i64) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn delete_hook_records(project_path: String, ids: Vec<i64>) -> Result<(), String> {
     let conn = open_db()?;
     let table_name = project_hooks_table_name(&project_path);
@@ -1608,7 +1626,7 @@ fn delete_hook_records(project_path: String, ids: Vec<i64>) -> Result<(), String
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn get_hook_status(project_path: String) -> Result<HookStatus, String> {
     let conn = open_db()?;
     let table_name = project_hooks_table_name(&project_path);
@@ -1638,12 +1656,12 @@ fn get_hook_status(project_path: String) -> Result<HookStatus, String> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn get_project_sessions(project_path: String) -> Result<Vec<SessionInfo>, String> {
     let conn = open_db()?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, session_id, project_path, started_at, ended_at, reason
+            "SELECT id, session_id, project_path, started_at, ended_at, reason, name
              FROM sessions
              WHERE project_path = ?1
              ORDER BY started_at DESC
@@ -1660,6 +1678,7 @@ fn get_project_sessions(project_path: String) -> Result<Vec<SessionInfo>, String
                 started_at: row.get(3)?,
                 ended_at: row.get(4)?,
                 reason: row.get(5)?,
+                name: row.get(6)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -1671,12 +1690,23 @@ fn get_project_sessions(project_path: String) -> Result<Vec<SessionInfo>, String
     Ok(sessions)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
+fn update_session_name(session_id: String, name: String) -> Result<(), String> {
+    let conn = open_db()?;
+    conn.execute(
+        "UPDATE sessions SET name = ?1 WHERE session_id = ?2",
+        params![name, session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
 fn get_agent_teams_status(project_path: String) -> Result<bool, String> {
     check_agent_teams_enabled_for_path(&project_path)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn toggle_agent_teams(project_path: String) -> Result<bool, String> {
     let settings_path = std::path::Path::new(&project_path)
         .join(".claude")
@@ -1893,7 +1923,7 @@ Rules:
     Ok(next_value)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn get_projects() -> Result<Vec<Project>, String> {
     let conn = open_db()?;
 
@@ -1943,7 +1973,7 @@ fn get_projects() -> Result<Vec<Project>, String> {
     Ok(projects)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn add_project(name: String, path: String) -> Result<Project, String> {
     let conn = open_db()?;
     let now = std::time::SystemTime::now()
@@ -1972,7 +2002,7 @@ fn add_project(name: String, path: String) -> Result<Project, String> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn update_project(id: i64, name: String, path: String) -> Result<(), String> {
     let conn = open_db()?;
     let now = std::time::SystemTime::now()
@@ -1989,7 +2019,7 @@ fn update_project(id: i64, name: String, path: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn delete_project(id: i64) -> Result<(), String> {
     let conn = open_db()?;
     conn.execute("DELETE FROM projects WHERE id = ?1", params![id])
@@ -1997,12 +2027,12 @@ fn delete_project(id: i64) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 async fn get_active_projects(manager: tauri::State<'_, PtyManager>) -> Result<Vec<String>, String> {
     Ok(manager.get_active_projects())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn set_project_hooks_status(id: i64, hooks_installed: bool) -> Result<(), String> {
     let conn = open_db()?;
     let now = std::time::SystemTime::now()
@@ -2019,7 +2049,7 @@ fn set_project_hooks_status(id: i64, hooks_installed: bool) -> Result<(), String
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 async fn set_active_project(state: tauri::State<'_, Arc<AppState>>, project_path: String) -> Result<(), String> {
     log::info!("Setting active project to: {}", project_path);
     let mut active = state.active_project.lock().unwrap();
@@ -2027,7 +2057,7 @@ async fn set_active_project(state: tauri::State<'_, Arc<AppState>>, project_path
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 async fn save_window_size(window: tauri::Window) -> Result<(), String> {
     let size = window.inner_size().map_err(|e| e.to_string())?;
     let conn = open_db()?;
@@ -2215,7 +2245,8 @@ pub fn run() {
             check_mcp_status,
             start_mcp_server,
             get_testing_session,
-            save_testing_session
+            save_testing_session,
+            update_session_name
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

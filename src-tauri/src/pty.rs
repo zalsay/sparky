@@ -138,7 +138,7 @@ impl PtyManager {
     }
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn pty_spawn(
     app: tauri::AppHandle,
     program: String,
@@ -402,7 +402,7 @@ fn get_pty_log_path(project_path: &str) -> std::path::PathBuf {
     home.join("sparky/pty_logs").join(format!("{}.log", safe_name))
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn pty_write(app: tauri::AppHandle, terminal_id: String, data: String) -> Result<(), String> {
     log::debug!("PTY write: terminal={}, data={}", terminal_id, data);
 
@@ -410,7 +410,7 @@ pub fn pty_write(app: tauri::AppHandle, terminal_id: String, data: String) -> Re
     manager.write(&terminal_id, &data)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn pty_kill(app: tauri::AppHandle, terminal_id: String) -> Result<(), String> {
     log::info!("[pty_kill] START terminal={}", terminal_id);
 
@@ -474,7 +474,7 @@ pub fn pty_kill(app: tauri::AppHandle, terminal_id: String) -> Result<(), String
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn pty_resize(app: tauri::AppHandle, terminal_id: String, cols: u16, rows: u16) -> Result<(), String> {
     log::info!("PTY resize: terminal={}, cols={}, rows={}", terminal_id, cols, rows);
 
@@ -496,7 +496,7 @@ pub fn pty_resize(app: tauri::AppHandle, terminal_id: String, cols: u16, rows: u
     }
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn pty_exists(app: tauri::AppHandle, terminal_id: String) -> bool {
     let manager = app.state::<PtyManager>();
     manager.has_pty(&terminal_id)
