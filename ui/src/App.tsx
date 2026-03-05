@@ -185,13 +185,27 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   useEffect(() => {
     if (!tauriAvailable) return;
     invoke<{ claude: boolean, code_server: boolean }>('check_dependencies')
-      .then((status) => {
+      .then(async (status) => {
         if (!status.claude || !status.code_server) {
-          setMissingDependencies(status);
+          if (!status.code_server) {
+            const hide = messageApi.loading('正在安装必要依赖 Coder IDE (code-server)...', 0);
+            try {
+              await invoke('install_code_server');
+              hide();
+              messageApi.success('Coder IDE 安装成功');
+              status.code_server = true;
+            } catch (err) {
+              hide();
+              messageApi.error(`Coder IDE 安装失败: ${err}`);
+            }
+          }
+          if (!status.claude || !status.code_server) {
+            setMissingDependencies(status);
+          }
         }
       })
       .catch((e) => console.error('Failed to check dependencies:', e));
-  }, [tauriAvailable]);
+  }, [tauriAvailable, messageApi]);
 
   // Poll WebSocket connection status and active projects
   useEffect(() => {
@@ -321,24 +335,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       try {
         const connected = await invoke<boolean>('check_code_server_connection');
         setCodeServerConnected(connected);
-        if (!connected) {
-          modalApi.error({
-            title: '连接 IDE 服务失败',
-            content: (
-              <div style={{ marginTop: 8 }}>
-                <p>无法连接到本地 code-server (127.0.0.1:18080)。</p>
-                <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>通常是因为 code-server 尚未启动或监听端口不正确。</p>
-                <div style={{ marginTop: 16, padding: '12px', background: 'rgba(0,0,0,0.4)', borderRadius: '4px' }}>
-                  <code style={{ fontSize: 12 }}>code-server --port 18080 --auth none</code>
-                </div>
-              </div>
-            ),
-            okText: '重试',
-            onOk: () => {
-              checkConnection();
-            }
-          });
-        }
       } catch (err) {
         console.error('Failed to check code-server connection:', err);
       }

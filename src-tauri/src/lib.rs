@@ -2248,6 +2248,23 @@ pub struct DependencyStatus {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+async fn install_code_server() -> Result<String, String> {
+    log::info!("Attempting to install code-server via brew");
+    let output = std::process::Command::new("sh")
+        .arg("-lc")
+        .arg("brew install code-server")
+        .output()
+        .map_err(|e| format!("Failed to execute brew install: {}", e))?;
+
+    if output.status.success() {
+        Ok("code-server installed successfully".to_string())
+    } else {
+        let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
+        Err(format!("Install failed: {}", err_msg))
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
 fn check_dependencies() -> Result<DependencyStatus, String> {
     Ok(DependencyStatus {
         claude: find_executable("claude").is_some(),
@@ -2472,6 +2489,7 @@ pub fn run() {
             delete_session,
             check_dependencies,
             check_code_server_connection,
+            install_code_server,
             get_latest_claude_jsonl
         ])
         .run(tauri::generate_context!())
