@@ -5,6 +5,7 @@ import '@xterm/xterm/css/xterm.css';
 
 import { invoke } from '@tauri-apps/api/core';
 import { usePty } from '../hooks/usePty';
+import CodeIcon from '../assets/Code.svg';
 
 interface TerminalProps {
   projectPath: string;
@@ -167,7 +168,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
       return true;
     });
 
-    // Register link provider for file paths
+    // Register link provider for file paths (handles underline and clicking)
     const linkProvider = cached.term.registerLinkProvider({
       provideLinks(bufferLineNumber: number, callback: (links: any[] | undefined) => void) {
         const line = cached.term.buffer.active.getLine(bufferLineNumber - 1);
@@ -226,6 +227,98 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
       }
     });
 
+    // Keep track of which markers we've already placed to avoid duplicates
+    const decoratedMarkers = new Set<string>();
+
+    const decorateLinePaths = (lineNumber: number) => {
+      const line = cached.term.buffer.active.getLine(lineNumber);
+      if (!line) return;
+      const lineText = line.translateToString(true);
+
+      const pathRegex = /(?:^|\s)(\/?|\.\/|\.\.\/|~\/)([a-zA-Z0-9_.\-]+(?:\/[a-zA-Z0-9_.\-]+)+)(?::\d+)?/g;
+      let match;
+
+      while ((match = pathRegex.exec(lineText)) !== null) {
+        const prefix = match[1];
+        const pathBody = match[2];
+        const matchText = prefix + pathBody;
+        const matchedFull = match[0];
+
+        let startIndex = match.index;
+        const spaceMatch = matchedFull.match(/^\s/);
+        if (spaceMatch) startIndex += spaceMatch[0].length;
+
+        const endX = startIndex + matchText.length;
+
+        console.log(`[xterm regex match] Line ${lineNumber}, pos ${endX}: ${matchText}`);
+
+        const markerKey = `${lineNumber}:${endX}:${matchText}`;
+        if (decoratedMarkers.has(markerKey)) continue;
+
+        // Register a marker right at the end of the matched path
+        const marker = cached.term.registerMarker(0);
+        if (!marker) continue;
+
+        decoratedMarkers.add(markerKey);
+
+        // Decorate marker
+        const decoration = cached.term.registerDecoration({
+          marker,
+          x: endX + 1, // Place immediately after the text
+          width: 2 // Allocate space for icon
+        });
+
+        if (decoration) {
+          decoration.onRender((el) => {
+            // Create an inline icon element
+            if (el.children.length > 0) return; // Already rendered
+            el.style.position = 'relative'; // Ensure positioning context for children
+            el.style.display = 'flex';
+            el.style.alignItems = 'center';
+            el.style.justifyContent = 'center';
+            el.style.paddingLeft = '4px';
+            el.style.cursor = 'pointer';
+
+            const img = document.createElement('img');
+            img.src = CodeIcon;
+            img.alt = 'Open File';
+            img.style.width = '14px';
+            img.style.height = '14px';
+            img.style.filter = 'var(--icon-filter, none)';
+            img.style.opacity = '0.7';
+            img.onmouseenter = () => { img.style.opacity = '1'; };
+            img.onmouseleave = () => { img.style.opacity = '0.7'; };
+
+            img.onclick = (e) => {
+              e.stopPropagation();
+              // Strip line:col
+              const cleanPath = matchText.replace(/:\d+(:\d+)?$/, '');
+              let resolvedPath = cleanPath;
+              if (!cleanPath.startsWith('~/') && !cleanPath.startsWith('/')) {
+                resolvedPath = projectPath + '/' + cleanPath.replace(/^\.\//, '');
+              }
+              if (onLinkClickRef.current) {
+                onLinkClickRef.current(resolvedPath);
+              }
+            };
+
+            el.appendChild(img);
+          });
+
+          decoration.onDispose(() => {
+            decoratedMarkers.delete(markerKey);
+          });
+        }
+      }
+    };
+
+    // Listen to lines being added and parsing for decorations
+    const lineFeedDisposable = cached.term.onLineFeed(() => {
+      const activeBuffer = cached.term.buffer.active;
+      // Check the line that just got completed (the one before the new cursor position)
+      decorateLinePaths(activeBuffer.cursorY + activeBuffer.baseY - 1);
+    });
+
     const dataDisposable = cached.term.onData((data) => {
       write(data);
       if (onDataRef.current) {
@@ -281,6 +374,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
       ptyReady = false;
       resizeObserver.disconnect();
       linkProvider.dispose();
+      lineFeedDisposable.dispose();
       dataDisposable.dispose();
       resizeDisposable.dispose();
       clearPty();
