@@ -249,6 +249,26 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     };
   }, []);
 
+  // Listen for messages from the code-server extension
+  useEffect(() => {
+    if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject) return;
+
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'SEND_TO_TERMINAL' && event.data.code) {
+        const activeTid = activeTerminalId[selectedProject.path];
+        if (activeTid) {
+          // Remove newlines and carriage returns to prevent immediate execution of multi-line strings
+          const safeData = event.data.code.replace(/[\r\n]+/g, ' ');
+          invoke('pty_write', { terminal_id: activeTid, data: safeData })
+            .catch(err => console.error('Failed to write to terminal:', err));
+        }
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [activeMenu, selectedProject, activeTerminalId, tauriAvailable]);
+
   useEffect(() => {
     if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject) {
       return;

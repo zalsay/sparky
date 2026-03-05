@@ -2340,14 +2340,23 @@ pub fn run() {
                 }
             }
 
-            // 启动 code-server（完整的 VSCode Web IDE）
-            std::thread::spawn(|| {
+            let app_handle = app.handle().clone();
+            std::thread::spawn(move || {
                 log::info!("Starting code-server on 127.0.0.1:18080...");
                 let cmd_path = find_executable("code-server").unwrap_or_else(|| "code-server".to_string());
+                
+                use tauri::Manager;
+                // Get the path to our bundled extensions using Tauri's path resolver
+                let ext_dir = app_handle.path().resource_dir()
+                    .map(|p| p.join("extensions"))
+                    .unwrap_or_else(|_| std::path::PathBuf::from("extensions"));
+                    
                 match std::process::Command::new(cmd_path)
                     .args([
                         "--auth", "none", 
-                        "--bind-addr", "127.0.0.1:18080"
+                        "--bind-addr", "127.0.0.1:18080",
+                        "--extensions-dir", &ext_dir.to_string_lossy(),
+                        "--locale", "zh-cn"
                     ])
                     .stdout(std::process::Stdio::inherit())
                     .stderr(std::process::Stdio::inherit())

@@ -36,6 +36,9 @@
     ],
     "externalBin": [
       "../target/release/sparky-server"
+    ],
+    "resources": [
+      "extensions"
     ]
   }
 }

@@ -10,14 +10,14 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "*"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "claudeMonitor.sendSelectionToTerminal",
-        "title": "Send to Claude Terminal",
+        "title": "发送到 Sparky 终端",
         "icon": "$(terminal)"
       }
     ],
