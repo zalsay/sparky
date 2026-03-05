@@ -256,6 +256,80 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
             },
           });
         }
+        // Match Claude action patterns like Update(path/to/file.tsx), Create(path), Read(path), Write(path), Edit(path)
+        const actionRegex = /\b(Update|Create|Read|Write|Edit|Wrote|Updated|Created|Reading|Writing|Editing)\(([a-zA-Z0-9_./\-@]+(?:\.[a-zA-Z0-9]+)?)\)/g;
+        let actionMatch;
+
+        while ((actionMatch = actionRegex.exec(lineText)) !== null) {
+          const filePath = actionMatch[2];  // e.g. "path/to/file.tsx"
+          const matchStart = actionMatch.index;
+
+          // Calculate position of just the file path inside parentheses
+          const actionWord = actionMatch[1];
+          const pathStartInLine = matchStart + actionWord.length + 1; // skip "Update("
+          const pathStartX = pathStartInLine + 1; // xterm is 1-indexed
+          const pathEndX = pathStartInLine + filePath.length;
+
+          let popoverEl: HTMLDivElement | null = null;
+
+          links.push({
+            range: {
+              start: { x: pathStartX, y: bufferLineNumber },
+              end: { x: pathEndX, y: bufferLineNumber },
+            },
+            text: filePath,
+            decorations: { underline: true, pointerCursor: true },
+            activate: (_event: MouseEvent, text: string) => {
+              const cleanPath = text.replace(/:\d+(:\d+)?$/, '');
+              let resolvedPath = cleanPath;
+              if (cleanPath.startsWith('/')) {
+                resolvedPath = cleanPath;
+              } else if (cleanPath.startsWith('~/')) {
+                resolvedPath = cleanPath;
+              } else {
+                resolvedPath = projectPath + '/' + cleanPath.replace(/^\.\//, '');
+              }
+              console.log('Terminal Action Link Clicked:', { text, cleanPath, resolvedPath, action: actionWord });
+              if (onLinkClickRef.current) {
+                onLinkClickRef.current(resolvedPath);
+              }
+            },
+            hover: (event: MouseEvent, text: string) => {
+              if (popoverEl) return;
+
+              popoverEl = document.createElement('div');
+              popoverEl.style.position = 'absolute';
+              popoverEl.style.zIndex = '9999';
+              popoverEl.style.display = 'flex';
+              popoverEl.style.alignItems = 'center';
+              popoverEl.style.justifyContent = 'center';
+              popoverEl.style.padding = '4px';
+              popoverEl.style.borderRadius = '4px';
+              popoverEl.style.background = 'var(--bg-secondary)';
+              popoverEl.style.border = '1px solid var(--border-color)';
+              popoverEl.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
+              popoverEl.style.cursor = 'pointer';
+              popoverEl.innerHTML = `<img src="${CodeIcon}" alt="Open" style="width: 14px; height: 14px; filter: var(--icon-filter);" />`;
+
+              popoverEl.style.left = `${event.clientX + 10}px`;
+              popoverEl.style.top = `${event.clientY - 20}px`;
+
+              popoverEl.onclick = (e) => {
+                e.stopPropagation();
+                links[links.length - 1].activate(e, text);
+              };
+
+              document.body.appendChild(popoverEl);
+            },
+            leave: () => {
+              if (popoverEl) {
+                popoverEl.remove();
+                popoverEl = null;
+              }
+            },
+          });
+        }
+
         callback(links.length > 0 ? links : undefined);
       }
     });

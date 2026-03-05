@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
-import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm } from 'antd';
+import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Segmented, Splitter, Popconfirm } from 'antd';
 import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, HomeOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 
 import TerminalComponent from './components/Terminal';
+import ChatView from './components/chat/ChatView';
 import logo from '../../logo.png';
 import codeIcon from './assets/Code.svg';
 import claudeIcon from './assets/Claude.svg';
@@ -164,6 +165,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [mcpLoading, setMcpLoading] = useState(false);
   const [mcpStarting, setMcpStarting] = useState(false);
   const [codeServerConnected, setCodeServerConnected] = useState<boolean | null>(null);
+
+  // Track terminal vs chat view modes per terminal id
+  const [viewModes, setViewModes] = useState<Record<string, 'terminal' | 'chat'>>({});
 
   useEffect(() => {
     localStorage.setItem('sparky-sidebar-collapsed', String(sidebarCollapsed));
@@ -394,7 +398,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       setActiveMenu('project');
       setSelectedProject(null);
     } catch (e) {
-      messageApi.error(`关闭终端失败: ${e}`);
+      messageApi.error(`关闭终端失败: ${e} `);
     }
   };
 
@@ -408,7 +412,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       setAppConfig(config);
       appConfigRef.current = config;
     } catch (error) {
-      messageApi.error(`加载配置失败: ${error}`);
+      messageApi.error(`加载配置失败: ${error} `);
     }
   };
 
@@ -439,7 +443,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       setHookRecordsTotal(response.total);
       setHookRecordsPage(response.page);
     } catch (error) {
-      messageApi.error(`加载 Hooks 记录失败: ${error}`);
+      messageApi.error(`加载 Hooks 记录失败: ${error} `);
       setHookRecords([]);
       setHookRecordsTotal(0);
     } finally {
@@ -497,7 +501,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
           setHookRecordSelection((prev) => prev.filter((item) => item !== id));
           fetchHookRecords(hookRecordsPage);
         } catch (error) {
-          messageApi.error(`删除失败: ${error}`);
+          messageApi.error(`删除失败: ${error} `);
         }
       },
     });
@@ -521,7 +525,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
           setHookRecordSelection([]);
           fetchHookRecords(hookRecordsPage);
         } catch (error) {
-          messageApi.error(`批量删除失败: ${error}`);
+          messageApi.error(`批量删除失败: ${error} `);
         }
       },
     });
@@ -544,7 +548,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       setAppConfig(configToSave);
       messageApi.success('配置已保存');
     } catch (error) {
-      messageApi.error(`保存配置失败: ${error}`);
+      messageApi.error(`保存配置失败: ${error} `);
     } finally {
       setLoading(false);
     }
@@ -560,9 +564,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     setUploadingLogo(true);
     try {
       const imgKey = await invoke<string>('upload_anthropic_logo');
-      messageApi.success(`Logo 上传成功: ${imgKey}`);
+      messageApi.success(`Logo 上传成功: ${imgKey} `);
     } catch (error) {
-      messageApi.error(`上传失败: ${error}`);
+      messageApi.error(`上传失败: ${error} `);
     } finally {
       setUploadingLogo(false);
     }
@@ -586,7 +590,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       const result = await invoke<string>('test_feishu_connection', { app_id: appId, app_secret: appSecret });
       messageApi.success(result);
     } catch (error) {
-      messageApi.error(`测试失败: ${error}`);
+      messageApi.error(`测试失败: ${error} `);
     } finally {
       setTestingConnection(false);
     }
@@ -609,7 +613,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
         setProjects([...projects, newProject]);
         messageApi.success(`项目 "${name}" 添加成功`);
       } catch (error) {
-        messageApi.error(`添加项目失败: ${error}`);
+        messageApi.error(`添加项目失败: ${error} `);
       }
     }
   };
@@ -628,7 +632,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
           setProjects(projects.filter(p => p.id !== id));
           messageApi.success('删除成功');
         } catch (error) {
-          messageApi.error(`删除项目失败: ${error}`);
+          messageApi.error(`删除项目失败: ${error} `);
         }
       },
     });
@@ -645,7 +649,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       setProjects(projects.map(p => p.id === project.id ? { ...p, hooks_installed: true } : p));
       messageApi.success('Hooks 安装成功');
     } catch (error) {
-      messageApi.error(`安装推送服务失败: ${error}`);
+      messageApi.error(`安装推送服务失败: ${error} `);
     }
   };
 
@@ -660,7 +664,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       setProjects(projects.map(p => p.id === project.id ? { ...p, hooks_installed: false } : p));
       messageApi.success('Hooks 已卸载');
     } catch (error) {
-      messageApi.error(`卸载推送服务失败: ${error}`);
+      messageApi.error(`卸载推送服务失败: ${error} `);
     }
   };
 
@@ -671,9 +675,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       setProjects(projects.map(p =>
         p.id === project.id ? { ...p, agent_teams_enabled: nextValue } : p
       ));
-      messageApi.success(`项目 ${project.name} 的 Sub agents 已${nextValue ? '开启' : '关闭'}`);
+      messageApi.success(`项目 ${project.name} 的 Sub agents 已${nextValue ? '开启' : '关闭'} `);
     } catch (error) {
-      messageApi.error(`操作失败: ${error}`);
+      messageApi.error(`操作失败: ${error} `);
     }
   };
 
@@ -699,7 +703,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
         }
       }}
     >
-      <div className={`app-container ${isDarkMode ? 'dark-mode' : ''} ${terminalFullscreen ? 'terminal-fullscreen' : ''}`}>
+      <div className={`app - container ${isDarkMode ? 'dark-mode' : ''} ${terminalFullscreen ? 'terminal-fullscreen' : ''} `}>
         <header className="app-header">
           <div className="header-content" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
@@ -755,7 +759,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
         <main className="app-main" style={activeMenu === 'project-detail' ? { padding: 0 } : undefined}>
           <div className="app-layout" style={activeMenu === 'project-detail' ? { gap: 0 } : undefined}>
-            <aside className={`app-sidebar ${sidebarCollapsed ? 'collapsed' : ''}`} style={{ display: activeMenu === 'project-detail' ? 'none' : undefined }}>
+            <aside className={`app - sidebar ${sidebarCollapsed ? 'collapsed' : ''} `} style={{ display: activeMenu === 'project-detail' ? 'none' : undefined }}>
               <Menu
                 mode="inline"
                 inlineCollapsed={sidebarCollapsed}
@@ -812,7 +816,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                             width: 140,
                             render: (_: any, record: Project) => (
                               <Space size={4}>
-                                <Tag className={`hooks-tag ${record.hooks_installed ? 'installed' : ''}`} style={{ margin: 0 }}>
+                                <Tag className={`hooks - tag ${record.hooks_installed ? 'installed' : ''} `} style={{ margin: 0 }}>
                                   {record.hooks_installed ? '已安装' : '未安装'}
                                 </Tag>
                                 {record.hooks_installed && (
@@ -914,7 +918,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                             allow="clipboard-read; clipboard-write; display-capture"
                           />
                         )}
-                      </Splitter.Panel>
+                      </Splitter.Panel >
                       <Splitter.Panel collapsible defaultSize={initialSplitterSizes[1]} min="20%" max="80%">
                         <Card className="project-detail-card" variant="borderless" style={{ height: '100%', margin: 0, borderRadius: 0, padding: 0 }}>
 
@@ -1487,86 +1491,100 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                             <code className="last-input-content">{lastCommand[term.id]}</code>
                                           </div>
                                         )}
-                                        <Button
-                                          type="text"
-                                          icon={terminalFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
-                                          style={{
-                                            position: 'absolute',
-                                            right: 16,
-                                            top: terminalFullscreen ? 30 : 30,
-                                            zIndex: 100,
-                                            color: 'rgba(255, 255, 255, 0.65)',
-                                            background: 'rgba(0, 0, 0, 0.2)'
-                                          }}
-                                          onClick={() => setTerminalFullscreen(!terminalFullscreen)}
-                                        />
-                                        <Button
-                                          type="text"
-                                          icon={<ArrowDownOutlined />}
-                                          style={{
-                                            position: 'absolute',
-                                            right: 56,
-                                            top: terminalFullscreen ? 30 : 30,
-                                            zIndex: 100,
-                                            color: 'rgba(255, 255, 255, 0.65)',
-                                            background: 'rgba(0, 0, 0, 0.2)'
-                                          }}
-                                          title="滚动到底部"
-                                          onClick={() => terminalRefs.current[term.id]?.scrollToBottom()}
-                                        />
-                                        <TerminalComponent
-                                          projectPath={selectedProject!.path}
-                                          terminalId={term.id}
-                                          title={term.title as string}
-                                          onData={handleTerminalInput}
-                                          onLinkClick={(path) => {
-                                            if (path.startsWith(selectedProject!.path)) {
-                                              // File is inside the current project, open in Coder IDE
-                                              // Tell code-server to open the file via its API
-                                              console.log('Invoking open_in_coder with path:', path);
-                                              invoke('open_in_coder', { file_path: path }).catch((err) => {
-                                                console.error('Failed to open file in Coder IDE:', err);
-                                              });
-                                            } else {
-                                              // File is outside the project, open in a new tab
-                                              console.log('Path is outside project, opening in new tab:', path);
-
-                                              // Get directory of the file for the iframe folder parameter
-                                              const folderPath = path.substring(0, path.lastIndexOf('/'));
-
-                                              setExternalFileTabs(prev => {
-                                                // Avoid duplicate tabs for the same file
-                                                if (!prev.some(tab => tab.path === path)) {
-                                                  return [...prev, { path, folderPath }];
+                                        <div style={{
+                                          position: 'absolute',
+                                          top: terminalFullscreen ? 30 : 30,
+                                          right: 16,
+                                          display: 'flex',
+                                          gap: '8px',
+                                          zIndex: 100,
+                                          alignItems: 'center'
+                                        }}>
+                                          <Segmented
+                                            options={[
+                                              { label: 'Terminal', value: 'terminal' },
+                                              { label: 'Chat UI', value: 'chat' },
+                                            ]}
+                                            value={viewModes[term.id] || 'terminal'}
+                                            onChange={(val) => setViewModes(prev => ({ ...prev, [term.id]: val as 'terminal' | 'chat' }))}
+                                            style={{ backgroundColor: 'rgba(0,0,0,0.6)', color: 'white' }}
+                                          />
+                                          {!terminalFullscreen && (
+                                            <Button
+                                              type="text"
+                                              icon={<ArrowDownOutlined />}
+                                              style={{ color: 'rgba(255, 255, 255, 0.65)', background: 'rgba(0, 0, 0, 0.2)' }}
+                                              title="滚动到底部"
+                                              onClick={() => terminalRefs.current[term.id]?.scrollToBottom()}
+                                            />
+                                          )}
+                                          <Button
+                                            type="text"
+                                            icon={terminalFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+                                            style={{ color: 'rgba(255, 255, 255, 0.65)', background: 'rgba(0, 0, 0, 0.2)' }}
+                                            onClick={() => setTerminalFullscreen(!terminalFullscreen)}
+                                          />
+                                        </div>
+                                        {/* To maintain alignment we just replaced the overlay buttons */}
+                                        <div style={{ flex: 1, display: (viewModes[term.id] || 'terminal') === 'terminal' ? 'block' : 'none' }}>
+                                          <TerminalComponent
+                                            projectPath={selectedProject!.path}
+                                            terminalId={term.id}
+                                            title={term.title as string}
+                                            onData={handleTerminalInput}
+                                            onLinkClick={async (path) => {
+                                              // Validate file exists before opening
+                                              try {
+                                                const exists = await invoke<boolean>('check_file_exists', { file_path: path });
+                                                if (!exists) {
+                                                  messageApi.warning(`文件路径不存在: ${path}，Claude 可能省略了上级目录，请使用准确路径`);
+                                                  return;
                                                 }
-                                                return prev;
-                                              });
+                                              } catch (e) {
+                                                console.error('Failed to check file existence:', e);
+                                              }
 
-                                              setActiveTerminalId(prev => ({
-                                                ...prev,
-                                                [selectedProject!.path]: `vscode-external-${path}`
-                                              }));
-
-                                              // Give time for iframe to mount, then instruct it to open the file via API
-                                              setTimeout(() => {
+                                              if (path.startsWith(selectedProject!.path)) {
+                                                console.log('Invoking open_in_coder with path:', path);
                                                 invoke('open_in_coder', { file_path: path }).catch((err) => {
-                                                  console.error('Failed to open external file in Coder IDE:', err);
+                                                  console.error('Failed to open file in Coder IDE:', err);
                                                 });
-                                              }, 500);
-                                            }
-                                          }}
-                                          mergeTop
-                                          historyLines={terminalHistory[selectedProject!.path] || []}
-                                          fullscreen={terminalFullscreen}
-                                          theme={{
-                                            background: appConfig?.terminal_bg_color,
-                                            foreground: appConfig?.terminal_fg_color,
-                                            fontSize: appConfig?.terminal_font_size,
-                                          }}
-                                          ref={(el) => {
-                                            if (el) terminalRefs.current[term.id] = el;
-                                          }}
-                                        />
+                                              } else {
+                                                console.log('Path is outside project, opening in new tab:', path);
+                                                const folderPath = path.substring(0, path.lastIndexOf('/'));
+                                                setExternalFileTabs(prev => {
+                                                  if (!prev.some(tab => tab.path === path)) {
+                                                    return [...prev, { path, folderPath }];
+                                                  }
+                                                  return prev;
+                                                });
+                                                setActiveTerminalId(prev => ({
+                                                  ...prev,
+                                                  [selectedProject!.path]: `vscode-external-${path}`
+                                                }));
+                                                setTimeout(() => {
+                                                  invoke('open_in_coder', { file_path: path }).catch((err) => {
+                                                    console.error('Failed to open external file in Coder IDE:', err);
+                                                  });
+                                                }, 500);
+                                              }
+                                            }}
+                                            mergeTop
+                                            historyLines={terminalHistory[selectedProject!.path] || []}
+                                            fullscreen={terminalFullscreen}
+                                            theme={{
+                                              background: appConfig?.terminal_bg_color,
+                                              foreground: appConfig?.terminal_fg_color,
+                                              fontSize: appConfig?.terminal_font_size,
+                                            }}
+                                            ref={(el) => {
+                                              if (el) terminalRefs.current[term.id] = el;
+                                            }}
+                                          />
+                                        </div>
+                                        {viewModes[term.id] === 'chat' && (
+                                          <ChatView projectPath={selectedProject!.path} activeTerminalId={term.id} />
+                                        )}
                                       </div>
                                     ),
                                   };
@@ -1878,259 +1896,263 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           </div>
                         </Card>
                       </Splitter.Panel>
-                    </Splitter>
-                  </div>
+                    </Splitter >
+                  </div >
                 );
               })()}
 
-              {activeMenu === 'settings' && (
-                <div className="settings-page">
-                  <div className="main-grid">
-                    <div className="left-column">
-                      <Form form={form} layout="vertical" onFinish={handleSave} className="config-form" style={{ marginTop: 0, display: 'flex', flexDirection: 'column', flex: 1 }}>
-                        <Tabs
-                          defaultActiveKey="general"
-                          className="settings-tabs"
-                          style={{ flex: 1, display: 'flex', flexDirection: 'column' }}
-                          items={[
-                            {
-                              key: 'general',
-                              label: '通用配置',
-                              children: (
-                                <Card className="projects-card general-card" variant="borderless" style={{ height: 'auto', flex: 1 }}>
-                                  <div className="card-header">
-                                    <SettingOutlined className="card-icon" />
-                                    <h2>通用配置</h2>
-                                  </div>
-                                  <p className="card-description">应用相关的基础与功能配置</p>
-                                  <Divider />
-                                  <Form.Item
-                                    label={
-                                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                        <span>推送事件类型</span>
-                                        <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 'normal' }}>选择需要推送的事件类型</span>
-                                      </div>
-                                    }
-                                    name="hook_events_filter"
-                                    getValueFromEvent={(checkedValues: string[]) => checkedValues.length > 0 ? checkedValues.join(',') : undefined}
-                                    getValueProps={(value: string | undefined) => ({
-                                      value: value ? value.split(',').map((s: string) => s.trim()) : [],
-                                    })}
-                                    style={{ margin: 0 }}
-                                  >
-                                    <Checkbox.Group style={{ width: '100%' }}>
-                                      <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '8px' }}>
-                                        <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '0 8px', borderRadius: '8px' }}>
-                                          <Checkbox value="Stop">🛑 Stop（任务结束）</Checkbox>
-                                        </Card>
-                                        <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '0 8px', borderRadius: '8px' }}>
-                                          <Checkbox value="PermissionRequest">🔐 PermissionRequest（权限确认）</Checkbox>
-                                        </Card>
-                                        <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '0 8px', borderRadius: '8px' }}>
-                                          <Checkbox value="Notification">📌 Notification（通知）</Checkbox>
-                                        </Card>
-                                      </div>
-                                    </Checkbox.Group>
-                                  </Form.Item>
-
-
-                                  <Divider style={{ margin: '24px 0 16px 0' }} />
-                                  <Form.Item
-                                    label={
-                                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '24px' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                          <span style={{ fontSize: '15px', fontWeight: 500 }}>终端界面配置</span>
-                                        </div>
-                                        <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 'normal' }}>自定义底部终端面板的背景、文字颜色与字体大小</span>
-                                      </div>
-                                    }
-                                    style={{ margin: 0 }}
-                                  >
-                                    <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '8px' }}>
-                                      <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '6px 12px', borderRadius: '8px', minWidth: '200px' }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <span style={{ fontSize: '14px' }}>背景颜色</span>
-                                            <Tag color={watchedBgColor ? (typeof watchedBgColor === 'string' ? watchedBgColor : watchedBgColor.toHexString()) : '#1e1e1e'} style={{ margin: 0, padding: '0 8px', borderRadius: '4px' }}>
-                                              {watchedBgColor ? (typeof watchedBgColor === 'string' ? watchedBgColor : watchedBgColor.toHexString()) : '#1e1e1e'}
-                                            </Tag>
-                                          </div>
-                                          <Form.Item name="terminal_bg_color" style={{ margin: 0 }}>
-                                            <ColorPicker
-                                              format="hex"
-                                              disabledAlpha
-                                            >
-                                              <Button icon={<EditOutlined />} shape="circle" size="small" />
-                                            </ColorPicker>
-                                          </Form.Item>
-                                        </div>
-                                      </Card>
-                                      <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '6px 12px', borderRadius: '8px', minWidth: '200px' }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <span style={{ fontSize: '14px' }}>文字颜色</span>
-                                            <Tag color={watchedFgColor ? (typeof watchedFgColor === 'string' ? watchedFgColor : watchedFgColor.toHexString()) : '#e0e0e0'} style={{ margin: 0, padding: '0 8px', borderRadius: '4px', color: '#1e1e1e' }}>
-                                              {watchedFgColor ? (typeof watchedFgColor === 'string' ? watchedFgColor : watchedFgColor.toHexString()) : '#e0e0e0'}
-                                            </Tag>
-                                          </div>
-                                          <Form.Item name="terminal_fg_color" style={{ margin: 0, marginLeft: '12px' }}>
-                                            <ColorPicker
-                                              format="hex"
-                                              disabledAlpha
-                                            >
-                                              <Button icon={<EditOutlined />} shape="circle" size="small" />
-                                            </ColorPicker>
-                                          </Form.Item>
-                                        </div>
-                                      </Card>
-                                      <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '6px 12px', borderRadius: '8px', minWidth: '300px', maxWidth: '450px', flex: 1 }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                                          <span style={{ fontSize: '14px', whiteSpace: 'nowrap' }}>字体大小</span>
-                                          <Form.Item name="terminal_font_size" style={{ margin: 0, flex: 1 }}>
-                                            <Slider min={10} max={24} step={1} defaultValue={13} tooltip={{ formatter: (val) => `${val}px` }} style={{ margin: '14px 8px 10px 8px' }} />
-                                          </Form.Item>
-                                          <Tag style={{ margin: 0, padding: '0 8px', borderRadius: '4px', minWidth: '36px', textAlign: 'center' }}>
-                                            {watchedFontSize ?? 13}px
-                                          </Tag>
-                                        </div>
-                                      </Card>
+              {
+                activeMenu === 'settings' && (
+                  <div className="settings-page">
+                    <div className="main-grid">
+                      <div className="left-column">
+                        <Form form={form} layout="vertical" onFinish={handleSave} className="config-form" style={{ marginTop: 0, display: 'flex', flexDirection: 'column', flex: 1 }}>
+                          <Tabs
+                            defaultActiveKey="general"
+                            className="settings-tabs"
+                            style={{ flex: 1, display: 'flex', flexDirection: 'column' }}
+                            items={[
+                              {
+                                key: 'general',
+                                label: '通用配置',
+                                children: (
+                                  <Card className="projects-card general-card" variant="borderless" style={{ height: 'auto', flex: 1 }}>
+                                    <div className="card-header">
+                                      <SettingOutlined className="card-icon" />
+                                      <h2>通用配置</h2>
                                     </div>
-                                  </Form.Item>
+                                    <p className="card-description">应用相关的基础与功能配置</p>
+                                    <Divider />
+                                    <Form.Item
+                                      label={
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                          <span>推送事件类型</span>
+                                          <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 'normal' }}>选择需要推送的事件类型</span>
+                                        </div>
+                                      }
+                                      name="hook_events_filter"
+                                      getValueFromEvent={(checkedValues: string[]) => checkedValues.length > 0 ? checkedValues.join(',') : undefined}
+                                      getValueProps={(value: string | undefined) => ({
+                                        value: value ? value.split(',').map((s: string) => s.trim()) : [],
+                                      })}
+                                      style={{ margin: 0 }}
+                                    >
+                                      <Checkbox.Group style={{ width: '100%' }}>
+                                        <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '8px' }}>
+                                          <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '0 8px', borderRadius: '8px' }}>
+                                            <Checkbox value="Stop">🛑 Stop（任务结束）</Checkbox>
+                                          </Card>
+                                          <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '0 8px', borderRadius: '8px' }}>
+                                            <Checkbox value="PermissionRequest">🔐 PermissionRequest（权限确认）</Checkbox>
+                                          </Card>
+                                          <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '0 8px', borderRadius: '8px' }}>
+                                            <Checkbox value="Notification">📌 Notification（通知）</Checkbox>
+                                          </Card>
+                                        </div>
+                                      </Checkbox.Group>
+                                    </Form.Item>
 
-                                  <Divider style={{ margin: '24px 0 16px 0' }} />
-                                  <div className="action-buttons" style={{ marginTop: 0, display: 'flex', gap: '12px' }}>
-                                    <Button type="primary" icon={<SaveOutlined />} onClick={() => handleSave(form.getFieldsValue())} loading={loading} size="large">保存设置</Button>
-                                  </div>
 
-                                </Card>
-                              )
-                            },
-                            {
-                              key: 'channel',
-                              label: '通知渠道配置',
-                              children: (
-                                <Card className="projects-card channel-card" variant="borderless" style={{ flex: 1, height: 'auto' }}>
-                                  <div className="card-header">
-                                    <ApiOutlined className="card-icon" />
-                                    <h2>通知渠道配置</h2>
-                                  </div>
-                                  <p className="card-description">管理飞书、钉钉与企业微信的应用配置</p>
-                                  <Divider />
-                                  <div className="channel-block">
-                                    <Tabs
-                                      className="channel-tabs"
-                                      defaultActiveKey="feishu"
-                                      items={[
-                                        {
-                                          key: 'feishu',
-                                          label: '飞书',
-                                          children: (
-                                            <div className="config-card" style={{ padding: '0 12px' }}>
-                                              <h3 style={{ marginTop: 0 }}>飞书应用配置</h3>
-                                              <p className="card-description" style={{ marginBottom: 16 }}>配置飞书开放平台应用凭证，启用长连接模式实现消息推送与接收</p>
+                                    <Divider style={{ margin: '24px 0 16px 0' }} />
+                                    <Form.Item
+                                      label={
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '24px' }}>
+                                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <span style={{ fontSize: '15px', fontWeight: 500 }}>终端界面配置</span>
+                                          </div>
+                                          <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 'normal' }}>自定义底部终端面板的背景、文字颜色与字体大小</span>
+                                        </div>
+                                      }
+                                      style={{ margin: 0 }}
+                                    >
+                                      <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '8px' }}>
+                                        <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '6px 12px', borderRadius: '8px', minWidth: '200px' }}>
+                                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                              <span style={{ fontSize: '14px' }}>背景颜色</span>
+                                              <Tag color={watchedBgColor ? (typeof watchedBgColor === 'string' ? watchedBgColor : watchedBgColor.toHexString()) : '#1e1e1e'} style={{ margin: 0, padding: '0 8px', borderRadius: '4px' }}>
+                                                {watchedBgColor ? (typeof watchedBgColor === 'string' ? watchedBgColor : watchedBgColor.toHexString()) : '#1e1e1e'}
+                                              </Tag>
+                                            </div>
+                                            <Form.Item name="terminal_bg_color" style={{ margin: 0 }}>
+                                              <ColorPicker
+                                                format="hex"
+                                                disabledAlpha
+                                              >
+                                                <Button icon={<EditOutlined />} shape="circle" size="small" />
+                                              </ColorPicker>
+                                            </Form.Item>
+                                          </div>
+                                        </Card>
+                                        <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '6px 12px', borderRadius: '8px', minWidth: '200px' }}>
+                                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                              <span style={{ fontSize: '14px' }}>文字颜色</span>
+                                              <Tag color={watchedFgColor ? (typeof watchedFgColor === 'string' ? watchedFgColor : watchedFgColor.toHexString()) : '#e0e0e0'} style={{ margin: 0, padding: '0 8px', borderRadius: '4px', color: '#1e1e1e' }}>
+                                                {watchedFgColor ? (typeof watchedFgColor === 'string' ? watchedFgColor : watchedFgColor.toHexString()) : '#e0e0e0'}
+                                              </Tag>
+                                            </div>
+                                            <Form.Item name="terminal_fg_color" style={{ margin: 0, marginLeft: '12px' }}>
+                                              <ColorPicker
+                                                format="hex"
+                                                disabledAlpha
+                                              >
+                                                <Button icon={<EditOutlined />} shape="circle" size="small" />
+                                              </ColorPicker>
+                                            </Form.Item>
+                                          </div>
+                                        </Card>
+                                        <Card size="small" variant="borderless" style={{ background: 'var(--bg-secondary)', padding: '6px 12px', borderRadius: '8px', minWidth: '300px', maxWidth: '450px', flex: 1 }}>
+                                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                            <span style={{ fontSize: '14px', whiteSpace: 'nowrap' }}>字体大小</span>
+                                            <Form.Item name="terminal_font_size" style={{ margin: 0, flex: 1 }}>
+                                              <Slider min={10} max={24} step={1} defaultValue={13} tooltip={{ formatter: (val) => `${val}px` }} style={{ margin: '14px 8px 10px 8px' }} />
+                                            </Form.Item>
+                                            <Tag style={{ margin: 0, padding: '0 8px', borderRadius: '4px', minWidth: '36px', textAlign: 'center' }}>
+                                              {watchedFontSize ?? 13}px
+                                            </Tag>
+                                          </div>
+                                        </Card>
+                                      </div>
+                                    </Form.Item>
 
-                                              <Form.Item label="应用名称" name="app_name" tooltip="为你的应用起一个好记的名字" rules={[{ required: true, message: '请输入应用名称' }]}>
-                                                <Input placeholder="例如：Sparky 生产环境" size="large" className="input-field" />
-                                              </Form.Item>
-                                              <Form.Item label="App ID" name="app_id" rules={[{ required: true, message: '请输入 App ID' }]}>
-                                                <Input placeholder="cli_xxxxxxxxxxxxxxxx" size="large" className="input-field" />
-                                              </Form.Item>
-                                              <Form.Item label="App Secret" name="app_secret" rules={[{ required: true, message: '请输入 App Secret' }]}>
-                                                <Input.Password placeholder="应用密钥" size="large" className="input-field" />
-                                              </Form.Item>
-                                              <Form.Item label="默认群聊 ID" name="chat_id" extra="可选">
-                                                <Input placeholder="oc_xxxxxxxxxxxxxxxxxxxxxxxx" size="large" className="input-field" />
-                                              </Form.Item>
-                                              {tauriAvailable && appConfig && !appConfig.chat_id && !appConfig.open_id && (
-                                                <div style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 6, fontSize: 13, color: 'var(--text-primary)' }}>
-                                                  💡 未配置群聊 ID 也未绑定个人账号。请在飞书中向 <strong>{appConfig.app_name || 'Sparky'}</strong> 机器人发送任意消息，系统将自动绑定你的账号用于消息推送。
+                                    <Divider style={{ margin: '24px 0 16px 0' }} />
+                                    <div className="action-buttons" style={{ marginTop: 0, display: 'flex', gap: '12px' }}>
+                                      <Button type="primary" icon={<SaveOutlined />} onClick={() => handleSave(form.getFieldsValue())} loading={loading} size="large">保存设置</Button>
+                                    </div>
+
+                                  </Card>
+                                )
+                              },
+                              {
+                                key: 'channel',
+                                label: '通知渠道配置',
+                                children: (
+                                  <Card className="projects-card channel-card" variant="borderless" style={{ flex: 1, height: 'auto' }}>
+                                    <div className="card-header">
+                                      <ApiOutlined className="card-icon" />
+                                      <h2>通知渠道配置</h2>
+                                    </div>
+                                    <p className="card-description">管理飞书、钉钉与企业微信的应用配置</p>
+                                    <Divider />
+                                    <div className="channel-block">
+                                      <Tabs
+                                        className="channel-tabs"
+                                        defaultActiveKey="feishu"
+                                        items={[
+                                          {
+                                            key: 'feishu',
+                                            label: '飞书',
+                                            children: (
+                                              <div className="config-card" style={{ padding: '0 12px' }}>
+                                                <h3 style={{ marginTop: 0 }}>飞书应用配置</h3>
+                                                <p className="card-description" style={{ marginBottom: 16 }}>配置飞书开放平台应用凭证，启用长连接模式实现消息推送与接收</p>
+
+                                                <Form.Item label="应用名称" name="app_name" tooltip="为你的应用起一个好记的名字" rules={[{ required: true, message: '请输入应用名称' }]}>
+                                                  <Input placeholder="例如：Sparky 生产环境" size="large" className="input-field" />
+                                                </Form.Item>
+                                                <Form.Item label="App ID" name="app_id" rules={[{ required: true, message: '请输入 App ID' }]}>
+                                                  <Input placeholder="cli_xxxxxxxxxxxxxxxx" size="large" className="input-field" />
+                                                </Form.Item>
+                                                <Form.Item label="App Secret" name="app_secret" rules={[{ required: true, message: '请输入 App Secret' }]}>
+                                                  <Input.Password placeholder="应用密钥" size="large" className="input-field" />
+                                                </Form.Item>
+                                                <Form.Item label="默认群聊 ID" name="chat_id" extra="可选">
+                                                  <Input placeholder="oc_xxxxxxxxxxxxxxxxxxxxxxxx" size="large" className="input-field" />
+                                                </Form.Item>
+                                                {tauriAvailable && appConfig && !appConfig.chat_id && !appConfig.open_id && (
+                                                  <div style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 6, fontSize: 13, color: 'var(--text-primary)' }}>
+                                                    💡 未配置群聊 ID 也未绑定个人账号。请在飞书中向 <strong>{appConfig.app_name || 'Sparky'}</strong> 机器人发送任意消息，系统将自动绑定你的账号用于消息推送。
+                                                  </div>
+                                                )}
+                                                <Form.Item label="Encrypt Key" name="encrypt_key" extra="可选">
+                                                  <Input.Password placeholder="加密密钥" size="large" className="input-field" />
+                                                </Form.Item>
+                                                <Form.Item label="Verification Token" name="verification_token" extra="可选">
+                                                  <Input.Password placeholder="验证令牌" size="large" className="input-field" />
+                                                </Form.Item>
+
+                                                <div className="action-buttons">
+                                                  <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={loading} size="large">保存设置</Button>
+                                                  <Button type="default" icon={<ApiOutlined />} onClick={handleTestConnection} loading={testingConnection} size="large">测试连接</Button>
+                                                  <Button type="default" onClick={handleUploadAnthropicLogo} loading={uploadingLogo} size="large">使用 Anthropic Logo</Button>
                                                 </div>
-                                              )}
-                                              <Form.Item label="Encrypt Key" name="encrypt_key" extra="可选">
-                                                <Input.Password placeholder="加密密钥" size="large" className="input-field" />
-                                              </Form.Item>
-                                              <Form.Item label="Verification Token" name="verification_token" extra="可选">
-                                                <Input.Password placeholder="验证令牌" size="large" className="input-field" />
-                                              </Form.Item>
-
-                                              <div className="action-buttons">
-                                                <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={loading} size="large">保存设置</Button>
-                                                <Button type="default" icon={<ApiOutlined />} onClick={handleTestConnection} loading={testingConnection} size="large">测试连接</Button>
-                                                <Button type="default" onClick={handleUploadAnthropicLogo} loading={uploadingLogo} size="large">使用 Anthropic Logo</Button>
                                               </div>
-                                            </div>
-                                          ),
-                                        },
-                                        {
-                                          key: 'dingtalk',
-                                          label: '钉钉',
-                                          children: (
-                                            <div className="config-card" style={{ padding: '0 12px' }}>
-                                              <h3 style={{ marginTop: 0 }}>钉钉应用配置</h3>
-                                              <p className="card-description">等待开发</p>
-                                            </div>
-                                          ),
-                                        },
-                                        {
-                                          key: 'wework',
-                                          label: '企业微信',
-                                          children: (
-                                            <div className="config-card" style={{ padding: '0 12px' }}>
-                                              <h3 style={{ marginTop: 0 }}>企业微信应用配置</h3>
-                                              <p className="card-description">等待开发</p>
-                                            </div>
-                                          ),
-                                        },
-                                      ]}
-                                    />
-                                  </div>
-                                </Card>
-                              )
-                            }
-                          ]}
-                        />
-                      </Form>
+                                            ),
+                                          },
+                                          {
+                                            key: 'dingtalk',
+                                            label: '钉钉',
+                                            children: (
+                                              <div className="config-card" style={{ padding: '0 12px' }}>
+                                                <h3 style={{ marginTop: 0 }}>钉钉应用配置</h3>
+                                                <p className="card-description">等待开发</p>
+                                              </div>
+                                            ),
+                                          },
+                                          {
+                                            key: 'wework',
+                                            label: '企业微信',
+                                            children: (
+                                              <div className="config-card" style={{ padding: '0 12px' }}>
+                                                <h3 style={{ marginTop: 0 }}>企业微信应用配置</h3>
+                                                <p className="card-description">等待开发</p>
+                                              </div>
+                                            ),
+                                          },
+                                        ]}
+                                      />
+                                    </div>
+                                  </Card>
+                                )
+                              }
+                            ]}
+                          />
+                        </Form>
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
+                )
+              }
 
-              {activeMenu === 'help' && (
-                <div className="help-page">
-                  <div className="main-grid">
-                    <div className="left-column">
-                      <Card variant="borderless">
-                        <h3>快速开始</h3>
-                        <ol className="steps-list">
-                          <li><span className="step-number">1</span><span className="step-text">创建飞书开放平台应用</span></li>
-                          <li><span className="step-number">2</span><span className="step-text">开启机器人能力并配置权限</span></li>
-                          <li><span className="step-number">3</span><span className="step-text">复制应用凭证到设置页面</span></li>
-                          <li><span className="step-number">4</span><span className="step-text">在项目管理中添加项目</span></li>
-                          <li><span className="step-number">5</span><span className="step-text">为项目安装消息推送服务</span></li>
-                        </ol>
-                      </Card>
-                      <Card variant="borderless">
-                        <h3>所需权限</h3>
-                        <div className="permissions-list">
-                          <div className="permission-item"><code>im:message</code><span>获取与发送消息</span></div>
-                          <div className="permission-item"><code>im:message.group_at_msg</code><span>接收群聊@消息</span></div>
-                          <div className="permission-item"><code>im:message.p2p_msg</code><span>接收单聊消息</span></div>
-                        </div>
-                      </Card>
-                    </div>
-                    <div className="right-column">
-                      <Card className="about-card" variant="borderless">
-                        <h3>关于 Sparky</h3>
-                        <p>Sparky 是一个集成了 Claude Code 与飞书的桌面应用，可以实时监控 Claude Code 的运行状态，并通过飞书发送通知。</p>
-                        <Divider />
-                        <p className="version-info">版本: 0.1.0</p>
-                      </Card>
+              {
+                activeMenu === 'help' && (
+                  <div className="help-page">
+                    <div className="main-grid">
+                      <div className="left-column">
+                        <Card variant="borderless">
+                          <h3>快速开始</h3>
+                          <ol className="steps-list">
+                            <li><span className="step-number">1</span><span className="step-text">创建飞书开放平台应用</span></li>
+                            <li><span className="step-number">2</span><span className="step-text">开启机器人能力并配置权限</span></li>
+                            <li><span className="step-number">3</span><span className="step-text">复制应用凭证到设置页面</span></li>
+                            <li><span className="step-number">4</span><span className="step-text">在项目管理中添加项目</span></li>
+                            <li><span className="step-number">5</span><span className="step-text">为项目安装消息推送服务</span></li>
+                          </ol>
+                        </Card>
+                        <Card variant="borderless">
+                          <h3>所需权限</h3>
+                          <div className="permissions-list">
+                            <div className="permission-item"><code>im:message</code><span>获取与发送消息</span></div>
+                            <div className="permission-item"><code>im:message.group_at_msg</code><span>接收群聊@消息</span></div>
+                            <div className="permission-item"><code>im:message.p2p_msg</code><span>接收单聊消息</span></div>
+                          </div>
+                        </Card>
+                      </div>
+                      <div className="right-column">
+                        <Card className="about-card" variant="borderless">
+                          <h3>关于 Sparky</h3>
+                          <p>Sparky 是一个集成了 Claude Code 与飞书的桌面应用，可以实时监控 Claude Code 的运行状态，并通过飞书发送通知。</p>
+                          <Divider />
+                          <p className="version-info">版本: 0.1.0</p>
+                        </Card>
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
-            </div>
-          </div>
+                )
+              }
+            </div >
+          </div >
         </main >
 
         <Modal

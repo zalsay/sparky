@@ -1017,6 +1017,15 @@ pub fn find_executable(cmd_name: &str) -> Option<String> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+fn check_file_exists(file_path: String) -> Result<bool, String> {
+    let path = std::path::Path::new(&file_path);
+    // Strip :line:col suffix if present (e.g. path/to/file.tsx:650)
+    let clean_path_str = file_path.split(':').next().unwrap_or(&file_path);
+    let clean_path = std::path::Path::new(clean_path_str);
+    Ok(clean_path.exists())
+}
+
+#[tauri::command(rename_all = "snake_case")]
 async fn open_in_coder(file_path: String) -> Result<(), String> {
     log::info!("Attempting to open file in code-server: {}", file_path);
     let cmd_path = find_executable("code-server").unwrap_or_else(|| "code-server".to_string());
@@ -1811,6 +1820,52 @@ fn delete_session(session_id: String) -> Result<(), String> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+fn get_latest_claude_jsonl(project_path: String) -> Result<String, String> {
+    let escaped_path = project_path.replace("/", "-");
+    let claude_dir = dirs::home_dir()
+        .ok_or("Could not find home directory")?
+        .join(".claude")
+        .join("projects")
+        .join(&escaped_path);
+    
+    eprintln!("[get_latest_claude_jsonl] project_path={}, escaped={}, claude_dir={}", project_path, escaped_path, claude_dir.display());
+    
+    if !claude_dir.exists() {
+        eprintln!("[get_latest_claude_jsonl] Directory does not exist: {}", claude_dir.display());
+        return Ok("".to_string());
+    }
+    
+    let mut latest_file = None;
+    let mut latest_time = std::time::SystemTime::UNIX_EPOCH;
+    
+    if let Ok(entries) = std::fs::read_dir(&claude_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                // Ignore agent jsonl files which are metadata only
+                if path.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with("agent-")).unwrap_or(false) {
+                    continue;
+                }
+                if let Ok(meta) = entry.metadata() {
+                    if let Ok(modified) = meta.modified() {
+                        if modified > latest_time {
+                            latest_time = modified;
+                            latest_file = Some(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    if let Some(path) = latest_file {
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    } else {
+        Ok("".to_string())
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
 fn get_agent_teams_status(project_path: String) -> Result<bool, String> {
     check_agent_teams_enabled_for_path(&project_path)
 }
@@ -2391,6 +2446,7 @@ pub fn run() {
             delete_project,
             set_project_hooks_status,
             open_folder,
+            check_file_exists,
             open_in_coder,
             get_ws_connected,
             notify_project_active,
@@ -2406,7 +2462,8 @@ pub fn run() {
             update_session_name,
             delete_session,
             check_dependencies,
-            check_code_server_connection
+            check_code_server_connection,
+            get_latest_claude_jsonl
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

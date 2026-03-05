@@ -1895,9 +1895,119 @@ body {
   opacity: 1;
   transform: scale(1);
 }
+
 /* Splitter panel inner flex fixes */
 .ant-splitter-panel {
   display: flex !important;
   flex-direction: column !important;
   height: 100% !important;
+}
+
+/* ==================== Chat Markdown Content ==================== */
+
+.chat-markdown-content p {
+  margin: 0 0 8px 0;
+}
+
+.chat-markdown-content p:last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown-content pre {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.chat-markdown-content code {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+}
+
+.chat-markdown-content :not(pre)>code {
+  background: rgba(0, 0, 0, 0.2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.chat-markdown-content ul,
+.chat-markdown-content ol {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+
+.chat-markdown-content li {
+  margin: 2px 0;
+}
+
+.chat-markdown-content h1,
+.chat-markdown-content h2,
+.chat-markdown-content h3 {
+  margin: 12px 0 6px 0;
+  font-weight: 600;
+}
+
+.chat-markdown-content h1 {
+  font-size: 1.3em;
+}
+
+.chat-markdown-content h2 {
+  font-size: 1.15em;
+}
+
+.chat-markdown-content h3 {
+  font-size: 1.05em;
+}
+
+.chat-markdown-content blockquote {
+  border-left: 3px solid rgba(255, 255, 255, 0.3);
+  padding-left: 12px;
+  margin: 8px 0;
+  opacity: 0.85;
+}
+
+.chat-markdown-content table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  width: 100%;
+}
+
+.chat-markdown-content th,
+.chat-markdown-content td {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 6px 10px;
+  text-align: left;
+  font-size: 13px;
+}
+
+.chat-markdown-content th {
+  background: rgba(0, 0, 0, 0.2);
+  font-weight: 600;
+}
+
+.chat-markdown-content a {
+  color: #60a5fa;
+  text-decoration: underline;
+}
+
+.chat-markdown-content details {
+  margin: 8px 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.chat-markdown-content summary {
+  cursor: pointer;
+  font-weight: 500;
+  opacity: 0.8;
+}
+
+.chat-markdown-content img {
+  max-width: 100%;
+  border-radius: 6px;
+  margin: 4px 0;
 }
