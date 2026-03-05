@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, ArrowLeftOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined } from '@ant-design/icons';
+import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter } from 'antd';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, HomeOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -72,7 +72,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [testingConnection, setTestingConnection] = useState(false);
   const [activeMenu, setActiveMenu] = useState<string>('project');
   const [terminalFullscreen, setTerminalFullscreen] = useState(false);
-  const [showCoderIde, setShowCoderIde] = useState(true);
+
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [terminalHistory, setTerminalHistory] = useState<Record<string, string[]>>({});
@@ -114,6 +114,36 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     const saved = localStorage.getItem('sparky-sidebar-collapsed');
     return saved === 'true';
   });
+
+  // Auto-save window size on resize with a 500ms debounce
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let timeoutId: NodeJS.Timeout;
+
+    if (isTauri()) {
+      import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+        getCurrentWindow().onResized(() => {
+          clearTimeout(timeoutId);
+          timeoutId = setTimeout(async () => {
+            try {
+              await invoke('save_window_size');
+            } catch (e) {
+              console.error('Auto-save window size failed:', e);
+            }
+          }, 500);
+        }).then(unbind => {
+          unlisten = unbind;
+        });
+      });
+    }
+
+    return () => {
+      clearTimeout(timeoutId);
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
 
   // Session management state
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -309,10 +339,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     setActiveMenu('project-detail');
   };
 
-  const handleBackToProjects = () => {
-    setSelectedProject(null);
-    setActiveMenu('project');
-  };
+
 
   const handleCloseTerminal = async () => {
     if (!selectedProject || !tauriAvailable) return;
@@ -643,6 +670,15 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                 <h1>Sparky</h1>
                 {activeProjects.length > 0 && (
                   <div className="header-active-projects-inline">
+                    <Tooltip title="返回主页">
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<HomeOutlined />}
+                        onClick={() => setActiveMenu('project')}
+                        style={{ marginRight: 8, color: 'var(--text-secondary)' }}
+                      />
+                    </Tooltip>
                     <span style={{ fontSize: 13, color: 'var(--text-secondary)', marginRight: 6, fontWeight: 500 }}>运行中:</span>
                     {activeProjects.map(path => {
                       const name = path.split('/').pop() || path;
@@ -679,9 +715,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
           </div>
         </header>
 
-        <main className="app-main">
-          <div className="app-layout">
-            <aside className={`app-sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
+        <main className="app-main" style={activeMenu === 'project-detail' ? { padding: 0 } : undefined}>
+          <div className="app-layout" style={activeMenu === 'project-detail' ? { gap: 0 } : undefined}>
+            <aside className={`app-sidebar ${sidebarCollapsed ? 'collapsed' : ''}`} style={{ display: activeMenu === 'project-detail' ? 'none' : undefined }}>
               <Menu
                 mode="inline"
                 inlineCollapsed={sidebarCollapsed}
@@ -790,1006 +826,977 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                 </div>
               )}
 
-              {activeMenu === 'project-detail' && selectedProject && (
-                <div className="project-detail-page">
-                  <Card className="project-detail-card" variant="borderless">
-                    <div className="project-detail-header">
-                      <Button
-                        type="text"
-                        icon={<ArrowLeftOutlined />}
-                        onClick={handleBackToProjects}
-                        className="back-button"
-                      />
-                      <span className="header-divider" />
-                      <span className="project-title-badge">{selectedProject.name}</span>
-                      <Button size="small" type="primary" icon={<PlayCircleOutlined />} onClick={() => {
-                        const tid = activeTerminalId[selectedProject.path];
-                        const isFullAuth = fullAuth[selectedProject.path] || false;
-                        const cmd = isFullAuth ? 'claude --dangerously-skip-permissions\n' : 'claude\n';
-                        if (tid) invoke('pty_write', { terminal_id: tid, data: cmd });
-                      }} className="action-btn-outline" style={{ marginLeft: 8 }}>
-                        新建会话
-                      </Button>
-                      <Button size="small" type="default" onClick={async () => {
-                        await fetchSessions(selectedProject.path);
-                        setSessionModalOpen(true);
-                      }} icon={<HistoryOutlined />} className="action-btn-outline" style={{ marginLeft: 4 }}>
-                        继续会话
-                      </Button>
-                      <Button size="small" type="default" onClick={() => {
-                        setTestModalOpen(true);
-                        if (tauriAvailable) {
-                          invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status').then(setMcpStatus).catch(() => { });
-                        }
-                      }} icon={<ExperimentOutlined />} className="action-btn-outline" style={{ marginLeft: 4 }}>
-                        测试会话
-                      </Button>
-                      <Divider type="vertical" style={{ marginLeft: 16, marginRight: 12 }} />
-                      <Tooltip title={fullAuth[selectedProject.path] ? '完全授权模式 (--dangerously-skip-permissions)' : '安全模式 (进行权限管控)'}>
-                        <Button
-                          size="small"
-                          type={fullAuth[selectedProject.path] ? 'primary' : 'default'}
-                          danger={fullAuth[selectedProject.path] || false}
-                          className={fullAuth[selectedProject.path] ? 'auth-btn-danger' : 'action-btn-outline'}
-                          onClick={() => setFullAuth(prev => ({ ...prev, [selectedProject.path]: !(prev[selectedProject.path] || false) }))}
-                          style={{ margin: '0 4px' }}
-                        >
-                          {fullAuth[selectedProject.path] ? '完全授权' : '安全模式'}
-                        </Button>
-                      </Tooltip>
+              {activeMenu === 'project-detail' && selectedProject && (() => {
+                const initialSplitterSizes = (() => {
+                  try {
+                    const saved = localStorage.getItem('sparkySplitterSizes');
+                    if (saved) return JSON.parse(saved);
+                  } catch (e) {
+                    // Ignore
+                  }
+                  return ['50%', '50%'];
+                })();
 
-                      <Button
-                        size="small"
-                        type={activeTerminalId[selectedProject.path] === 'vscode' ? 'primary' : 'default'}
-                        onClick={() => {
-                          setShowCoderIde(true);
-                          setActiveTerminalId(prev => ({
-                            ...prev,
-                            [selectedProject.path]: 'vscode'
-                          }));
-                        }}
-                        className="action-btn-outline"
-                        style={{ marginRight: 12, display: 'flex', alignItems: 'center', gap: 8 }}
-                      >
-                        <img src={codeIcon} width={18} height={18} alt="Coder IDE" />
-                        Coder IDE
-                      </Button>
-
-                      <span className={`ws-status-badge ${wsConnected ? 'connected' : 'disconnected'}`}>
-                        <span className="ws-status-dot" />
-                        {wsConnected ? '已连接' : '未连接'}
-                      </span>
-                      <Dropdown
-                        menu={{
-                          items: [
-                            {
-                              key: 'update',
-                              label: '更新 Claude',
-                              icon: <ReloadOutlined />,
-                              onClick: () => {
-                                const tid = activeTerminalId[selectedProject.path];
-                                if (tid) invoke('pty_write', { terminal_id: tid, data: 'claude update\n' });
-                              }
-                            },
-                            {
-                              key: 'records',
-                              label: 'Claude 记录',
-                              icon: <HistoryOutlined />,
-                              onClick: () => {
-                                setShowDetailTab(prev => ({ ...prev, [selectedProject.path]: true }));
-                                setActiveTerminalId(prev => ({
-                                  ...prev,
-                                  [selectedProject.path]: 'detail'
-                                }));
-                              }
-                            },
-                            {
-                              type: 'divider'
-                            },
-                            {
-                              key: 'close',
-                              label: '关闭项目',
-                              icon: <PoweroffOutlined />,
-                              danger: true,
-                              onClick: handleCloseTerminal
-                            }
-                          ]
-                        }}
-                        placement="bottomRight"
-                        trigger={['click']}
-                      >
-                        <Button
-                          type="text"
-                          size="small"
-                          icon={<MenuOutlined />}
-                          style={{ marginLeft: 12 }}
-                        />
-                      </Dropdown>
-                    </div>
-
-                    {/* Session Picker Modal */}
-                    <Modal
-                      title="选择要继续的会话"
-                      open={sessionModalOpen}
-                      onCancel={() => setSessionModalOpen(false)}
-                      footer={null}
-                      width={600}
+                return (
+                  <div className="project-detail-page" style={{ height: '100%' }}>
+                    <Splitter
+                      style={{ height: '100%', width: '100%' }}
+                      onResize={(sizes) => localStorage.setItem('sparkySplitterSizes', JSON.stringify(sizes))}
                     >
-                      {sessions.length === 0 ? (
-                        <Empty description="暂无历史会话" />
-                      ) : (
-                        <Table
-                          dataSource={sessions}
-                          rowKey="id"
-                          size="small"
-                          pagination={{ pageSize: 10 }}
-                          columns={[
-                            {
-                              title: '会话名称',
-                              dataIndex: 'name',
-                              key: 'name',
-                              width: 220,
-                              render: (text: string | null, record: SessionInfo) => (
-                                editingSessionId === record.session_id ? (
-                                  <Space.Compact style={{ width: '100%' }}>
-                                    <Input
-                                      size="small"
-                                      autoFocus
-                                      value={editingSessionName}
-                                      onChange={(e) => setEditingSessionName(e.target.value)}
-                                      onPressEnter={() => handleUpdateSessionName(record.session_id, editingSessionName)}
-                                    />
-                                    <Button
-                                      size="small"
-                                      type="primary"
-                                      icon={<CheckOutlined />}
-                                      onClick={() => handleUpdateSessionName(record.session_id, editingSessionName)}
-                                    />
-                                    <Button
-                                      size="small"
-                                      icon={<CloseOutlined />}
-                                      onClick={() => setEditingSessionId(null)}
-                                    />
-                                  </Space.Compact>
-                                ) : (
-                                  <Space>
-                                    <span style={{ fontWeight: 500 }}>
-                                      {text || (
-                                        <Typography.Text type="secondary" style={{ fontSize: 12, fontStyle: 'italic' }}>
-                                          未命名会话
-                                        </Typography.Text>
-                                      )}
-                                    </span>
-                                    <Button
-                                      type="text"
-                                      size="small"
-                                      icon={<EditOutlined style={{ fontSize: 12 }} />}
-                                      onClick={() => {
-                                        setEditingSessionName(text || '');
-                                        setEditingSessionId(record.session_id);
-                                      }}
-                                    />
-                                  </Space>
-                                )
-                              ),
-                            },
-                            {
-                              title: 'Session ID',
-                              dataIndex: 'session_id',
-                              key: 'session_id',
-                              width: 140,
-                              render: (text: string) => (
-                                <Typography.Text copyable style={{ fontSize: 12 }}>
-                                  {text.length > 8 ? text.slice(0, 8) + '...' : text}
-                                </Typography.Text>
-                              ),
-                            },
-                            {
-                              title: '开始时间',
-                              dataIndex: 'started_at',
-                              key: 'started_at',
-                              width: 160,
-                              render: (value: number) => formatHookTime(value),
-                            },
-                            {
-                              title: '状态',
-                              key: 'status',
-                              width: 100,
-                              render: (_: any, record: SessionInfo) => (
-                                <Tag color={record.ended_at ? 'default' : 'green'}>
-                                  {record.ended_at ? (record.reason || '已结束') : '运行中'}
-                                </Tag>
-                              ),
-                            },
-                            {
-                              title: '操作',
-                              key: 'action',
-                              width: 80,
-                              render: (_: any, record: SessionInfo) => (
-                                <Button
-                                  size="small"
-                                  type="primary"
-                                  onClick={() => {
-                                    const tid = activeTerminalId[selectedProject.path];
-                                    const isFullAuth = fullAuth[selectedProject.path] || false;
-                                    const cmd = isFullAuth
-                                      ? `claude --dangerously-skip-permissions --resume ${record.session_id}\n`
-                                      : `claude --resume ${record.session_id}\n`;
-                                    if (tid) invoke('pty_write', { terminal_id: tid, data: cmd });
-                                    setSessionModalOpen(false);
-                                  }}
-                                >
-                                  继续
-                                </Button>
-                              ),
-                            },
-                          ]}
+                      <Splitter.Panel collapsible defaultSize={initialSplitterSizes[0]} min="30%" max="80%">
+                        <iframe
+                          src={`http://127.0.0.1:18080/?folder=${encodeURIComponent(selectedProject.path)}`}
+                          title="Coder IDE"
+                          style={{
+                            flex: 1,
+                            width: '100%',
+                            height: '100%',
+                            border: 'none',
+                            borderRight: '1px solid var(--border-color)',
+                            display: 'block',
+                            background: 'var(--bg-primary)'
+                          }}
+                          allow="clipboard-read; clipboard-write; display-capture"
                         />
-                      )}
-                    </Modal>
+                      </Splitter.Panel>
+                      <Splitter.Panel collapsible defaultSize={initialSplitterSizes[1]} min="20%" max="80%">
+                        <Card className="project-detail-card" variant="borderless" style={{ height: '100%', margin: 0, borderRadius: 0, padding: 0 }}>
 
-                    {/* Testing Modal */}
-                    <Modal
-                      title={
-                        <Space>
-                          <ExperimentOutlined style={{ color: 'var(--ant-color-primary)' }} />
-                          <span>项目测试</span>
-                        </Space>
-                      }
-                      open={testModalOpen}
-                      onCancel={() => { setTestModalOpen(false); setCurlResult(''); }}
-                      footer={null}
-                      width={720}
-                      destroyOnClose
-                      className="test-modal" styles={{ mask: { backdropFilter: "blur(4px)" }, header: { background: "transparent", borderBottom: 0, marginBottom: 0, paddingBottom: 0 }, content: { background: "var(--header-bg)" } }}
-                    >
-                      <Tabs
-                        defaultActiveKey="mcp"
-                        items={[
-                          {
-                            key: 'mcp',
-                            label: <span><EyeOutlined /> 页面测试 (MCP)</span>,
-                            children: (
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                                <Card size="small" className="mcp-status-card" variant="borderless">
-                                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                      <span style={{ fontWeight: 500 }}>Chrome DevTools MCP 状态</span>
+                          {/* Session Picker Modal */}
+                          <Modal
+                            title="选择要继续的会话"
+                            open={sessionModalOpen}
+                            onCancel={() => setSessionModalOpen(false)}
+                            footer={null}
+                            width={600}
+                          >
+                            {sessions.length === 0 ? (
+                              <Empty description="暂无历史会话" />
+                            ) : (
+                              <Table
+                                dataSource={sessions}
+                                rowKey="id"
+                                size="small"
+                                pagination={{ pageSize: 10 }}
+                                columns={[
+                                  {
+                                    title: '会话名称',
+                                    dataIndex: 'name',
+                                    key: 'name',
+                                    width: 220,
+                                    render: (text: string | null, record: SessionInfo) => (
+                                      editingSessionId === record.session_id ? (
+                                        <Space.Compact style={{ width: '100%' }}>
+                                          <Input
+                                            size="small"
+                                            autoFocus
+                                            value={editingSessionName}
+                                            onChange={(e) => setEditingSessionName(e.target.value)}
+                                            onPressEnter={() => handleUpdateSessionName(record.session_id, editingSessionName)}
+                                          />
+                                          <Button
+                                            size="small"
+                                            type="primary"
+                                            icon={<CheckOutlined />}
+                                            onClick={() => handleUpdateSessionName(record.session_id, editingSessionName)}
+                                          />
+                                          <Button
+                                            size="small"
+                                            icon={<CloseOutlined />}
+                                            onClick={() => setEditingSessionId(null)}
+                                          />
+                                        </Space.Compact>
+                                      ) : (
+                                        <Space>
+                                          <span style={{ fontWeight: 500 }}>
+                                            {text || (
+                                              <Typography.Text type="secondary" style={{ fontSize: 12, fontStyle: 'italic' }}>
+                                                未命名会话
+                                              </Typography.Text>
+                                            )}
+                                          </span>
+                                          <Button
+                                            type="text"
+                                            size="small"
+                                            icon={<EditOutlined style={{ fontSize: 12 }} />}
+                                            onClick={() => {
+                                              setEditingSessionName(text || '');
+                                              setEditingSessionId(record.session_id);
+                                            }}
+                                          />
+                                        </Space>
+                                      )
+                                    ),
+                                  },
+                                  {
+                                    title: 'Session ID',
+                                    dataIndex: 'session_id',
+                                    key: 'session_id',
+                                    width: 140,
+                                    render: (text: string) => (
+                                      <Typography.Text copyable style={{ fontSize: 12 }}>
+                                        {text.length > 8 ? text.slice(0, 8) + '...' : text}
+                                      </Typography.Text>
+                                    ),
+                                  },
+                                  {
+                                    title: '开始时间',
+                                    dataIndex: 'started_at',
+                                    key: 'started_at',
+                                    width: 160,
+                                    render: (value: number) => formatHookTime(value),
+                                  },
+                                  {
+                                    title: '状态',
+                                    key: 'status',
+                                    width: 100,
+                                    render: (_: any, record: SessionInfo) => (
+                                      <Tag color={record.ended_at ? 'default' : 'green'}>
+                                        {record.ended_at ? (record.reason || '已结束') : '运行中'}
+                                      </Tag>
+                                    ),
+                                  },
+                                  {
+                                    title: '操作',
+                                    key: 'action',
+                                    width: 80,
+                                    render: (_: any, record: SessionInfo) => (
                                       <Button
                                         size="small"
-                                        icon={<ReloadOutlined />}
-                                        loading={mcpLoading}
-                                        onClick={async () => {
-                                          if (!tauriAvailable) return;
-                                          setMcpLoading(true);
-                                          try {
-                                            const status = await invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status');
-                                            setMcpStatus(status);
-                                          } catch (err) {
-                                            messageApi.error(`检查失败: ${err}`);
-                                          } finally {
-                                            setMcpLoading(false);
-                                          }
-                                        }}
-                                      >
-                                        刷新状态
-                                      </Button>
-                                    </div>
-                                    {mcpStatus ? (
-                                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                          {mcpStatus.installed
-                                            ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
-                                            : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
-                                          <span>安装状态：{mcpStatus.installed ? '已安装' : '未安装'}</span>
-                                        </div>
-                                        {mcpStatus.installed && (
-                                          <div style={{ fontSize: 12, color: 'var(--text-secondary)', paddingLeft: 22 }}>
-                                            路径: {mcpStatus.path}
-                                          </div>
-                                        )}
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                          {mcpStatus.running
-                                            ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
-                                            : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
-                                          <span>运行状态：{mcpStatus.running ? '运行中' : '未运行'}</span>
-                                        </div>
-                                      </div>
-                                    ) : (
-                                      <div style={{ color: 'var(--text-secondary)' }}>点击刷新状态以检查</div>
-                                    )}
-                                  </div>
-                                </Card>
-                                <Button
-                                  type="primary"
-                                  size="large"
-                                  icon={<ExperimentOutlined />}
-                                  loading={mcpStarting}
-                                  onClick={async () => {
-                                    if (!tauriAvailable || !selectedProject) return;
-                                    setMcpStarting(true);
-                                    try {
-                                      // 1. Check & start MCP if not running
-                                      const status = await invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status');
-                                      setMcpStatus(status);
-                                      if (!status.installed) {
-                                        messageApi.error('chrome-devtools-mcp 未安装，请先安装');
-                                        return;
-                                      }
-                                      if (!status.running) {
-                                        try {
-                                          await invoke<string>('start_mcp_server');
-                                          const newStatus = await invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status');
-                                          setMcpStatus(newStatus);
-                                        } catch (err) {
-                                          messageApi.error(`MCP 启动失败: ${err}`);
-                                          return;
-                                        }
-                                      }
-
-                                      // 2. Create or reuse terminal tab named "MCP 测试"
-                                      const current = projectTerminals[selectedProject.path] || [];
-                                      const existingTab = current.find(t => t.title === "MCP 测试");
-                                      let targetTerminalId = existingTab?.id;
-
-                                      if (!targetTerminalId) {
-                                        targetTerminalId = crypto.randomUUID();
-                                        setProjectTerminals(prev => ({
-                                          ...prev,
-                                          [selectedProject.path]: [...current, { id: targetTerminalId as string, title: "MCP 测试" }]
-                                        }));
-                                      }
-
-                                      setActiveTerminalId(prev => ({
-                                        ...prev,
-                                        [selectedProject.path]: targetTerminalId
-                                      }));
-
-                                      // 3. Close the test modal and switch to claude tab
-                                      setTestModalOpen(false);
-
-                                      // 4. Wait for terminal to be ready, then send claude command
-                                      setTimeout(async () => {
-                                        try {
-                                          // Check for existing testing session
-                                          const existingSession = await invoke<string | null>('get_testing_session', {
-                                            project_path: selectedProject.path,
-                                          });
-
-                                          const isFullAuth = fullAuth[selectedProject.path] || false;
-                                          let cmd: string;
-
-                                          if (existingSession) {
-                                            // Resume existing testing session
-                                            cmd = isFullAuth
-                                              ? `claude --dangerously-skip-permissions --resume ${existingSession}\n`
-                                              : `claude --resume ${existingSession}\n`;
-                                            messageApi.info(`恢复测试会话: ${existingSession.slice(0, 12)}...`);
-                                          } else {
-                                            // Start new claude session - capture current sessions first to avoid saving old session
-                                            const currentSessions = await invoke<SessionInfo[]>('get_project_sessions', {
-                                              project_path: selectedProject.path,
-                                            }).catch(() => [] as SessionInfo[]);
-                                            const topId = currentSessions.length > 0 ? currentSessions[0].id : 0;
-
-                                            cmd = isFullAuth
-                                              ? 'claude --dangerously-skip-permissions\n'
-                                              : 'claude\n';
-                                            messageApi.info('启动新的 MCP 测试会话，正在连接...');
-
-                                            // Poll for up to 15 seconds to find the newly created session
-                                            let attempts = 0;
-                                            const pollInterval = setInterval(async () => {
-                                              attempts++;
-                                              try {
-                                                const sessions = await invoke<SessionInfo[]>('get_project_sessions', {
-                                                  project_path: selectedProject.path,
-                                                });
-                                                if (sessions.length > 0 && sessions[0].id > topId && sessions[0].session_id) {
-                                                  clearInterval(pollInterval);
-                                                  await invoke('save_testing_session', {
-                                                    project_path: selectedProject.path,
-                                                    session_id: sessions[0].session_id,
-                                                  });
-                                                  messageApi.success(`测试会话已记录: ${sessions[0].session_id.slice(0, 12)}...`);
-                                                }
-                                              } catch { /* ignore */ }
-
-                                              if (attempts >= 15) {
-                                                clearInterval(pollInterval);
-                                                console.log("MCP Test session polling timed out");
-                                              }
-                                            }, 1000);
-                                          }
-
-                                          await invoke('pty_write', { terminal_id: targetTerminalId, data: cmd });
-                                        } catch (err) {
-                                          messageApi.error(`启动会话失败: ${err}`);
-                                        }
-                                      }, 1500);
-                                    } catch (err) {
-                                      messageApi.error(`操作失败: ${err}`);
-                                    } finally {
-                                      setMcpStarting(false);
-                                    }
-                                  }}
-                                  style={{ height: 48, fontSize: 16 }}
-                                >
-                                  开启 MCP 测试
-                                </Button>
-                                {!mcpStatus?.installed && (
-                                  <div style={{ padding: '12px 16px', background: 'var(--bg-secondary, #f5f5f5)', borderRadius: 8, fontSize: 13 }}>
-                                    <strong>安装说明：</strong>
-                                    <br />
-                                    请运行以下命令安装 chrome-devtools-mcp：
-                                    <pre style={{ margin: '8px 0 0', padding: '8px 12px', background: 'var(--bg-tertiary, #e8e8e8)', borderRadius: 4, fontSize: 12 }}>
-                                      npm install -g chrome-devtools-mcp</pre>
-                                  </div>
-                                )}
-                              </div>
-                            ),
-                          },
-                          {
-                            key: 'curl',
-                            label: <span><ApiOutlined /> 接口测试 (curl)</span>,
-                            children: (
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                                <div>
-                                  <label style={{ fontWeight: 500, marginBottom: 6, display: 'block' }}>curl 命令</label>
-                                  <Input.TextArea
-                                    value={curlCommand}
-                                    onChange={(e) => setCurlCommand(e.target.value)}
-                                    placeholder="输入 curl 命令，例如: curl -s https://httpbin.org/get"
-                                    autoSize={{ minRows: 3, maxRows: 8 }}
-                                    style={{ fontFamily: 'monospace', fontSize: 13 }}
-                                  />
-                                </div>
-                                <div>
-                                  <Button
-                                    type="primary"
-                                    icon={curlLoading ? <LoadingOutlined /> : <ThunderboltOutlined />}
-                                    loading={curlLoading}
-                                    onClick={async () => {
-                                      if (!tauriAvailable || !selectedProject) return;
-                                      setCurlLoading(true);
-                                      setCurlResult('');
-                                      try {
-                                        const result = await invoke<string>('run_curl_command', {
-                                          command: curlCommand,
-                                          cwd: selectedProject.path,
-                                        });
-                                        setCurlResult(result);
-                                      } catch (err) {
-                                        setCurlResult(`执行失败: ${err}`);
-                                      } finally {
-                                        setCurlLoading(false);
-                                      }
-                                    }}
-                                  >
-                                    执行
-                                  </Button>
-                                </div>
-                                {curlResult && (
-                                  <div className="curl-result-box">
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                                      <span style={{ fontWeight: 500, fontSize: 13 }}>执行结果</span>
-                                      <Button
-                                        size="small"
-                                        type="text"
-                                        icon={<CopyOutlined />}
+                                        type="primary"
                                         onClick={() => {
-                                          navigator.clipboard.writeText(curlResult);
-                                          messageApi.success('已复制到剪贴板');
+                                          const tid = activeTerminalId[selectedProject.path];
+                                          const isFullAuth = fullAuth[selectedProject.path] || false;
+                                          const cmd = isFullAuth
+                                            ? `claude --dangerously-skip-permissions --resume ${record.session_id}\n`
+                                            : `claude --resume ${record.session_id}\n`;
+                                          if (tid) invoke('pty_write', { terminal_id: tid, data: cmd });
+                                          setSessionModalOpen(false);
                                         }}
                                       >
-                                        复制
+                                        继续
                                       </Button>
-                                    </div>
-                                    <pre className="curl-result-pre">{curlResult}</pre>
-                                  </div>
-                                )}
-                              </div>
-                            ),
-                          },
-                        ]}
-                      />
-                    </Modal>
+                                    ),
+                                  },
+                                ]}
+                              />
+                            )}
+                          </Modal>
 
-                    <div className={`terminal-wrapper ${terminalFullscreen ? 'fullscreen' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
-                      <Tabs
-                        type="editable-card"
-                        size="small"
-                        activeKey={activeTerminalId[selectedProject.path] || 'detail'}
-                        onChange={(key) => setActiveTerminalId(prev => ({ ...prev, [selectedProject.path]: key }))}
-                        onEdit={(targetKey, action) => {
-                          if (action === 'add') {
-                            const newId = crypto.randomUUID();
-                            const current = projectTerminals[selectedProject!.path] || [];
-                            setProjectTerminals(prev => ({
-                              ...prev,
-                              [selectedProject!.path]: [...current, { id: newId, title: `Claude-${current.length + 1}` }]
-                            }));
-                            setActiveTerminalId(prev => ({
-                              ...prev,
-                              [selectedProject!.path]: newId
-                            }));
-                          } else if (action === 'remove' && typeof targetKey === 'string') {
-                            if (targetKey === 'vscode') {
-                              setShowCoderIde(false);
-                              if (activeTerminalId[selectedProject!.path] === 'vscode') {
-                                setActiveTerminalId(prev => ({ ...prev, [selectedProject!.path]: 'detail' }));
-                              }
-                              return;
+                          {/* Testing Modal */}
+                          <Modal
+                            title={
+                              <Space>
+                                <ExperimentOutlined style={{ color: 'var(--ant-color-primary)' }} />
+                                <span>项目测试</span>
+                              </Space>
                             }
-                            if (targetKey === 'detail') {
-                              setShowDetailTab(prev => ({ ...prev, [selectedProject!.path]: false }));
-                              if (activeTerminalId[selectedProject!.path] === 'detail') {
-                                setActiveTerminalId(prev => ({ ...prev, [selectedProject!.path]: projectTerminals[selectedProject!.path]?.[0]?.id || 'vscode' }));
-                              }
-                              return;
-                            }
-                            if (targetKey.startsWith('vscode-external-')) {
-                              const pathToRemove = targetKey.replace('vscode-external-', '');
-                              setExternalFileTabs(prev => prev.filter(tab => tab.path !== pathToRemove));
-                              if (activeTerminalId[selectedProject!.path] === targetKey) {
-                                setActiveTerminalId(prev => ({ ...prev, [selectedProject!.path]: 'detail' }));
-                              }
-                              return;
-                            }
-                            invoke('pty_kill', { terminal_id: targetKey });
-                            setProjectTerminals(prev => {
-                              const next = prev[selectedProject!.path].filter(t => t.id !== targetKey);
-                              return { ...prev, [selectedProject!.path]: next };
-                            });
-                            if (activeTerminalId[selectedProject!.path] === targetKey) {
-                              const remaining = projectTerminals[selectedProject!.path].filter(t => t.id !== targetKey);
-                              if (remaining.length > 0) {
-                                setActiveTerminalId(prev => ({
-                                  ...prev,
-                                  [selectedProject!.path]: remaining[remaining.length - 1].id
-                                }));
-                              } else {
-                                setActiveTerminalId(prev => ({
-                                  ...prev,
-                                  [selectedProject!.path]: 'detail'
-                                }));
-                              }
-                            }
-                          }
-                        }}
-                        style={{ flex: 1, display: 'flex', flexDirection: 'column', marginTop: 12 }}
-                        className="terminal-tabs-inner settings-tabs"
-                        items={[
-                          ...(projectTerminals[selectedProject.path] || []).map(term => {
-                            const isActive = activeTerminalId[selectedProject.path] === term.id;
-                            return {
-                              key: term.id,
-                              label: (
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                  <img src={isActive ? claudeIcon : claudeDeactiveIcon} width={18} height={18} alt="Claude" />
-                                  <span>{term.title}</span>
-                                </div>
-                              ),
-                              closable: true,
-                              children: (
-                                <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                                  {lastCommand[term.id] && (
-                                    <div className="last-input-bar">
-                                      <span className="last-input-label">最近输入</span>
-                                      <code className="last-input-content">{lastCommand[term.id]}</code>
-                                    </div>
-                                  )}
-                                  <Button
-                                    type="text"
-                                    icon={terminalFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
-                                    style={{
-                                      position: 'absolute',
-                                      right: 16,
-                                      top: terminalFullscreen ? 30 : 30,
-                                      zIndex: 100,
-                                      color: 'rgba(255, 255, 255, 0.65)',
-                                      background: 'rgba(0, 0, 0, 0.2)'
-                                    }}
-                                    onClick={() => setTerminalFullscreen(!terminalFullscreen)}
-                                  />
-                                  <Button
-                                    type="text"
-                                    icon={<ArrowDownOutlined />}
-                                    style={{
-                                      position: 'absolute',
-                                      right: 56,
-                                      top: terminalFullscreen ? 30 : 30,
-                                      zIndex: 100,
-                                      color: 'rgba(255, 255, 255, 0.65)',
-                                      background: 'rgba(0, 0, 0, 0.2)'
-                                    }}
-                                    title="滚动到底部"
-                                    onClick={() => terminalRefs.current[term.id]?.scrollToBottom()}
-                                  />
-                                  <TerminalComponent
-                                    projectPath={selectedProject!.path}
-                                    terminalId={term.id}
-                                    title={term.title as string}
-                                    onData={handleTerminalInput}
-                                    onLinkClick={(path) => {
-                                      if (path.startsWith(selectedProject!.path)) {
-                                        // File is inside the current project, open in Coder IDE
-                                        setShowCoderIde(true);
-                                        setActiveTerminalId(prev => ({
-                                          ...prev,
-                                          [selectedProject!.path]: 'vscode'
-                                        }));
-                                        // Tell code-server to open the file via its API
-                                        console.log('Invoking open_in_coder with path:', path);
-                                        invoke('open_in_coder', { file_path: path }).catch((err) => {
-                                          console.error('Failed to open file in Coder IDE:', err);
-                                        });
-                                      } else {
-                                        // File is outside the project, open in a new tab
-                                        console.log('Path is outside project, opening in new tab:', path);
-
-                                        // Get directory of the file for the iframe folder parameter
-                                        const folderPath = path.substring(0, path.lastIndexOf('/'));
-
-                                        setExternalFileTabs(prev => {
-                                          // Avoid duplicate tabs for the same file
-                                          if (!prev.some(tab => tab.path === path)) {
-                                            return [...prev, { path, folderPath }];
-                                          }
-                                          return prev;
-                                        });
-
-                                        setActiveTerminalId(prev => ({
-                                          ...prev,
-                                          [selectedProject!.path]: `vscode-external-${path}`
-                                        }));
-
-                                        // Give time for iframe to mount, then instruct it to open the file via API
-                                        setTimeout(() => {
-                                          invoke('open_in_coder', { file_path: path }).catch((err) => {
-                                            console.error('Failed to open external file in Coder IDE:', err);
-                                          });
-                                        }, 500);
-                                      }
-                                    }}
-                                    mergeTop
-                                    historyLines={terminalHistory[selectedProject!.path] || []}
-                                    fullscreen={terminalFullscreen}
-                                    theme={{
-                                      background: appConfig?.terminal_bg_color,
-                                      foreground: appConfig?.terminal_fg_color,
-                                      fontSize: appConfig?.terminal_font_size,
-                                    }}
-                                    ref={(el) => {
-                                      if (el) terminalRefs.current[term.id] = el;
-                                    }}
-                                  />
-                                </div>
-                              ),
-                            };
-                          }).concat(externalFileTabs.map(tab => ({
-                            key: `vscode-external-${tab.path}`,
-                            label: (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                <img src={codeIcon} width={18} height={18} alt="Coder IDE" />
-                                <span title={tab.path}>{tab.path.split('/').pop()}</span>
-                              </div>
-                            ),
-                            closable: true,
-                            children: (
-                              <div style={{ width: '100%', height: '100%', background: 'var(--bg-primary)' }}>
-                                <iframe
-                                  title={`Coder IDE - ${tab.path}`}
-                                  src={`http://127.0.0.1:18080/?folder=${encodeURIComponent(tab.folderPath)}`}
-                                  style={{ width: '100%', height: '100%', border: 'none' }}
-                                  allow="clipboard-read; clipboard-write"
-                                />
-                              </div>
-                            )
-                          }))),
-                          ...(showDetailTab[selectedProject.path] ? [{
-                            key: 'detail',
-                            label: (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                <HistoryOutlined />
-                                <span>Claude 记录</span>
-                              </div>
-                            ),
-                            closable: true,
-                            children: (
-                              <Card className="projects-card config-card" variant="borderless" style={{ flex: 1, height: 'auto', overflow: 'auto', position: 'relative' }}>
-                                {lastCommand[selectedProject.path] && (
-                                  <div className="last-input-bar">
-                                    <span className="last-input-label">最近输入</span>
-                                    <code className="last-input-content">{lastCommand[selectedProject.path]}</code>
-                                  </div>
-                                )}
-                                <Button
-                                  type="text"
-                                  icon={terminalFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
-                                  style={{
-                                    position: 'absolute',
-                                    right: 16,
-                                    top: 30,
-                                    zIndex: 100,
-                                    color: 'rgba(255, 255, 255, 0.65)',
-                                    background: 'rgba(0, 0, 0, 0.2)'
-                                  }}
-                                  onClick={() => setTerminalFullscreen(!terminalFullscreen)}
-                                />
-                                <Button
-                                  type="text"
-                                  icon={<ArrowDownOutlined />}
-                                  style={{
-                                    position: 'absolute',
-                                    right: 56,
-                                    top: 30,
-                                    zIndex: 100,
-                                    color: 'rgba(255, 255, 255, 0.65)',
-                                    background: 'rgba(0, 0, 0, 0.2)'
-                                  }}
-                                  title="滚动到底部"
-                                  onClick={() => {
-                                    // scrollToBottom might not be easily accessible for detail tab, but adding the button for consistency
-                                  }}
-                                />
-                                <div className="detail-form">
-                                  <div className="status-row">
-                                    <span className="status-label">项目名称</span>
-                                    <span className="status-value">{selectedProject.name}</span>
-                                  </div>
-                                  <div className="status-row">
-                                    <span className="status-label">项目路径</span>
-                                    <span className="status-value" style={{ fontSize: '12px', wordBreak: 'break-all' }}>{selectedProject.path}</span>
-                                  </div>
-                                  <div className="status-row">
-                                    <span className="status-label">推送服务状态</span>
-                                    <Tag color={selectedProject.hooks_installed ? 'black' : 'default'}>
-                                      {selectedProject.hooks_installed ? '已安装' : '未安装'}
-                                    </Tag>
-                                  </div>
-                                  <Divider />
-                                  <Space>
-                                    <Button type="primary" icon={<FolderOutlined />} onClick={async () => {
-                                      try {
-                                        await invoke('open_folder', { path: selectedProject.path });
-                                      } catch (error) {
-                                        messageApi.error(`无法打开文件夹: ${error}`);
-                                      }
-                                    }}>
-                                      打开文件夹
-                                    </Button>
-                                    <Button icon={<SettingOutlined />} onClick={() => selectedProject.hooks_installed ? handleUninstallHooks(selectedProject) : handleInstallHooks(selectedProject)}>
-                                      {selectedProject.hooks_installed ? '卸载推送服务' : '安装推送服务'}
-                                    </Button>
-                                  </Space>
-                                  <Divider />
-                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                                    <h3 style={{ margin: 0 }}>Claude 记录</h3>
-                                    <Button danger disabled={hookRecordSelection.length === 0} onClick={handleDeleteHookRecords}>
-                                      批量删除
-                                    </Button>
-                                  </div>
-                                  <Table
-                                    dataSource={hookRecords}
-                                    rowKey="id"
-                                    loading={hookRecordsLoading}
-                                    tableLayout="fixed"
-                                    scroll={{ x: 1000, y: '100%' }}
-                                    style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', height: 0 }}
-                                    rowSelection={{
-                                      selectedRowKeys: hookRecordSelection,
-                                      onChange: (keys) => setHookRecordSelection(keys as number[]),
-                                    }}
-                                    pagination={{
-                                      current: hookRecordsPage,
-                                      total: hookRecordsTotal,
-                                      pageSize: 20,
-                                      showSizeChanger: false,
-                                      onChange: (page) => fetchHookRecords(page),
-                                    }}
-                                    columns={[
-                                      { title: '事件', dataIndex: 'event_name', key: 'event_name', width: 140 },
-                                      {
-                                        title: '摘要',
-                                        dataIndex: 'notification_text',
-                                        key: 'notification_text',
-                                        width: 300,
-                                        render: (text: string) => (
-                                          <div style={{ maxWidth: 268, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={text}>
-                                            {text || '-'}
-                                          </div>
-                                        ),
-                                        className: 'column-summary'
-                                      },
-                                      {
-                                        title: '结果',
-                                        dataIndex: 'result',
-                                        key: 'result',
-                                        width: 120,
-                                        render: (text: string) => (
-                                          <div style={{ maxWidth: 88, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={text}>
-                                            {text || '-'}
-                                          </div>
-                                        ),
-                                        className: 'column-result'
-                                      },
-                                      {
-                                        title: '时间',
-                                        dataIndex: 'created_at',
-                                        key: 'created_at',
-                                        width: 180,
-                                        render: (value: number) => formatHookTime(value),
-                                      },
-                                      {
-                                        title: '操作',
-                                        key: 'action',
-                                        width: 160,
-                                        render: (_: any, record: HookRecord) => (
-                                          <Space>
+                            open={testModalOpen}
+                            onCancel={() => { setTestModalOpen(false); setCurlResult(''); }}
+                            footer={null}
+                            width={720}
+                            destroyOnClose
+                            className="test-modal" styles={{ mask: { backdropFilter: "blur(4px)" }, header: { background: "transparent", borderBottom: 0, marginBottom: 0, paddingBottom: 0 }, content: { background: "var(--header-bg)" } }}
+                          >
+                            <Tabs
+                              defaultActiveKey="mcp"
+                              items={[
+                                {
+                                  key: 'mcp',
+                                  label: <span><EyeOutlined /> 页面测试 (MCP)</span>,
+                                  children: (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                                      <Card size="small" className="mcp-status-card" variant="borderless">
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                            <span style={{ fontWeight: 500 }}>Chrome DevTools MCP 状态</span>
                                             <Button
                                               size="small"
-                                              className="action-btn"
-                                              onClick={() => {
-                                                setHookDetailRecord(record);
-                                                setHookDetailOpen(true);
+                                              icon={<ReloadOutlined />}
+                                              loading={mcpLoading}
+                                              onClick={async () => {
+                                                if (!tauriAvailable) return;
+                                                setMcpLoading(true);
+                                                try {
+                                                  const status = await invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status');
+                                                  setMcpStatus(status);
+                                                } catch (err) {
+                                                  messageApi.error(`检查失败: ${err}`);
+                                                } finally {
+                                                  setMcpLoading(false);
+                                                }
                                               }}
                                             >
-                                              查看详情
+                                              刷新状态
                                             </Button>
-                                            <Button
-                                              size="small"
-                                              className="action-btn danger"
-                                              onClick={() => handleDeleteHookRecord(record.id)}
-                                            >
-                                              删除
-                                            </Button>
-                                          </Space>
-                                        ),
-                                      },
-                                    ]}
-                                  />
-                                  <Modal
-                                    title={(
-                                      <Space>
-                                        <InfoCircleOutlined style={{ color: 'var(--ant-color-primary)' }} />
-                                        <span>Hooks 记录详情</span>
-                                      </Space>
-                                    )}
-                                    open={hookDetailOpen}
-                                    onCancel={() => setHookDetailOpen(false)}
-                                    footer={
-                                      <Button onClick={() => setHookDetailOpen(false)}>关闭</Button>
-                                    }
-                                    destroyOnClose
-                                    width={800}
-                                    className="hook-detail-modal"
-                                  >
-                                    {hookDetailRecord && (
-                                      <div className="hook-detail-content">
-                                        <div className="hook-detail-grid">
-                                          <div className="detail-item">
-                                            <span className="detail-label">事件</span>
-                                            <span className="detail-value">
-                                              <Tag color="geekblue" style={{ margin: 0 }}>{hookDetailRecord.event_name}</Tag>
-                                            </span>
                                           </div>
-                                          <div className="detail-item">
-                                            <span className="detail-label">时间</span>
-                                            <span className="detail-value">{formatHookTime(hookDetailRecord.created_at)}</span>
-                                          </div>
-                                          <div className="detail-item">
-                                            <span className="detail-label">结果</span>
-                                            <span className="detail-value">
-                                              <Tag style={{ margin: 0 }} color={hookDetailRecord.result === 'Success' || hookDetailRecord.result === 'OK' || hookDetailRecord.result === 'success' ? 'success' : (hookDetailRecord.result ? 'error' : 'default')}>
-                                                {hookDetailRecord.result || '未知'}
-                                              </Tag>
-                                            </span>
-                                          </div>
-                                          <div className="detail-item">
-                                            <span className="detail-label">会话 ID</span>
-                                            <span className="detail-value">
-                                              <Typography.Text copyable={{ text: hookDetailRecord.session_id }} style={{ fontFamily: 'monospace', color: 'inherit' }}>
-                                                {hookDetailRecord.session_id}
-                                              </Typography.Text>
-                                            </span>
-                                          </div>
+                                          {mcpStatus ? (
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                {mcpStatus.installed
+                                                  ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                                                  : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
+                                                <span>安装状态：{mcpStatus.installed ? '已安装' : '未安装'}</span>
+                                              </div>
+                                              {mcpStatus.installed && (
+                                                <div style={{ fontSize: 12, color: 'var(--text-secondary)', paddingLeft: 22 }}>
+                                                  路径: {mcpStatus.path}
+                                                </div>
+                                              )}
+                                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                {mcpStatus.running
+                                                  ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                                                  : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
+                                                <span>运行状态：{mcpStatus.running ? '运行中' : '未运行'}</span>
+                                              </div>
+                                            </div>
+                                          ) : (
+                                            <div style={{ color: 'var(--text-secondary)' }}>点击刷新状态以检查</div>
+                                          )}
                                         </div>
+                                      </Card>
+                                      <Button
+                                        type="primary"
+                                        size="large"
+                                        icon={<ExperimentOutlined />}
+                                        loading={mcpStarting}
+                                        onClick={async () => {
+                                          if (!tauriAvailable || !selectedProject) return;
+                                          setMcpStarting(true);
+                                          try {
+                                            // 1. Check & start MCP if not running
+                                            const status = await invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status');
+                                            setMcpStatus(status);
+                                            if (!status.installed) {
+                                              messageApi.error('chrome-devtools-mcp 未安装，请先安装');
+                                              return;
+                                            }
+                                            if (!status.running) {
+                                              try {
+                                                await invoke<string>('start_mcp_server');
+                                                const newStatus = await invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status');
+                                                setMcpStatus(newStatus);
+                                              } catch (err) {
+                                                messageApi.error(`MCP 启动失败: ${err}`);
+                                                return;
+                                              }
+                                            }
 
-                                        <Divider style={{ margin: '16px 0' }} />
+                                            // 2. Create or reuse terminal tab named "MCP 测试"
+                                            const current = projectTerminals[selectedProject.path] || [];
+                                            const existingTab = current.find(t => t.title === "MCP 测试");
+                                            let targetTerminalId = existingTab?.id;
 
-                                        <div className="detail-section">
-                                          <div className="section-header">
-                                            <h4 className="section-title">摘要</h4>
-                                          </div>
-                                          <div className="summary-box">
-                                            {hookDetailRecord.notification_text || <span style={{ color: 'var(--text-tertiary)' }}>无摘要信息</span>}
-                                          </div>
+                                            if (!targetTerminalId) {
+                                              targetTerminalId = crypto.randomUUID();
+                                              setProjectTerminals(prev => ({
+                                                ...prev,
+                                                [selectedProject.path]: [...current, { id: targetTerminalId as string, title: "MCP 测试" }]
+                                              }));
+                                            }
+
+                                            setActiveTerminalId(prev => ({
+                                              ...prev,
+                                              [selectedProject.path]: targetTerminalId
+                                            }));
+
+                                            // 3. Close the test modal and switch to claude tab
+                                            setTestModalOpen(false);
+
+                                            // 4. Wait for terminal to be ready, then send claude command
+                                            setTimeout(async () => {
+                                              try {
+                                                // Check for existing testing session
+                                                const existingSession = await invoke<string | null>('get_testing_session', {
+                                                  project_path: selectedProject.path,
+                                                });
+
+                                                const isFullAuth = fullAuth[selectedProject.path] || false;
+                                                let cmd: string;
+
+                                                if (existingSession) {
+                                                  // Resume existing testing session
+                                                  cmd = isFullAuth
+                                                    ? `claude --dangerously-skip-permissions --resume ${existingSession}\n`
+                                                    : `claude --resume ${existingSession}\n`;
+                                                  messageApi.info(`恢复测试会话: ${existingSession.slice(0, 12)}...`);
+                                                } else {
+                                                  // Start new claude session - capture current sessions first to avoid saving old session
+                                                  const currentSessions = await invoke<SessionInfo[]>('get_project_sessions', {
+                                                    project_path: selectedProject.path,
+                                                  }).catch(() => [] as SessionInfo[]);
+                                                  const topId = currentSessions.length > 0 ? currentSessions[0].id : 0;
+
+                                                  cmd = isFullAuth
+                                                    ? 'claude --dangerously-skip-permissions\n'
+                                                    : 'claude\n';
+                                                  messageApi.info('启动新的 MCP 测试会话，正在连接...');
+
+                                                  // Poll for up to 15 seconds to find the newly created session
+                                                  let attempts = 0;
+                                                  const pollInterval = setInterval(async () => {
+                                                    attempts++;
+                                                    try {
+                                                      const sessions = await invoke<SessionInfo[]>('get_project_sessions', {
+                                                        project_path: selectedProject.path,
+                                                      });
+                                                      if (sessions.length > 0 && sessions[0].id > topId && sessions[0].session_id) {
+                                                        clearInterval(pollInterval);
+                                                        await invoke('save_testing_session', {
+                                                          project_path: selectedProject.path,
+                                                          session_id: sessions[0].session_id,
+                                                        });
+                                                        messageApi.success(`测试会话已记录: ${sessions[0].session_id.slice(0, 12)}...`);
+                                                      }
+                                                    } catch { /* ignore */ }
+
+                                                    if (attempts >= 15) {
+                                                      clearInterval(pollInterval);
+                                                      console.log("MCP Test session polling timed out");
+                                                    }
+                                                  }, 1000);
+                                                }
+
+                                                await invoke('pty_write', { terminal_id: targetTerminalId, data: cmd });
+                                              } catch (err) {
+                                                messageApi.error(`启动会话失败: ${err}`);
+                                              }
+                                            }, 1500);
+                                          } catch (err) {
+                                            messageApi.error(`操作失败: ${err}`);
+                                          } finally {
+                                            setMcpStarting(false);
+                                          }
+                                        }}
+                                        style={{ height: 48, fontSize: 16 }}
+                                      >
+                                        开启 MCP 测试
+                                      </Button>
+                                      {!mcpStatus?.installed && (
+                                        <div style={{ padding: '12px 16px', background: 'var(--bg-secondary, #f5f5f5)', borderRadius: 8, fontSize: 13 }}>
+                                          <strong>安装说明：</strong>
+                                          <br />
+                                          请运行以下命令安装 chrome-devtools-mcp：
+                                          <pre style={{ margin: '8px 0 0', padding: '8px 12px', background: 'var(--bg-tertiary, #e8e8e8)', borderRadius: 4, fontSize: 12 }}>
+                                            npm install -g chrome-devtools-mcp</pre>
                                         </div>
-
-                                        <div className="detail-section">
-                                          <div className="section-header">
-                                            <h4 className="section-title">详细内容</h4>
+                                      )}
+                                    </div>
+                                  ),
+                                },
+                                {
+                                  key: 'curl',
+                                  label: <span><ApiOutlined /> 接口测试 (curl)</span>,
+                                  children: (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                      <div>
+                                        <label style={{ fontWeight: 500, marginBottom: 6, display: 'block' }}>curl 命令</label>
+                                        <Input.TextArea
+                                          value={curlCommand}
+                                          onChange={(e) => setCurlCommand(e.target.value)}
+                                          placeholder="输入 curl 命令，例如: curl -s https://httpbin.org/get"
+                                          autoSize={{ minRows: 3, maxRows: 8 }}
+                                          style={{ fontFamily: 'monospace', fontSize: 13 }}
+                                        />
+                                      </div>
+                                      <div>
+                                        <Button
+                                          type="primary"
+                                          icon={curlLoading ? <LoadingOutlined /> : <ThunderboltOutlined />}
+                                          loading={curlLoading}
+                                          onClick={async () => {
+                                            if (!tauriAvailable || !selectedProject) return;
+                                            setCurlLoading(true);
+                                            setCurlResult('');
+                                            try {
+                                              const result = await invoke<string>('run_curl_command', {
+                                                command: curlCommand,
+                                                cwd: selectedProject.path,
+                                              });
+                                              setCurlResult(result);
+                                            } catch (err) {
+                                              setCurlResult(`执行失败: ${err}`);
+                                            } finally {
+                                              setCurlLoading(false);
+                                            }
+                                          }}
+                                        >
+                                          执行
+                                        </Button>
+                                      </div>
+                                      {curlResult && (
+                                        <div className="curl-result-box">
+                                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                                            <span style={{ fontWeight: 500, fontSize: 13 }}>执行结果</span>
                                             <Button
                                               size="small"
                                               type="text"
                                               icon={<CopyOutlined />}
                                               onClick={() => {
-                                                navigator.clipboard.writeText(hookDetailRecord.content);
+                                                navigator.clipboard.writeText(curlResult);
                                                 messageApi.success('已复制到剪贴板');
                                               }}
                                             >
                                               复制
                                             </Button>
                                           </div>
-                                          <div className="code-box">
-                                            <pre>{hookDetailRecord.content}</pre>
-                                          </div>
+                                          <pre className="curl-result-pre">{curlResult}</pre>
                                         </div>
+                                      )}
+                                    </div>
+                                  ),
+                                },
+                              ]}
+                            />
+                          </Modal>
 
-                                        <div className="detail-section">
-                                          <div className="section-header">
-                                            <h4 className="section-title">Transcript 路径</h4>
-                                            <Button
-                                              size="small"
-                                              type="text"
-                                              icon={<FolderOutlined />}
-                                              onClick={async () => {
-                                                try {
-                                                  const dirPath = hookDetailRecord.transcript_path.substring(0, hookDetailRecord.transcript_path.lastIndexOf('/'));
-                                                  await invoke('open_folder', { path: dirPath });
-                                                } catch (error) {
-                                                  messageApi.error(`无法打开文件夹: ${error}`);
-                                                }
-                                              }}
-                                            >
-                                              打开目录
-                                            </Button>
-                                          </div>
-                                          <div className="path-box">
-                                            <Typography.Text copyable={{ text: hookDetailRecord.transcript_path }} style={{ color: 'inherit', wordBreak: 'break-all', fontSize: '13px' }}>
-                                              {hookDetailRecord.transcript_path}
-                                            </Typography.Text>
-                                          </div>
-                                        </div>
+                          <div className={`terminal-wrapper ${terminalFullscreen ? 'fullscreen' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+                            <Tabs
+                              type="editable-card"
+                              size="small"
+                              tabBarExtraContent={
+                                <Space size="small" style={{ marginRight: 8, display: 'flex', alignItems: 'center' }}>
+                                  <Tooltip title={fullAuth[selectedProject.path] ? '完全授权模式 (--dangerously-skip-permissions)' : '安全模式 (进行权限管控)'}>
+                                    <Button
+                                      size="small"
+                                      type={fullAuth[selectedProject.path] ? 'primary' : 'text'}
+                                      danger={fullAuth[selectedProject.path] || false}
+                                      className={fullAuth[selectedProject.path] ? 'auth-btn-active' : ''}
+                                      icon={<SafetyCertificateOutlined />}
+                                      onClick={() => setFullAuth(prev => ({ ...prev, [selectedProject.path]: !(prev[selectedProject.path] || false) }))}
+                                    />
+                                  </Tooltip>
+                                  <Tooltip title="新建会话">
+                                    <Button size="small" type="text" icon={<PlayCircleOutlined />} onClick={() => {
+                                      const tid = activeTerminalId[selectedProject.path];
+                                      const isFullAuth = fullAuth[selectedProject.path] || false;
+                                      const cmd = isFullAuth ? 'claude --dangerously-skip-permissions\n' : 'claude\n';
+                                      if (tid) invoke('pty_write', { terminal_id: tid, data: cmd });
+                                    }} />
+                                  </Tooltip>
+                                  <Tooltip title="继续会话">
+                                    <Button size="small" type="text" onClick={async () => {
+                                      await fetchSessions(selectedProject.path);
+                                      setSessionModalOpen(true);
+                                    }} icon={<HistoryOutlined />} />
+                                  </Tooltip>
+                                  <Tooltip title="测试会话">
+                                    <Button size="small" type="text" onClick={() => {
+                                      setTestModalOpen(true);
+                                      if (tauriAvailable) {
+                                        invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status').then(setMcpStatus).catch(() => { });
+                                      }
+                                    }} icon={<ExperimentOutlined />} />
+                                  </Tooltip>
+                                  <Divider type="vertical" style={{ margin: '0 4px' }} />
+                                  <span className={`ws-status-badge ${wsConnected ? 'connected' : 'disconnected'}`} style={{ border: 'none', background: 'transparent', padding: '0 4px', margin: 0 }}>
+                                    <span className="ws-status-dot" />
+                                    {wsConnected ? '已连接' : '未连接'}
+                                  </span>
+                                  <Dropdown
+                                    menu={{
+                                      items: [
+                                        {
+                                          key: 'update',
+                                          label: '更新 Claude',
+                                          icon: <ReloadOutlined />,
+                                          onClick: () => {
+                                            const tid = activeTerminalId[selectedProject.path];
+                                            if (tid) invoke('pty_write', { terminal_id: tid, data: 'claude update\n' });
+                                          }
+                                        },
+                                        {
+                                          key: 'records',
+                                          label: 'Claude 记录',
+                                          icon: <HistoryOutlined />,
+                                          onClick: () => {
+                                            setShowDetailTab(prev => ({ ...prev, [selectedProject.path]: true }));
+                                            setActiveTerminalId(prev => ({
+                                              ...prev,
+                                              [selectedProject.path]: 'detail'
+                                            }));
+                                          }
+                                        },
+                                        {
+                                          type: 'divider'
+                                        },
+                                        {
+                                          key: 'close',
+                                          label: '关闭项目',
+                                          icon: <PoweroffOutlined />,
+                                          danger: true,
+                                          onClick: handleCloseTerminal
+                                        }
+                                      ]
+                                    }}
+                                    placement="bottomRight"
+                                    trigger={['click']}
+                                  >
+                                    <Button
+                                      type="text"
+                                      size="small"
+                                      icon={<MenuOutlined />}
+                                    />
+                                  </Dropdown>
+                                </Space>
+                              }
+                              activeKey={activeTerminalId[selectedProject.path] || 'detail'}
+                              onChange={(key) => setActiveTerminalId(prev => ({ ...prev, [selectedProject.path]: key }))}
+                              onEdit={(targetKey, action) => {
+                                if (action === 'add') {
+                                  const newId = crypto.randomUUID();
+                                  const current = projectTerminals[selectedProject!.path] || [];
+                                  setProjectTerminals(prev => ({
+                                    ...prev,
+                                    [selectedProject!.path]: [...current, { id: newId, title: `Claude-${current.length + 1}` }]
+                                  }));
+                                  setActiveTerminalId(prev => ({
+                                    ...prev,
+                                    [selectedProject!.path]: newId
+                                  }));
+                                } else if (action === 'remove' && typeof targetKey === 'string') {
+                                  if (targetKey === 'detail') {
+                                    setShowDetailTab(prev => ({ ...prev, [selectedProject!.path]: false }));
+                                    if (activeTerminalId[selectedProject!.path] === 'detail') {
+                                      setActiveTerminalId(prev => ({ ...prev, [selectedProject!.path]: projectTerminals[selectedProject!.path]?.[0]?.id || 'vscode' }));
+                                    }
+                                    return;
+                                  }
+                                  if (targetKey.startsWith('vscode-external-')) {
+                                    const pathToRemove = targetKey.replace('vscode-external-', '');
+                                    setExternalFileTabs(prev => prev.filter(tab => tab.path !== pathToRemove));
+                                    if (activeTerminalId[selectedProject!.path] === targetKey) {
+                                      setActiveTerminalId(prev => ({ ...prev, [selectedProject!.path]: 'detail' }));
+                                    }
+                                    return;
+                                  }
+                                  invoke('pty_kill', { terminal_id: targetKey });
+                                  setProjectTerminals(prev => {
+                                    const next = prev[selectedProject!.path].filter(t => t.id !== targetKey);
+                                    return { ...prev, [selectedProject!.path]: next };
+                                  });
+                                  if (activeTerminalId[selectedProject!.path] === targetKey) {
+                                    const remaining = projectTerminals[selectedProject!.path].filter(t => t.id !== targetKey);
+                                    if (remaining.length > 0) {
+                                      setActiveTerminalId(prev => ({
+                                        ...prev,
+                                        [selectedProject!.path]: remaining[remaining.length - 1].id
+                                      }));
+                                    } else {
+                                      setActiveTerminalId(prev => ({
+                                        ...prev,
+                                        [selectedProject!.path]: 'detail'
+                                      }));
+                                    }
+                                  }
+                                }
+                              }}
+                              style={{ flex: 1, display: 'flex', flexDirection: 'column', marginTop: 0 }}
+                              className="terminal-tabs-inner settings-tabs"
+                              items={[
+                                ...(projectTerminals[selectedProject.path] || []).map(term => {
+                                  const isActive = activeTerminalId[selectedProject.path] === term.id;
+                                  return {
+                                    key: term.id,
+                                    label: (
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                        <img src={isActive ? claudeIcon : claudeDeactiveIcon} width={18} height={18} alt="Claude" />
+                                        <span>{term.title}</span>
                                       </div>
-                                    )}
-                                  </Modal>
-                                </div>
-                              </Card>
-                            ),
-                          }] : []),
-                          ...(showCoderIde ? [{
-                            key: 'vscode',
-                            label: (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                <img src={codeIcon} width={18} height={18} alt="Coder IDE" />
-                                <span>Coder IDE</span>
-                              </div>
-                            ),
-                            closable: true,
-                            children: (
-                              <Card className="projects-card config-card" variant="borderless" style={{ flex: 1, height: '100%', padding: 0, overflow: 'hidden' }}>
-                                <iframe
-                                  src={`http://127.0.0.1:18080/?folder=${encodeURIComponent(selectedProject.path)}`}
-                                  title="Coder IDE"
-                                  style={{
-                                    width: '100%',
-                                    height: 'calc(100vh - 120px)',
-                                    border: 'none',
-                                    display: 'block',
-                                  }}
-                                  allow="clipboard-read; clipboard-write"
-                                />
-                              </Card>
-                            )
-                          }] : [])
-                        ]}
-                      />
-                    </div>
-                  </Card>
-                </div>
-              )}
+                                    ),
+                                    closable: true,
+                                    children: (
+                                      <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                                        {lastCommand[term.id] && (
+                                          <div className="last-input-bar">
+                                            <span className="last-input-label">最近输入</span>
+                                            <code className="last-input-content">{lastCommand[term.id]}</code>
+                                          </div>
+                                        )}
+                                        <Button
+                                          type="text"
+                                          icon={terminalFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+                                          style={{
+                                            position: 'absolute',
+                                            right: 16,
+                                            top: terminalFullscreen ? 30 : 30,
+                                            zIndex: 100,
+                                            color: 'rgba(255, 255, 255, 0.65)',
+                                            background: 'rgba(0, 0, 0, 0.2)'
+                                          }}
+                                          onClick={() => setTerminalFullscreen(!terminalFullscreen)}
+                                        />
+                                        <Button
+                                          type="text"
+                                          icon={<ArrowDownOutlined />}
+                                          style={{
+                                            position: 'absolute',
+                                            right: 56,
+                                            top: terminalFullscreen ? 30 : 30,
+                                            zIndex: 100,
+                                            color: 'rgba(255, 255, 255, 0.65)',
+                                            background: 'rgba(0, 0, 0, 0.2)'
+                                          }}
+                                          title="滚动到底部"
+                                          onClick={() => terminalRefs.current[term.id]?.scrollToBottom()}
+                                        />
+                                        <TerminalComponent
+                                          projectPath={selectedProject!.path}
+                                          terminalId={term.id}
+                                          title={term.title as string}
+                                          onData={handleTerminalInput}
+                                          onLinkClick={(path) => {
+                                            if (path.startsWith(selectedProject!.path)) {
+                                              // File is inside the current project, open in Coder IDE
+                                              // Tell code-server to open the file via its API
+                                              console.log('Invoking open_in_coder with path:', path);
+                                              invoke('open_in_coder', { file_path: path }).catch((err) => {
+                                                console.error('Failed to open file in Coder IDE:', err);
+                                              });
+                                            } else {
+                                              // File is outside the project, open in a new tab
+                                              console.log('Path is outside project, opening in new tab:', path);
+
+                                              // Get directory of the file for the iframe folder parameter
+                                              const folderPath = path.substring(0, path.lastIndexOf('/'));
+
+                                              setExternalFileTabs(prev => {
+                                                // Avoid duplicate tabs for the same file
+                                                if (!prev.some(tab => tab.path === path)) {
+                                                  return [...prev, { path, folderPath }];
+                                                }
+                                                return prev;
+                                              });
+
+                                              setActiveTerminalId(prev => ({
+                                                ...prev,
+                                                [selectedProject!.path]: `vscode-external-${path}`
+                                              }));
+
+                                              // Give time for iframe to mount, then instruct it to open the file via API
+                                              setTimeout(() => {
+                                                invoke('open_in_coder', { file_path: path }).catch((err) => {
+                                                  console.error('Failed to open external file in Coder IDE:', err);
+                                                });
+                                              }, 500);
+                                            }
+                                          }}
+                                          mergeTop
+                                          historyLines={terminalHistory[selectedProject!.path] || []}
+                                          fullscreen={terminalFullscreen}
+                                          theme={{
+                                            background: appConfig?.terminal_bg_color,
+                                            foreground: appConfig?.terminal_fg_color,
+                                            fontSize: appConfig?.terminal_font_size,
+                                          }}
+                                          ref={(el) => {
+                                            if (el) terminalRefs.current[term.id] = el;
+                                          }}
+                                        />
+                                      </div>
+                                    ),
+                                  };
+                                }).concat(externalFileTabs.map(tab => ({
+                                  key: `vscode-external-${tab.path}`,
+                                  label: (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                      <img src={codeIcon} width={18} height={18} alt="Coder IDE" />
+                                      <span title={tab.path}>{tab.path.split('/').pop()}</span>
+                                    </div>
+                                  ),
+                                  closable: true,
+                                  children: (
+                                    <div style={{ width: '100%', height: '100%', background: 'var(--bg-primary)' }}>
+                                      <iframe
+                                        title={`Coder IDE - ${tab.path}`}
+                                        src={`http://127.0.0.1:18080/?folder=${encodeURIComponent(tab.folderPath)}`}
+                                        style={{ width: '100%', height: '100%', border: 'none' }}
+                                        allow="clipboard-read; clipboard-write"
+                                      />
+                                    </div>
+                                  )
+                                }))),
+                                ...(showDetailTab[selectedProject.path] ? [{
+                                  key: 'detail',
+                                  label: (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                      <HistoryOutlined />
+                                      <span>Claude 记录</span>
+                                    </div>
+                                  ),
+                                  closable: true,
+                                  children: (
+                                    <Card className="projects-card config-card" variant="borderless" style={{ flex: 1, height: 'auto', overflow: 'auto', position: 'relative' }}>
+                                      {lastCommand[selectedProject.path] && (
+                                        <div className="last-input-bar">
+                                          <span className="last-input-label">最近输入</span>
+                                          <code className="last-input-content">{lastCommand[selectedProject.path]}</code>
+                                        </div>
+                                      )}
+                                      <Button
+                                        type="text"
+                                        icon={terminalFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+                                        style={{
+                                          position: 'absolute',
+                                          right: 16,
+                                          top: 30,
+                                          zIndex: 100,
+                                          color: 'rgba(255, 255, 255, 0.65)',
+                                          background: 'rgba(0, 0, 0, 0.2)'
+                                        }}
+                                        onClick={() => setTerminalFullscreen(!terminalFullscreen)}
+                                      />
+                                      <Button
+                                        type="text"
+                                        icon={<ArrowDownOutlined />}
+                                        style={{
+                                          position: 'absolute',
+                                          right: 56,
+                                          top: 30,
+                                          zIndex: 100,
+                                          color: 'rgba(255, 255, 255, 0.65)',
+                                          background: 'rgba(0, 0, 0, 0.2)'
+                                        }}
+                                        title="滚动到底部"
+                                        onClick={() => {
+                                          // scrollToBottom might not be easily accessible for detail tab, but adding the button for consistency
+                                        }}
+                                      />
+                                      <div className="detail-form">
+                                        <div className="status-row">
+                                          <span className="status-label">项目名称</span>
+                                          <span className="status-value">{selectedProject.name}</span>
+                                        </div>
+                                        <div className="status-row">
+                                          <span className="status-label">项目路径</span>
+                                          <span className="status-value" style={{ fontSize: '12px', wordBreak: 'break-all' }}>{selectedProject.path}</span>
+                                        </div>
+                                        <div className="status-row">
+                                          <span className="status-label">推送服务状态</span>
+                                          <Tag color={selectedProject.hooks_installed ? 'black' : 'default'}>
+                                            {selectedProject.hooks_installed ? '已安装' : '未安装'}
+                                          </Tag>
+                                        </div>
+                                        <Divider />
+                                        <Space>
+                                          <Button type="primary" icon={<FolderOutlined />} onClick={async () => {
+                                            try {
+                                              await invoke('open_folder', { path: selectedProject.path });
+                                            } catch (error) {
+                                              messageApi.error(`无法打开文件夹: ${error}`);
+                                            }
+                                          }}>
+                                            打开文件夹
+                                          </Button>
+                                          <Button icon={<SettingOutlined />} onClick={() => selectedProject.hooks_installed ? handleUninstallHooks(selectedProject) : handleInstallHooks(selectedProject)}>
+                                            {selectedProject.hooks_installed ? '卸载推送服务' : '安装推送服务'}
+                                          </Button>
+                                        </Space>
+                                        <Divider />
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                                          <h3 style={{ margin: 0 }}>Claude 记录</h3>
+                                          <Button danger disabled={hookRecordSelection.length === 0} onClick={handleDeleteHookRecords}>
+                                            批量删除
+                                          </Button>
+                                        </div>
+                                        <Table
+                                          dataSource={hookRecords}
+                                          rowKey="id"
+                                          loading={hookRecordsLoading}
+                                          tableLayout="fixed"
+                                          scroll={{ x: 1000, y: '100%' }}
+                                          style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', height: 0 }}
+                                          rowSelection={{
+                                            selectedRowKeys: hookRecordSelection,
+                                            onChange: (keys) => setHookRecordSelection(keys as number[]),
+                                          }}
+                                          pagination={{
+                                            current: hookRecordsPage,
+                                            total: hookRecordsTotal,
+                                            pageSize: 20,
+                                            showSizeChanger: false,
+                                            onChange: (page) => fetchHookRecords(page),
+                                          }}
+                                          columns={[
+                                            { title: '事件', dataIndex: 'event_name', key: 'event_name', width: 140 },
+                                            {
+                                              title: '摘要',
+                                              dataIndex: 'notification_text',
+                                              key: 'notification_text',
+                                              width: 300,
+                                              render: (text: string) => (
+                                                <div style={{ maxWidth: 268, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={text}>
+                                                  {text || '-'}
+                                                </div>
+                                              ),
+                                              className: 'column-summary'
+                                            },
+                                            {
+                                              title: '结果',
+                                              dataIndex: 'result',
+                                              key: 'result',
+                                              width: 120,
+                                              render: (text: string) => (
+                                                <div style={{ maxWidth: 88, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={text}>
+                                                  {text || '-'}
+                                                </div>
+                                              ),
+                                              className: 'column-result'
+                                            },
+                                            {
+                                              title: '时间',
+                                              dataIndex: 'created_at',
+                                              key: 'created_at',
+                                              width: 180,
+                                              render: (value: number) => formatHookTime(value),
+                                            },
+                                            {
+                                              title: '操作',
+                                              key: 'action',
+                                              width: 160,
+                                              render: (_: any, record: HookRecord) => (
+                                                <Space>
+                                                  <Button
+                                                    size="small"
+                                                    className="action-btn"
+                                                    onClick={() => {
+                                                      setHookDetailRecord(record);
+                                                      setHookDetailOpen(true);
+                                                    }}
+                                                  >
+                                                    查看详情
+                                                  </Button>
+                                                  <Button
+                                                    size="small"
+                                                    className="action-btn danger"
+                                                    onClick={() => handleDeleteHookRecord(record.id)}
+                                                  >
+                                                    删除
+                                                  </Button>
+                                                </Space>
+                                              ),
+                                            },
+                                          ]}
+                                        />
+                                        <Modal
+                                          title={(
+                                            <Space>
+                                              <InfoCircleOutlined style={{ color: 'var(--ant-color-primary)' }} />
+                                              <span>Hooks 记录详情</span>
+                                            </Space>
+                                          )}
+                                          open={hookDetailOpen}
+                                          onCancel={() => setHookDetailOpen(false)}
+                                          footer={
+                                            <Button onClick={() => setHookDetailOpen(false)}>关闭</Button>
+                                          }
+                                          destroyOnClose
+                                          width={800}
+                                          className="hook-detail-modal"
+                                        >
+                                          {hookDetailRecord && (
+                                            <div className="hook-detail-content">
+                                              <div className="hook-detail-grid">
+                                                <div className="detail-item">
+                                                  <span className="detail-label">事件</span>
+                                                  <span className="detail-value">
+                                                    <Tag color="geekblue" style={{ margin: 0 }}>{hookDetailRecord.event_name}</Tag>
+                                                  </span>
+                                                </div>
+                                                <div className="detail-item">
+                                                  <span className="detail-label">时间</span>
+                                                  <span className="detail-value">{formatHookTime(hookDetailRecord.created_at)}</span>
+                                                </div>
+                                                <div className="detail-item">
+                                                  <span className="detail-label">结果</span>
+                                                  <span className="detail-value">
+                                                    <Tag style={{ margin: 0 }} color={hookDetailRecord.result === 'Success' || hookDetailRecord.result === 'OK' || hookDetailRecord.result === 'success' ? 'success' : (hookDetailRecord.result ? 'error' : 'default')}>
+                                                      {hookDetailRecord.result || '未知'}
+                                                    </Tag>
+                                                  </span>
+                                                </div>
+                                                <div className="detail-item">
+                                                  <span className="detail-label">会话 ID</span>
+                                                  <span className="detail-value">
+                                                    <Typography.Text copyable={{ text: hookDetailRecord.session_id }} style={{ fontFamily: 'monospace', color: 'inherit' }}>
+                                                      {hookDetailRecord.session_id}
+                                                    </Typography.Text>
+                                                  </span>
+                                                </div>
+                                              </div>
+
+                                              <Divider style={{ margin: '16px 0' }} />
+
+                                              <div className="detail-section">
+                                                <div className="section-header">
+                                                  <h4 className="section-title">摘要</h4>
+                                                </div>
+                                                <div className="summary-box">
+                                                  {hookDetailRecord.notification_text || <span style={{ color: 'var(--text-tertiary)' }}>无摘要信息</span>}
+                                                </div>
+                                              </div>
+
+                                              <div className="detail-section">
+                                                <div className="section-header">
+                                                  <h4 className="section-title">详细内容</h4>
+                                                  <Button
+                                                    size="small"
+                                                    type="text"
+                                                    icon={<CopyOutlined />}
+                                                    onClick={() => {
+                                                      navigator.clipboard.writeText(hookDetailRecord.content);
+                                                      messageApi.success('已复制到剪贴板');
+                                                    }}
+                                                  >
+                                                    复制
+                                                  </Button>
+                                                </div>
+                                                <div className="code-box">
+                                                  <pre>{hookDetailRecord.content}</pre>
+                                                </div>
+                                              </div>
+
+                                              <div className="detail-section">
+                                                <div className="section-header">
+                                                  <h4 className="section-title">Transcript 路径</h4>
+                                                  <Button
+                                                    size="small"
+                                                    type="text"
+                                                    icon={<FolderOutlined />}
+                                                    onClick={async () => {
+                                                      try {
+                                                        const dirPath = hookDetailRecord.transcript_path.substring(0, hookDetailRecord.transcript_path.lastIndexOf('/'));
+                                                        await invoke('open_folder', { path: dirPath });
+                                                      } catch (error) {
+                                                        messageApi.error(`无法打开文件夹: ${error}`);
+                                                      }
+                                                    }}
+                                                  >
+                                                    打开目录
+                                                  </Button>
+                                                </div>
+                                                <div className="path-box">
+                                                  <Typography.Text copyable={{ text: hookDetailRecord.transcript_path }} style={{ color: 'inherit', wordBreak: 'break-all', fontSize: '13px' }}>
+                                                    {hookDetailRecord.transcript_path}
+                                                  </Typography.Text>
+                                                </div>
+                                              </div>
+                                            </div>
+                                          )}
+                                        </Modal>
+                                      </div>
+                                    </Card>
+                                  ),
+                                }] : []),
+                              ]}
+                            />
+                          </div>
+                        </Card>
+                      </Splitter.Panel>
+                    </Splitter>
+                  </div>
+                );
+              })()}
 
               {activeMenu === 'settings' && (
                 <div className="settings-page">
@@ -1908,14 +1915,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   <Divider style={{ margin: '24px 0 16px 0' }} />
                                   <div className="action-buttons" style={{ marginTop: 0, display: 'flex', gap: '12px' }}>
                                     <Button type="primary" icon={<SaveOutlined />} onClick={() => handleSave(form.getFieldsValue())} loading={loading} size="large">保存设置</Button>
-                                    <Button type="default" onClick={async () => {
-                                      try {
-                                        await invoke('save_window_size');
-                                        messageApi.success('窗口大小已保存，下次启动生效');
-                                      } catch (e) {
-                                        messageApi.error(`保存窗口大小失败: ${e}`);
-                                      }
-                                    }} size="large">保存当前窗口为默认大小</Button>
                                   </div>
 
                                 </Card>

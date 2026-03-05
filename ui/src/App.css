@@ -88,7 +88,7 @@ body {
 .app-header {
   background: var(--header-bg);
   border-bottom: 1px solid var(--border-color);
-  padding: 14px 0;
+  padding: 6px 0;
   transition: background 0.3s, border-color 0.3s;
   flex-shrink: 0;
 }
@@ -551,6 +551,9 @@ body {
 .terminal-tabs-inner .ant-tabs-tab {
   background: transparent !important;
   border: none !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+  padding: 4px 12px !important;
   color: var(--text-secondary) !important;
 }
 
@@ -713,7 +716,7 @@ body {
 
 .project-detail-page .ant-tabs {
   margin-top: 0;
-  padding: 0 12px 12px;
+  padding: 0;
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -726,6 +729,9 @@ body {
   flex-direction: column;
   flex: 1;
   height: 100%;
+  margin: 0 !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
 }
 
 .project-detail-page .ant-tabs-tabpane-active {
@@ -1813,4 +1819,85 @@ body {
 .dark-mode .mcp-status-card {
   background: rgba(255, 255, 255, 0.04) !important;
   border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* Force Auth Mode button to be red when active */
+.auth-btn-active {
+  background-color: #ff4d4f !important;
+  border-color: #ff4d4f !important;
+  color: #ffffff !important;
+}
+
+.auth-btn-active:hover {
+  background-color: #ff7875 !important;
+  border-color: #ff7875 !important;
+  color: #ffffff !important;
+}
+
+/* Tab bar flush top alignment */
+.project-detail-page .ant-tabs-nav,
+.project-detail-page .ant-tabs-nav::before,
+.project-detail-page .ant-tabs-nav-wrap,
+.project-detail-page .ant-tabs-nav-list {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+/* Ensure the tab elements themselves don't have unexpected top margin in editable-card mode */
+.project-detail-page .ant-tabs-card>.ant-tabs-nav .ant-tabs-tab {
+  margin-top: 0 !important;
+  border-top: none !important;
+  border-radius: 0 !important;
+}
+
+/* Force Terminal components to be completely square and flush with the bottom */
+.terminal-wrapper,
+.project-detail-page .ant-tabs-tabpane-active,
+.project-detail-page .ant-tabs-tabpane {
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+  border-radius: 0 !important;
+}
+
+/* Splitter Swap logic */
+
+.splitter-swap-btn-container {
+  position: absolute;
+  top: calc(50% + 30px);
+  inset-inline-end: 8px;
+  z-index: 1000;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.splitter-swap-btn {
+  pointer-events: auto;
+  opacity: 0;
+  transform: scale(0.8);
+  transition: all 0.2s cubic-bezier(0.645, 0.045, 0.355, 1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15) !important;
+  border: 1px solid var(--border-color) !important;
+  background: var(--bg-color) !important;
+  color: var(--text-secondary) !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.project-detail-page:has(.ant-splitter-bar:hover) .splitter-swap-btn,
+.splitter-swap-btn:hover {
+  opacity: 1;
+  transform: scale(1);
+}
+/* Splitter panel inner flex fixes */
+.ant-splitter-panel {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
 }

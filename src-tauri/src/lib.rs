@@ -2234,12 +2234,19 @@ pub fn run() {
             std::thread::spawn(|| {
                 log::info!("Starting code-server on 127.0.0.1:18080...");
                 match std::process::Command::new("code-server")
-                    .args(["--auth", "none", "--bind-addr", "127.0.0.1:18080"])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
+                    .args([
+                        "--auth", "none", 
+                        "--bind-addr", "127.0.0.1:18080"
+                    ])
+                    .stdout(std::process::Stdio::inherit())
+                    .stderr(std::process::Stdio::inherit())
                     .spawn()
                 {
-                    Ok(_) => log::info!("code-server started successfully"),
+                    Ok(mut child) => {
+                        log::info!("code-server started successfully with PID: {}", child.id());
+                        let status = child.wait();
+                        log::error!("code-server exited unexpectedly with status: {:?}", status);
+                    },
                     Err(e) => log::error!("Failed to start code-server: {}", e),
                 }
             });

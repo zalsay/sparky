@@ -181,17 +181,16 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
         let match;
 
         while ((match = pathRegex.exec(lineText)) !== null) {
-          const prefix = match[1];
-          const pathBody = match[2];
-          const matchText = prefix + pathBody; // The actual path part, excluding leading spaces
-          const matchedFull = match[0];
+          const matchText = match[1] + match[2]; // The actual path part, excluding leading spaces
 
           let startIndex = match.index;
-          const spaceMatch = matchedFull.match(/^\s/);
+          const spaceMatch = match[0].match(/^\s/);
           if (spaceMatch) startIndex += spaceMatch[0].length;
 
           const startX = startIndex + 1; // xterm is 1-indexed
           const endX = startIndex + matchText.length;
+
+          let popoverEl: HTMLDivElement | null = null;
 
           links.push({
             range: {
@@ -219,104 +218,46 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
                 onLinkClickRef.current(resolvedPath);
               }
             },
-            hover: () => { },
-            leave: () => { },
+            hover: (event: MouseEvent, text: string) => {
+              if (popoverEl) return;
+
+              popoverEl = document.createElement('div');
+              popoverEl.style.position = 'absolute';
+              popoverEl.style.zIndex = '9999';
+              popoverEl.style.display = 'flex';
+              popoverEl.style.alignItems = 'center';
+              popoverEl.style.justifyContent = 'center';
+              popoverEl.style.padding = '4px';
+              popoverEl.style.borderRadius = '4px';
+              popoverEl.style.background = 'var(--bg-secondary)';
+              popoverEl.style.border = '1px solid var(--border-color)';
+              popoverEl.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
+              popoverEl.style.cursor = 'pointer';
+              popoverEl.innerHTML = `<img src="${CodeIcon}" alt="Open" style="width: 14px; height: 14px; filter: var(--icon-filter);" />`;
+
+              // Position it slightly above and right of the mouse
+              popoverEl.style.left = `${event.clientX + 10}px`;
+              popoverEl.style.top = `${event.clientY - 20}px`;
+
+              // Forward click to activate
+              popoverEl.onclick = (e) => {
+                e.stopPropagation();
+                // Accessing the last added link since `this` context doesn't exist here cleanly
+                links[links.length - 1].activate(e, text);
+              };
+
+              document.body.appendChild(popoverEl);
+            },
+            leave: () => {
+              if (popoverEl) {
+                popoverEl.remove();
+                popoverEl = null;
+              }
+            },
           });
         }
         callback(links.length > 0 ? links : undefined);
       }
-    });
-
-    // Keep track of which markers we've already placed to avoid duplicates
-    const decoratedMarkers = new Set<string>();
-
-    const decorateLinePaths = (lineNumber: number) => {
-      const line = cached.term.buffer.active.getLine(lineNumber);
-      if (!line) return;
-      const lineText = line.translateToString(true);
-
-      const pathRegex = /(?:^|\s)(\/?|\.\/|\.\.\/|~\/)([a-zA-Z0-9_.\-]+(?:\/[a-zA-Z0-9_.\-]+)+)(?::\d+)?/g;
-      let match;
-
-      while ((match = pathRegex.exec(lineText)) !== null) {
-        const prefix = match[1];
-        const pathBody = match[2];
-        const matchText = prefix + pathBody;
-        const matchedFull = match[0];
-
-        let startIndex = match.index;
-        const spaceMatch = matchedFull.match(/^\s/);
-        if (spaceMatch) startIndex += spaceMatch[0].length;
-
-        const endX = startIndex + matchText.length;
-
-        console.log(`[xterm regex match] Line ${lineNumber}, pos ${endX}: ${matchText}`);
-
-        const markerKey = `${lineNumber}:${endX}:${matchText}`;
-        if (decoratedMarkers.has(markerKey)) continue;
-
-        // Register a marker right at the end of the matched path
-        const marker = cached.term.registerMarker(0);
-        if (!marker) continue;
-
-        decoratedMarkers.add(markerKey);
-
-        // Decorate marker
-        const decoration = cached.term.registerDecoration({
-          marker,
-          x: endX + 1, // Place immediately after the text
-          width: 2 // Allocate space for icon
-        });
-
-        if (decoration) {
-          decoration.onRender((el) => {
-            // Create an inline icon element
-            if (el.children.length > 0) return; // Already rendered
-            el.style.position = 'relative'; // Ensure positioning context for children
-            el.style.display = 'flex';
-            el.style.alignItems = 'center';
-            el.style.justifyContent = 'center';
-            el.style.paddingLeft = '4px';
-            el.style.cursor = 'pointer';
-
-            const img = document.createElement('img');
-            img.src = CodeIcon;
-            img.alt = 'Open File';
-            img.style.width = '14px';
-            img.style.height = '14px';
-            img.style.filter = 'var(--icon-filter, none)';
-            img.style.opacity = '0.7';
-            img.onmouseenter = () => { img.style.opacity = '1'; };
-            img.onmouseleave = () => { img.style.opacity = '0.7'; };
-
-            img.onclick = (e) => {
-              e.stopPropagation();
-              // Strip line:col
-              const cleanPath = matchText.replace(/:\d+(:\d+)?$/, '');
-              let resolvedPath = cleanPath;
-              if (!cleanPath.startsWith('~/') && !cleanPath.startsWith('/')) {
-                resolvedPath = projectPath + '/' + cleanPath.replace(/^\.\//, '');
-              }
-              if (onLinkClickRef.current) {
-                onLinkClickRef.current(resolvedPath);
-              }
-            };
-
-            el.appendChild(img);
-          });
-
-          decoration.onDispose(() => {
-            decoratedMarkers.delete(markerKey);
-          });
-        }
-      }
-    };
-
-    // Listen to lines being added and parsing for decorations
-    const lineFeedDisposable = cached.term.onLineFeed(() => {
-      const activeBuffer = cached.term.buffer.active;
-      // Check the line that just got completed (the one before the new cursor position)
-      decorateLinePaths(activeBuffer.cursorY + activeBuffer.baseY - 1);
     });
 
     const dataDisposable = cached.term.onData((data) => {
@@ -374,9 +315,9 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
       ptyReady = false;
       resizeObserver.disconnect();
       linkProvider.dispose();
-      lineFeedDisposable.dispose();
       dataDisposable.dispose();
       resizeDisposable.dispose();
+
       clearPty();
       // Don't delete from cache - keep terminal state for when user navigates back
       if (container) {
