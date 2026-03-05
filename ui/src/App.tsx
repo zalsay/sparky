@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Segmented, Splitter, Popconfirm } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, HomeOutlined } from '@ant-design/icons';
+import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm } from 'antd';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, HomeOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -112,7 +112,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [activeProjects, setActiveProjects] = useState<string[]>([]);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const appConfigRef = useRef<AppConfig | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+  const [sidebarCollapsed] = useState(() => {
     const saved = localStorage.getItem('sparky-sidebar-collapsed');
     return saved === 'true';
   });
@@ -168,7 +168,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [codeServerConnected, setCodeServerConnected] = useState<boolean | null>(null);
 
   // Track terminal vs chat view modes per terminal id
-  const [viewModes, setViewModes] = useState<Record<string, 'terminal' | 'chat'>>({});
+  const [viewModes] = useState<Record<string, 'terminal' | 'chat'>>({});
 
   useEffect(() => {
     localStorage.setItem('sparky-sidebar-collapsed', String(sidebarCollapsed));
@@ -724,7 +724,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
         }
       }}
     >
-      <div className={`app - container ${isDarkMode ? 'dark-mode' : ''} ${terminalFullscreen ? 'terminal-fullscreen' : ''} `}>
+      <div className={`app-container ${isDarkMode ? 'dark-mode' : ''} ${terminalFullscreen ? 'terminal-fullscreen' : ''}`}>
         <header className="app-header">
           <div className="header-content" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
@@ -780,7 +780,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
         <main className="app-main" style={activeMenu === 'project-detail' ? { padding: 0 } : undefined}>
           <div className="app-layout" style={activeMenu === 'project-detail' ? { gap: 0 } : undefined}>
-            <aside className={`app - sidebar ${sidebarCollapsed ? 'collapsed' : ''} `} style={{ display: activeMenu === 'project-detail' ? 'none' : undefined }}>
+            <aside className={`app-sidebar ${sidebarCollapsed ? 'collapsed' : ''}`} style={{ display: activeMenu === 'project-detail' ? 'none' : undefined }}>
               <Menu
                 mode="inline"
                 inlineCollapsed={sidebarCollapsed}
@@ -793,14 +793,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                   { key: 'help', icon: <EyeOutlined />, label: '帮助' },
                 ]}
               />
-              <div className="sidebar-toggle-container">
-                <Button
-                  type="text"
-                  icon={sidebarCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-                  onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-                  className="sidebar-toggle-btn"
-                />
-              </div>
+
             </aside>
             <div className="app-content">
               {activeMenu === 'project' && (

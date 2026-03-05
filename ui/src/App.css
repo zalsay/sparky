@@ -194,7 +194,7 @@ body {
 .app-main {
   flex: 1;
   width: 100%;
-  padding: 20px 24px 16px 24px;
+  padding: 20px 24px 0 24px;
   overflow: hidden;
   min-height: 0;
 }
@@ -205,18 +205,17 @@ body {
   display: flex;
   gap: 12px;
   height: 100%;
-  min-height: calc(100vh - 120px);
-  /* Adjust based on header/padding */
 }
 
 .app-sidebar {
   width: 140px;
   flex-shrink: 0;
-  background: var(--sidebar-bg);
+  background: var(--card-bg);
   border-radius: 8px;
   transition: all 0.3s cubic-bezier(0.645, 0.045, 0.355, 1);
   display: flex;
   flex-direction: column;
+  padding-bottom: 12px;
 }
 
 .app-sidebar.collapsed {
@@ -238,8 +237,8 @@ body {
 .app-sidebar .ant-menu-item {
   margin: 4px 12px !important;
   width: calc(100% - 24px) !important;
-  border-radius: 6px;
-  color: var(--text-primary);
+  border-radius: 6px !important;
+  color: var(--text-primary) !important;
   transition: all 0.3s cubic-bezier(0.645, 0.045, 0.355, 1) !important;
   padding: 0 10px !important;
 }
@@ -271,17 +270,17 @@ body {
   color: var(--active-bg) !important;
 }
 
-.app-sidebar .ant-menu-item-selected {
-  background-color: #000000 !important;
-  color: #f1f1f1 !important;
-  font-weight: 600;
+.app-sidebar .ant-menu.ant-menu-root .ant-menu-item-selected {
+  background-color: var(--active-text) !important;
+  color: var(--active-bg) !important;
+  font-weight: 500;
   border: none !important;
   position: relative;
   z-index: 2;
 }
 
-.app-sidebar .ant-menu-item-selected .anticon {
-  color: #f1f1f1 !important;
+.app-sidebar .ant-menu.ant-menu-root .ant-menu-item-selected .anticon {
+  color: var(--active-bg) !important;
 }
 
 .app-sidebar.collapsed .ant-menu-item-selected,
@@ -298,8 +297,8 @@ body {
   z-index: 2;
   overflow: visible !important;
   transform: none;
-  background-color: #000000 !important;
-  color: #f1f1f1 !important;
+  background-color: var(--active-text) !important;
+  color: var(--active-bg) !important;
 }
 
 /* Cleanup old pseudo-element styles as we are using actual dimensions now */
@@ -307,28 +306,28 @@ body {
 .app-sidebar.collapsed .ant-menu-item-selected .anticon,
 .app-sidebar.collapsed .ant-menu-item:hover .anticon {
   margin-left: 0 !important;
-  color: #f1f1f1 !important;
+  color: var(--active-bg) !important;
 }
 
-.dark-mode .app-sidebar .ant-menu-item-selected {
-  background-color: #f1f1f1 !important;
-  color: #000000 !important;
+.dark-mode .app-sidebar .ant-menu.ant-menu-root .ant-menu-item-selected {
+  background-color: var(--active-text) !important;
+  color: var(--active-bg) !important;
 }
 
-.dark-mode .app-sidebar .ant-menu-item-selected .anticon {
-  color: #000000 !important;
+.dark-mode .app-sidebar .ant-menu.ant-menu-root .ant-menu-item-selected .anticon {
+  color: var(--active-bg) !important;
 }
 
 .dark-mode .app-sidebar.collapsed .ant-menu-item-selected,
 .dark-mode .app-sidebar.collapsed .ant-menu-item:hover {
-  background-color: #f1f1f1 !important;
-  color: #000000 !important;
+  background-color: var(--active-text) !important;
+  color: var(--active-bg) !important;
   box-shadow: -4px 0 12px rgba(0, 0, 0, 0.6) !important;
 }
 
 .dark-mode .app-sidebar.collapsed .ant-menu-item-selected .anticon,
 .dark-mode .app-sidebar.collapsed .ant-menu-item:hover .anticon {
-  color: #000000 !important;
+  color: var(--active-bg) !important;
 }
 
 .app-sidebar .ant-menu-item:hover {
@@ -340,39 +339,7 @@ body {
   display: none;
 }
 
-/* Sidebar selected after/title overrides removed */
 
-/* ==================== Sidebar Toggle ==================== */
-
-.sidebar-toggle-container {
-  padding: 8px;
-  border-top: 1px solid var(--border-light);
-  display: flex;
-  justify-content: center;
-  transition: all 0.3s;
-  background: var(--sidebar-bg);
-  margin-top: auto;
-}
-
-.sidebar-toggle-btn {
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-secondary);
-  border-radius: 6px;
-  transition: all 0.2s;
-}
-
-.sidebar-toggle-btn:hover {
-  background: var(--hover-bg);
-  color: var(--text-primary);
-}
-
-.app-sidebar.collapsed .sidebar-toggle-container {
-  padding: 12px 8px;
-}
 
 .app-content {
   flex: 1;

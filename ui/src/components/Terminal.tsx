@@ -63,7 +63,7 @@ function getOrCreateTerminal(terminalId: string, title?: string, themeVals?: { b
     fontWeight: 'bold',
     fontWeightBold: '900',
     theme: {
-      background: 'transparent',
+      background: themeVals?.background || '#1e1e1e',
       foreground: themeVals?.foreground || '#e0e0e0',
       cursor: '#ffffff',
       cursorAccent: '#1e1e1e',
@@ -401,17 +401,17 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
     };
   }, [terminalId, projectPath]);
 
-  // 当 theme 改变时，更新外层容器背景色，xterm 保持透明
+  // 当 theme 改变时，更新 xterm 内部背景色以及外层容器背景色
   useEffect(() => {
     const cached = terminalCache.get(terminalId);
     if (cached && theme) {
       cached.term.options.theme = {
         ...cached.term.options.theme,
-        background: 'transparent',
+        background: theme.background || '#1e1e1e',
         foreground: theme.foreground || '#e0e0e0',
       };
       if (terminalRef.current) {
-        terminalRef.current.style.backgroundColor = theme.background || '#1e1e1e';
+        terminalRef.current.style.backgroundColor = 'transparent';
       }
     }
   }, [theme?.background, theme?.foreground, terminalId]);
@@ -466,8 +466,8 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
         width: '100%',
         height: '100%',
         minHeight: '0',
-        backgroundColor: theme?.background || '#1e1e1e',
-        padding: '8px 12px',
+        backgroundColor: 'var(--bg-color)',
+        padding: '0',
         boxSizing: 'border-box',
         overflow: 'hidden',
         cursor: 'text',
@@ -486,21 +486,35 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
       }}
     >
       <div
-        ref={terminalRef}
-        tabIndex={0}
-        onClick={handleClick}
-        onKeyDown={(e) => {
-          if (e.shiftKey) {
-            e.stopPropagation();
-          }
-        }}
         style={{
           flex: 1,
           width: '100%',
+          display: 'flex',
+          flexDirection: 'column',
+          backgroundColor: theme?.background || '#1e1e1e',
+          padding: '8px 12px',
+          borderRadius: fullscreen ? '0' : (mergeTop ? '0 0 8px 8px' : '8px'),
           overflow: 'hidden',
           minHeight: 0,
         }}
-      />
+      >
+        <div
+          ref={terminalRef}
+          tabIndex={0}
+          onClick={handleClick}
+          onKeyDown={(e) => {
+            if (e.shiftKey) {
+              e.stopPropagation();
+            }
+          }}
+          style={{
+            flex: 1,
+            width: '100%',
+            overflow: 'hidden',
+            minHeight: 0,
+          }}
+        />
+      </div>
     </div>
   );
 });
