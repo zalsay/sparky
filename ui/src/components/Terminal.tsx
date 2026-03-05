@@ -295,8 +295,8 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
     resizeObserver.observe(container);
 
     // Start PTY, then mark ready and do initial fit
-    startPty(projectPath, terminalId).then(() => {
-      if (!disposed) {
+    startPty(projectPath, terminalId).then((result) => {
+      if (!disposed && result) {
         ptyReady = true;
         setTimeout(() => {
           if (!disposed) {

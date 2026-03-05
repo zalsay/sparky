@@ -12,6 +12,7 @@ pub struct PtyManager {
     writers: Mutex<HashMap<String, Box<dyn Write + Send>>>,
     project_terminals: Mutex<HashMap<String, Vec<String>>>,
     spawning: Mutex<HashSet<String>>,
+    verified_terminals: Mutex<HashSet<String>>,
 }
 
 impl PtyManager {
@@ -22,6 +23,7 @@ impl PtyManager {
             writers: Mutex::new(HashMap::new()),
             project_terminals: Mutex::new(HashMap::new()),
             spawning: Mutex::new(HashSet::new()),
+            verified_terminals: Mutex::new(HashSet::new()),
         }
     }
 
@@ -98,6 +100,7 @@ impl PtyManager {
             _ => None,
         };
         if removed.is_some() {
+            self.verified_terminals.lock().unwrap().remove(terminal_id);
             self.update_active_ptys_in_db();
         }
         removed
@@ -107,8 +110,24 @@ impl PtyManager {
         self.masters.lock().unwrap().contains_key(terminal_id)
     }
 
+    pub fn mark_verified(&self, terminal_id: &str) {
+        let mut verified = self.verified_terminals.lock().unwrap();
+        if !verified.contains(terminal_id) {
+            log::info!("[mark_verified] terminal {} is now fully ready", terminal_id);
+            verified.insert(terminal_id.to_string());
+            // Drop lock before db update
+            drop(verified);
+            self.update_active_ptys_in_db();
+        }
+    }
+
     pub fn get_active_projects(&self) -> Vec<String> {
-        let mut projects: Vec<String> = self.project_terminals.lock().unwrap().keys().cloned().collect();
+        let pt = self.project_terminals.lock().unwrap();
+        let verified = self.verified_terminals.lock().unwrap();
+        let mut projects: Vec<String> = pt.iter()
+            .filter(|(_, terminals)| terminals.iter().any(|t| verified.contains(t)))
+            .map(|(p, _)| p.clone())
+            .collect();
         projects.sort();
         projects
     }
@@ -261,6 +280,8 @@ pub async fn pty_spawn(
                         match std::str::from_utf8(&pending) {
                             Ok(valid) => {
                                 if !valid.is_empty() {
+                                    // Mark terminal as verified now that it has produced output
+                                    app_handle.state::<PtyManager>().mark_verified(&terminal_id_clone);
                                     let _ = app_handle.emit("pty-data", serde_json::json!({
                                         "projectPath": project_path_clone,
                                         "terminalId": terminal_id_clone,
@@ -274,6 +295,7 @@ pub async fn pty_spawn(
                                 let valid_up_to = err.valid_up_to();
                                 if valid_up_to > 0 {
                                     let valid = unsafe { std::str::from_utf8_unchecked(&pending[..valid_up_to]) };
+                                    app_handle.state::<PtyManager>().mark_verified(&terminal_id_clone);
                                     let _ = app_handle.emit("pty-data", serde_json::json!({
                                         "projectPath": project_path_clone,
                                         "terminalId": terminal_id_clone,

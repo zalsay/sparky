@@ -1,3 +1,5 @@
+use std::net::TcpStream;
+use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::collections::HashMap;
@@ -948,10 +950,77 @@ fn save_config(config: AppConfig) -> Result<(), String> {
     Ok(())
 }
 
+pub fn find_executable(cmd_name: &str) -> Option<String> {
+    // 1. Try standard which (relies on current PATH)
+    if let Ok(out) = std::process::Command::new("which").arg(cmd_name).output() {
+        if out.status.success() {
+            if let Ok(path) = String::from_utf8(out.stdout) {
+                let path = path.trim().to_string();
+                if std::path::Path::new(&path).exists() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    
+    // 2. Fallback to common global Unix paths
+    let common_paths = ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"];
+    for dir in common_paths.iter() {
+        let p = std::path::Path::new(dir).join(cmd_name);
+        if p.exists() {
+            return Some(p.to_string_lossy().to_string());
+        }
+    }
+    
+    // 3. Fallback to user-specific installation paths (NVM, npm, cargo)
+    if let Some(home) = dirs::home_dir() {
+        // NVM (Node Version Manager) paths
+        let nvm_node_dir = home.join(".nvm/versions/node");
+        if nvm_node_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(nvm_node_dir) {
+                for entry in entries.filter_map(Result::ok) {
+                    let p = entry.path().join("bin").join(cmd_name);
+                    if p.exists() {
+                        return Some(p.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+        
+        let npm_global = home.join(".npm-global/bin").join(cmd_name);
+        if npm_global.exists() { return Some(npm_global.to_string_lossy().to_string()); }
+        
+        let cargo_bin = home.join(".cargo/bin").join(cmd_name);
+        if cargo_bin.exists() { return Some(cargo_bin.to_string_lossy().to_string()); }
+    }
+    
+    // 4. Final fallback: Execute a login shell to get the resolved PATH
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+    if let Ok(out) = std::process::Command::new(&shell)
+        .arg("-lc")
+        .arg(format!("which {}", cmd_name))
+        .output() 
+    {
+        if out.status.success() {
+            if let Ok(output_str) = String::from_utf8(out.stdout) {
+                for line in output_str.lines() {
+                    let line = line.trim();
+                    if line.starts_with('/') && std::path::Path::new(line).exists() {
+                        return Some(line.to_string());
+                    }
+                }
+            }
+        }
+    }
+    
+    None
+}
+
 #[tauri::command(rename_all = "snake_case")]
 async fn open_in_coder(file_path: String) -> Result<(), String> {
     log::info!("Attempting to open file in code-server: {}", file_path);
-    let output = std::process::Command::new("code-server")
+    let cmd_path = find_executable("code-server").unwrap_or_else(|| "code-server".to_string());
+    let output = std::process::Command::new(cmd_path)
         .args(["-r", &file_path])
         .output()
         .map_err(|e| {
@@ -1731,6 +1800,17 @@ fn update_session_name(session_id: String, name: String) -> Result<(), String> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+fn delete_session(session_id: String) -> Result<(), String> {
+    let conn = open_db()?;
+    conn.execute(
+        "DELETE FROM sessions WHERE session_id = ?1",
+        params![session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
 fn get_agent_teams_status(project_path: String) -> Result<bool, String> {
     check_agent_teams_enabled_for_path(&project_path)
 }
@@ -2114,47 +2194,22 @@ pub struct DependencyStatus {
 
 #[tauri::command(rename_all = "snake_case")]
 fn check_dependencies() -> Result<DependencyStatus, String> {
-    // macOS 上 GUI 程序继承 PATH 不一定完整，为了稳妥起见我们从常见的 PATH 里去查找
-    // 或者我们直接依赖 sh -c "which ... " 或者系统的 PATH
-    // 这里简单的用 std::process::Command 去查 common path
-    let check_cmd = |cmd_name: &str| -> bool {
-        // 先尝试直接执行 which
-        let output = std::process::Command::new("which")
-            .arg(cmd_name)
-            .output();
-        if let Ok(out) = output {
-            if out.status.success() {
-                return true;
-            }
-        }
-        
-        // 如果 which 失败（可能 PATH 不全），手动遍历一些通用路径
-        let common_paths = ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"];
-        for dir in common_paths.iter() {
-            let p = std::path::Path::new(dir).join(cmd_name);
-            if p.exists() {
-                return true;
-            }
-        }
-
-        // 尝试使用 npm root -g 查找 npm 全局目录里的
-        if let Ok(npm_out) = std::process::Command::new("npm").arg("root").arg("-g").output() {
-            if npm_out.status.success() {
-                if let Ok(root_path) = String::from_utf8(npm_out.stdout) {
-                    let root_path = root_path.trim();
-                    // 这里判断 npm root -g 目录的上一级下的 bin 或者内部找是否有点复杂
-                    // 简化一下：直接看执行结果，前面的 common paths 和 which 已经涵盖大部分场景
-                }
-            }
-        }
-
-        false
-    };
-
     Ok(DependencyStatus {
-        claude: check_cmd("claude"),
-        code_server: check_cmd("code-server"),
+        claude: find_executable("claude").is_some(),
+        code_server: find_executable("code-server").is_some(),
     })
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn check_code_server_connection() -> bool {
+    // Check if code-server is responding on port 18080
+    match TcpStream::connect_timeout(
+        &"127.0.0.1:18080".parse().expect("Invalid address"),
+        Duration::from_millis(500),
+    ) {
+        Ok(_) => true,
+        Err(_) => false,
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2233,7 +2288,8 @@ pub fn run() {
             // 启动 code-server（完整的 VSCode Web IDE）
             std::thread::spawn(|| {
                 log::info!("Starting code-server on 127.0.0.1:18080...");
-                match std::process::Command::new("code-server")
+                let cmd_path = find_executable("code-server").unwrap_or_else(|| "code-server".to_string());
+                match std::process::Command::new(cmd_path)
                     .args([
                         "--auth", "none", 
                         "--bind-addr", "127.0.0.1:18080"
@@ -2348,7 +2404,9 @@ pub fn run() {
             get_testing_session,
             save_testing_session,
             update_session_name,
-            check_dependencies
+            delete_session,
+            check_dependencies,
+            check_code_server_connection
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

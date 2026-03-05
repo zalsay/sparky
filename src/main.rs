@@ -87,18 +87,40 @@ async fn main() -> Result<()> {
             // Session events don't need Feishu config - handle them early
             if event_name == "SessionStart" || event_name == "SessionEnd" {
                 tracing::info!("[main] Handling session event: {}", event_name);
-                append_hook_log(&format!("📥 Hook触发(session): event={}, session={}, cwd={}", event_name, hook_input.session_id, hook_input.cwd));
+                append_hook_log(&format!("📥 Hook触发(session): event={}, session={}, cwd={}, source={:?}", event_name, hook_input.session_id, hook_input.cwd, hook_input.source));
 
                 if event_name == "SessionStart" {
-                    let project_name = std::path::Path::new(&hook_input.cwd)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("Unknown");
-                    if let Err(e) = save_session(&hook_input.cwd, &hook_input.session_id, project_name) {
-                        tracing::error!("[main] Failed to save session: {:?}", e);
-                        append_hook_log(&format!("❌ Session save failed: {}", e));
+                    let source = hook_input.source.as_deref().unwrap_or("");
+                    
+                    if source == "resume" {
+                        // This is a resumed session — don't create a new record.
+                        // Just re-open the existing session by clearing ended_at.
+                        if let Err(e) = reopen_session(&hook_input.cwd, &hook_input.session_id) {
+                            tracing::error!("[main] Failed to reopen session: {:?}", e);
+                            append_hook_log(&format!("❌ Session reopen failed: {}", e));
+                        } else {
+                            append_hook_log(&format!("♻️ Session reopened (resume): {}", hook_input.session_id));
+                        }
+                        // Also delete the wrapper startup session that claude --resume
+                        // creates moments before the resume event (new session_id, same project).
+                        if let Err(e) = delete_recent_wrapper_sessions(&hook_input.cwd, &hook_input.session_id) {
+                            tracing::error!("[main] Failed to clean wrapper sessions: {:?}", e);
+                            append_hook_log(&format!("⚠️ Wrapper session cleanup failed: {}", e));
+                        } else {
+                            append_hook_log("🗑️ Cleaned up wrapper startup sessions");
+                        }
                     } else {
-                        append_hook_log(&format!("✅ Session saved: {} ({})", hook_input.session_id, project_name));
+                        // Normal startup — save a new session record
+                        let project_name = std::path::Path::new(&hook_input.cwd)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("Unknown");
+                        if let Err(e) = save_session(&hook_input.cwd, &hook_input.session_id, project_name) {
+                            tracing::error!("[main] Failed to save session: {:?}", e);
+                            append_hook_log(&format!("❌ Session save failed: {}", e));
+                        } else {
+                            append_hook_log(&format!("✅ Session saved: {} ({})", hook_input.session_id, project_name));
+                        }
                     }
                 } else {
                     let reason = hook_input.reason.clone().unwrap_or_else(|| "other".to_string());
@@ -885,6 +907,42 @@ fn end_session(project_path: &str, session_id: &str, reason: &str) -> Result<()>
     )?;
     append_hook_log(&format!("✅ Session end updated, affected rows: {}", affected));
     tracing::info!("[db:session] ended session_id={}, reason={}, affected={}", session_id, reason, affected);
+    Ok(())
+}
+
+fn reopen_session(project_path: &str, session_id: &str) -> Result<()> {
+    append_hook_log(&format!("♻️ Attempting to reopen session: {}", session_id));
+    let db_path = get_db_path();
+    let conn = Connection::open(&db_path)?;
+    let affected = conn.execute(
+        "UPDATE sessions SET ended_at = NULL, reason = NULL WHERE session_id = ?1 AND project_path = ?2",
+        params![session_id, project_path],
+    )?;
+    append_hook_log(&format!("♻️ Session reopen updated, affected rows: {}", affected));
+    tracing::info!("[db:session] reopened session_id={}, affected={}", session_id, affected);
+    Ok(())
+}
+
+/// Delete wrapper startup sessions created within the last 10 seconds
+/// for the same project, excluding the resumed session itself.
+/// When `claude --resume` is used, Claude Code fires a `startup` SessionStart
+/// with a new session_id right before the `resume` SessionStart with the old one.
+/// This function removes that wrapper so it doesn't show as a duplicate.
+fn delete_recent_wrapper_sessions(project_path: &str, resumed_session_id: &str) -> Result<()> {
+    let db_path = get_db_path();
+    let conn = Connection::open(&db_path)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    // Delete sessions created in last 10 seconds for same project, except the resumed one
+    let threshold = now - 10_000;
+    let affected = conn.execute(
+        "DELETE FROM sessions WHERE project_path = ?1 AND session_id != ?2 AND started_at > ?3",
+        params![project_path, resumed_session_id, threshold],
+    )?;
+    append_hook_log(&format!("🗑️ Deleted {} wrapper session(s) for project {}", affected, project_path));
+    tracing::info!("[db:session] deleted {} wrapper sessions for project={}, threshold={}", affected, project_path, threshold);
     Ok(())
 }
 

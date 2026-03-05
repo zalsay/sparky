@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter } from 'antd';
+import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm } from 'antd';
 import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, MenuFoldOutlined, MenuUnfoldOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, HomeOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -163,6 +163,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [mcpStatus, setMcpStatus] = useState<{ installed: boolean; running: boolean; path: string } | null>(null);
   const [mcpLoading, setMcpLoading] = useState(false);
   const [mcpStarting, setMcpStarting] = useState(false);
+  const [codeServerConnected, setCodeServerConnected] = useState<boolean | null>(null);
 
   useEffect(() => {
     localStorage.setItem('sparky-sidebar-collapsed', String(sidebarCollapsed));
@@ -282,6 +283,43 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       return;
     }
     fetchHookRecords(1);
+  }, [activeMenu, selectedProject, tauriAvailable]);
+
+  // Check code-server connection when entering project detail
+  useEffect(() => {
+    if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject) {
+      setCodeServerConnected(null);
+      return;
+    }
+
+    const checkConnection = async () => {
+      try {
+        const connected = await invoke<boolean>('check_code_server_connection');
+        setCodeServerConnected(connected);
+        if (!connected) {
+          modalApi.error({
+            title: '连接 IDE 服务失败',
+            content: (
+              <div style={{ marginTop: 8 }}>
+                <p>无法连接到本地 code-server (127.0.0.1:18080)。</p>
+                <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>通常是因为 code-server 尚未启动或监听端口不正确。</p>
+                <div style={{ marginTop: 16, padding: '12px', background: 'rgba(0,0,0,0.4)', borderRadius: '4px' }}>
+                  <code style={{ fontSize: 12 }}>code-server --port 18080 --auth none</code>
+                </div>
+              </div>
+            ),
+            okText: '重试',
+            onOk: () => {
+              checkConnection();
+            }
+          });
+        }
+      } catch (err) {
+        console.error('Failed to check code-server connection:', err);
+      }
+    };
+
+    checkConnection();
   }, [activeMenu, selectedProject, tauriAvailable]);
 
   const handleTerminalInput = (data: string) => {
@@ -844,20 +882,38 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                       onResize={(sizes) => localStorage.setItem('sparkySplitterSizes', JSON.stringify(sizes))}
                     >
                       <Splitter.Panel collapsible defaultSize={initialSplitterSizes[0]} min="30%" max="80%">
-                        <iframe
-                          src={`http://127.0.0.1:18080/?folder=${encodeURIComponent(selectedProject.path)}`}
-                          title="Coder IDE"
-                          style={{
-                            flex: 1,
-                            width: '100%',
-                            height: '100%',
-                            border: 'none',
-                            borderRight: '1px solid var(--border-color)',
-                            display: 'block',
-                            background: 'var(--bg-primary)'
-                          }}
-                          allow="clipboard-read; clipboard-write; display-capture"
-                        />
+                        {codeServerConnected === false ? (
+                          <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)', color: 'var(--text-secondary)', padding: 24, textAlign: 'center' }}>
+                            <WarningOutlined style={{ fontSize: 48, marginBottom: 16, color: '#faad14' }} />
+                            <h3 style={{ color: 'var(--text-primary)' }}>IDE 连接失败</h3>
+                            <p>无法连接到 127.0.0.1:18080</p>
+                            <Button
+                              type="primary"
+                              icon={<ReloadOutlined />}
+                              onClick={async () => {
+                                const connected = await invoke<boolean>('check_code_server_connection');
+                                setCodeServerConnected(connected);
+                              }}
+                            >
+                              重试连接
+                            </Button>
+                          </div>
+                        ) : (
+                          <iframe
+                            src={`http://127.0.0.1:18080/?folder=${encodeURIComponent(selectedProject.path)}`}
+                            title="Coder IDE"
+                            style={{
+                              flex: 1,
+                              width: '100%',
+                              height: '100%',
+                              border: 'none',
+                              borderRight: '1px solid var(--border-color)',
+                              display: 'block',
+                              background: 'var(--bg-primary)'
+                            }}
+                            allow="clipboard-read; clipboard-write; display-capture"
+                          />
+                        )}
                       </Splitter.Panel>
                       <Splitter.Panel collapsible defaultSize={initialSplitterSizes[1]} min="20%" max="80%">
                         <Card className="project-detail-card" variant="borderless" style={{ height: '100%', margin: 0, borderRadius: 0, padding: 0 }}>
@@ -959,23 +1015,41 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   {
                                     title: '操作',
                                     key: 'action',
-                                    width: 80,
+                                    width: 140,
                                     render: (_: any, record: SessionInfo) => (
-                                      <Button
-                                        size="small"
-                                        type="primary"
-                                        onClick={() => {
-                                          const tid = activeTerminalId[selectedProject.path];
-                                          const isFullAuth = fullAuth[selectedProject.path] || false;
-                                          const cmd = isFullAuth
-                                            ? `claude --dangerously-skip-permissions --resume ${record.session_id}\n`
-                                            : `claude --resume ${record.session_id}\n`;
-                                          if (tid) invoke('pty_write', { terminal_id: tid, data: cmd });
-                                          setSessionModalOpen(false);
-                                        }}
-                                      >
-                                        继续
-                                      </Button>
+                                      <Space>
+                                        <Button
+                                          size="small"
+                                          type="primary"
+                                          onClick={() => {
+                                            const tid = activeTerminalId[selectedProject.path];
+                                            const isFullAuth = fullAuth[selectedProject.path] || false;
+                                            const cmd = isFullAuth
+                                              ? `claude --dangerously-skip-permissions --resume ${record.session_id}\n`
+                                              : `claude --resume ${record.session_id}\n`;
+                                            if (tid) invoke('pty_write', { terminal_id: tid, data: cmd });
+                                            setSessionModalOpen(false);
+                                          }}
+                                        >
+                                          继续
+                                        </Button>
+                                        <Popconfirm
+                                          title="确定要删除该会话记录吗？"
+                                          onConfirm={async () => {
+                                            try {
+                                              await invoke('delete_session', { session_id: record.session_id });
+                                              await fetchSessions(selectedProject.path);
+                                              messageApi.success('已删除');
+                                            } catch (e: any) {
+                                              messageApi.error(`删除失败: ${e}`);
+                                            }
+                                          }}
+                                          okText="是"
+                                          cancelText="否"
+                                        >
+                                          <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                                        </Popconfirm>
+                                      </Space>
                                     ),
                                   },
                                 ]}
@@ -1507,12 +1581,23 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   closable: true,
                                   children: (
                                     <div style={{ width: '100%', height: '100%', background: 'var(--bg-primary)' }}>
-                                      <iframe
-                                        title={`Coder IDE - ${tab.path}`}
-                                        src={`http://127.0.0.1:18080/?folder=${encodeURIComponent(tab.folderPath)}`}
-                                        style={{ width: '100%', height: '100%', border: 'none' }}
-                                        allow="clipboard-read; clipboard-write"
-                                      />
+                                      {codeServerConnected === false ? (
+                                        <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', padding: 24, textAlign: 'center' }}>
+                                          <WarningOutlined style={{ fontSize: 32, marginBottom: 12, color: '#faad14' }} />
+                                          <p>IDE 连接失败</p>
+                                          <Button size="small" onClick={async () => {
+                                            const connected = await invoke<boolean>('check_code_server_connection');
+                                            setCodeServerConnected(connected);
+                                          }}>重试</Button>
+                                        </div>
+                                      ) : (
+                                        <iframe
+                                          title={`Coder IDE - ${tab.path}`}
+                                          src={`http://127.0.0.1:18080/?folder=${encodeURIComponent(tab.folderPath)}`}
+                                          style={{ width: '100%', height: '100%', border: 'none' }}
+                                          allow="clipboard-read; clipboard-write"
+                                        />
+                                      )}
                                     </div>
                                   )
                                 }))),

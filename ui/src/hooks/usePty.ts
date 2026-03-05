@@ -49,6 +49,7 @@ export function usePty(onData?: (data: string, projectPath: string, terminalId: 
       if (listenerGenRef.current !== gen) return;
       // 这里的逻辑是过滤属于当前这个 terminalId 的事件
       if (event.payload.terminalId === terminalId) {
+        setIsRunning(true); // PTY data received, it is now truly running and ready
         if ((window as any).__terminalWrite) {
           (window as any).__terminalWrite(event.payload.terminalId, event.payload.data);
         }
@@ -120,9 +121,18 @@ export function usePty(onData?: (data: string, projectPath: string, terminalId: 
         terminal_id: terminalId,
       });
 
+      // If the component was unmounted or terminal switched while spawning,
+      // the PTY is an orphaned process since the user aborted entering the directory.
+      // We must explicitly kill it to avoid a false "running" state.
+      if (currentTerminalRef.current !== terminalId) {
+        console.log('PTY spawned but terminal was cleared or switched. Killing stray PTY:', result);
+        invoke('pty_kill', { terminal_id: result }).catch(console.error);
+        return null;
+      }
+
       console.log('PTY spawned for terminal:', result);
       ptyRef.current = { projectPath, terminalId: result, cols: 100, rows: 30 };
-      setIsRunning(true);
+      // Do not setIsRunning(true) here; wait for actual pty-data from setupListener
       return ptyRef.current;
     } catch (error) {
       console.error('Failed to start PTY:', error);
@@ -147,6 +157,7 @@ export function usePty(onData?: (data: string, projectPath: string, terminalId: 
   }, []);
 
   const clearPty = useCallback(() => {
+    // Note: this just clears frontend state; it doesn't kill the backend PTY.
     setIsRunning(false);
     ptyRef.current = null;
     currentTerminalRef.current = null;
