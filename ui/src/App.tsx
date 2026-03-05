@@ -7,6 +7,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 
 import TerminalComponent from './components/Terminal';
 import ChatView from './components/chat/ChatView';
+import ContextDonut from './components/ContextDonut';
 import logo from '../../logo.png';
 import codeIcon from './assets/Code.svg';
 import claudeIcon from './assets/Claude.svg';
@@ -1520,15 +1521,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                           zIndex: 100,
                                           alignItems: 'center'
                                         }}>
-                                          <Segmented
-                                            options={[
-                                              { label: 'Terminal', value: 'terminal' },
-                                              { label: 'Chat UI', value: 'chat' },
-                                            ]}
-                                            value={viewModes[term.id] || 'terminal'}
-                                            onChange={(val) => setViewModes(prev => ({ ...prev, [term.id]: val as 'terminal' | 'chat' }))}
-                                            style={{ backgroundColor: 'rgba(0,0,0,0.6)', color: 'white' }}
-                                          />
+                                          <ContextDonut projectPath={selectedProject!.path} />
                                           {!terminalFullscreen && (
                                             <Button
                                               type="text"
