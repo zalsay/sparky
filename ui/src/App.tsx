@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, HomeOutlined } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, RightOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, HomeOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -955,7 +955,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           open={sessionModalOpen}
                           onCancel={() => setSessionModalOpen(false)}
                           footer={null}
-                          width={600}
+                          width={860}
                         >
                           {sessions.length === 0 ? (
                             <Empty description="暂无历史会话" />
@@ -1426,6 +1426,45 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         type: 'divider'
                                       },
                                       {
+                                        key: 'compact',
+                                        label: '/compact (精简上下文)',
+                                        icon: <CompressOutlined />,
+                                        onClick: () => {
+                                          const tid = activeTerminalId[selectedProject.path];
+                                          if (tid) invoke('pty_write', { terminal_id: tid, data: '/compact\n' });
+                                        }
+                                      },
+                                      {
+                                        key: 'clear',
+                                        label: '/clear (清空历史)',
+                                        icon: <ClearOutlined />,
+                                        onClick: () => {
+                                          const tid = activeTerminalId[selectedProject.path];
+                                          if (tid) invoke('pty_write', { terminal_id: tid, data: '/clear\n' });
+                                        }
+                                      },
+                                      {
+                                        key: 'undo',
+                                        label: '/undo (撤销修改)',
+                                        icon: <UndoOutlined />,
+                                        onClick: () => {
+                                          const tid = activeTerminalId[selectedProject.path];
+                                          if (tid) invoke('pty_write', { terminal_id: tid, data: '/undo\n' });
+                                        }
+                                      },
+                                      {
+                                        key: 'files',
+                                        label: '/files (查看已载入文件)',
+                                        icon: <FileTextOutlined />,
+                                        onClick: () => {
+                                          const tid = activeTerminalId[selectedProject.path];
+                                          if (tid) invoke('pty_write', { terminal_id: tid, data: '/files\n' });
+                                        }
+                                      },
+                                      {
+                                        type: 'divider'
+                                      },
+                                      {
                                         key: 'close',
                                         label: '关闭项目',
                                         icon: <PoweroffOutlined />,
@@ -1527,7 +1566,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         zIndex: 100,
                                         alignItems: 'center'
                                       }}>
-                                        <ContextDonut projectPath={selectedProject!.path} />
+                                        <ContextDonut
+                                          projectPath={selectedProject!.path}
+                                          onClick={() => {
+                                            invoke('pty_write', { terminal_id: term.id, data: '/clear\n' });
+                                          }}
+                                        />
                                         {!terminalFullscreen && (
                                           <Button
                                             type="text"

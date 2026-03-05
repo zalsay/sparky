@@ -209,6 +209,9 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
               } else if (cleanPath.startsWith('/')) {
                 // Absolute path: pass as-is
                 resolvedPath = cleanPath;
+              } else if (cleanPath.startsWith('Users/')) {
+                // Absolute path missing leading slash
+                resolvedPath = '/' + cleanPath;
               } else {
                 // Relative path: resolve against project path
                 resolvedPath = projectPath + '/' + cleanPath.replace(/^\.\//, '');
@@ -286,6 +289,8 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
                 resolvedPath = cleanPath;
               } else if (cleanPath.startsWith('~/')) {
                 resolvedPath = cleanPath;
+              } else if (cleanPath.startsWith('Users/')) {
+                resolvedPath = '/' + cleanPath;
               } else {
                 resolvedPath = projectPath + '/' + cleanPath.replace(/^\.\//, '');
               }

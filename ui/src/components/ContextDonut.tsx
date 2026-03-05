@@ -4,6 +4,7 @@ import { Tooltip } from 'antd';
 
 interface ContextDonutProps {
     projectPath: string;
+    onClick?: () => void;
 }
 
 interface ContextData {
@@ -52,17 +53,22 @@ function parseContextFromJsonl(jsonlData: string): ContextData | null {
     return null;
 }
 
-export default function ContextDonut({ projectPath }: ContextDonutProps) {
+export default function ContextDonut({ projectPath, onClick }: ContextDonutProps) {
     const [contextData, setContextData] = useState<ContextData | null>(null);
+    const [ignoredJsonl, setIgnoredJsonl] = useState<string | null>(null);
 
     const fetchContext = useCallback(async () => {
         try {
             const jsonlData: string = await invoke('get_latest_claude_jsonl', { project_path: projectPath });
             if (jsonlData) {
-                setContextData(parseContextFromJsonl(jsonlData));
+                if (jsonlData !== ignoredJsonl) {
+                    setContextData(parseContextFromJsonl(jsonlData));
+                }
+            } else {
+                setContextData(null);
             }
         } catch { /* silent */ }
-    }, [projectPath]);
+    }, [projectPath, ignoredJsonl]);
 
     useEffect(() => {
         fetchContext();
@@ -71,6 +77,22 @@ export default function ContextDonut({ projectPath }: ContextDonutProps) {
     }, [fetchContext]);
 
     if (!contextData) return null;
+
+    const handleReset = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (onClick) onClick();
+
+        // Visually clear immediately
+        setContextData({ ...contextData, inputTokens: 0, outputTokens: 0, usedPercent: 0 });
+
+        // Save current jsonl to ignore it in the future
+        try {
+            const currentJsonl: string = await invoke('get_latest_claude_jsonl', { project_path: projectPath });
+            if (currentJsonl) {
+                setIgnoredJsonl(currentJsonl);
+            }
+        } catch { /* silent */ }
+    };
 
     const { inputTokens, maxTokens, usedPercent, modelName } = contextData;
 
@@ -97,17 +119,20 @@ export default function ContextDonut({ projectPath }: ContextDonutProps) {
 
     return (
         <Tooltip title={tooltipContent} placement="bottomRight" color="rgba(30,41,59,0.95)">
-            <div style={{
-                position: 'relative',
-                width: 28,
-                height: 28,
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: 6,
-                background: 'rgba(0, 0, 0, 0.2)',
-            }}>
+            <div
+                onClick={handleReset}
+                style={{
+                    position: 'relative',
+                    width: 28,
+                    height: 28,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    borderRadius: 6,
+                    background: 'rgba(0, 0, 0, 0.2)',
+                }}
+            >
                 <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
                     <circle
                         cx={size / 2} cy={size / 2} r={radius}
