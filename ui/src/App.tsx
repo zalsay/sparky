@@ -182,13 +182,15 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   }, [fullAuth]);
 
   // Check dependencies once on mount
+  const isCheckingDependenciesRef = useRef(false);
   useEffect(() => {
-    if (!tauriAvailable) return;
+    if (!tauriAvailable || isCheckingDependenciesRef.current) return;
+    isCheckingDependenciesRef.current = true;
     invoke<{ claude: boolean, code_server: boolean }>('check_dependencies')
       .then(async (status) => {
         if (!status.claude || !status.code_server) {
           if (!status.code_server) {
-            const hide = messageApi.loading('正在安装必要依赖 Coder IDE (code-server)...', 0);
+            const hide = messageApi.loading('正在安装必要依赖 Coder IDE ...', 0);
             try {
               await invoke('install_code_server');
               hide();
@@ -204,7 +206,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
           }
         }
       })
-      .catch((e) => console.error('Failed to check dependencies:', e));
+      .catch((e) => {
+        console.error('Failed to check dependencies:', e);
+        isCheckingDependenciesRef.current = false;
+      });
   }, [tauriAvailable, messageApi]);
 
   // Poll WebSocket connection status and active projects
