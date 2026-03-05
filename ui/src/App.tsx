@@ -929,7 +929,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                               display: 'block',
                               background: 'var(--bg-primary)'
                             }}
-                            allow="clipboard-read; clipboard-write; display-capture"
+                            allow="clipboard-read *; clipboard-write *; display-capture *"
                           />
                         )}
                       </Splitter.Panel >
@@ -1619,7 +1619,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                           title={`Coder IDE - ${tab.path}`}
                                           src={`http://127.0.0.1:18080/?folder=${encodeURIComponent(tab.folderPath)}`}
                                           style={{ width: '100%', height: '100%', border: 'none' }}
-                                          allow="clipboard-read; clipboard-write"
+                                          allow="clipboard-read *; clipboard-write *; display-capture *"
                                         />
                                       )}
                                     </div>
