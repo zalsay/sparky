@@ -43,20 +43,40 @@ pub struct AppConfig {
     pub anthropic_logo_img_key: Option<String>,
     pub terminal_bg_color: Option<String>,
     pub terminal_fg_color: Option<String>,
-    pub terminal_font_size: Option<i64>,
-    pub default_provider_id: Option<i64>,
+    pub terminal_font_size: Option<i32>,
+    pub default_provider_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AIProvider {
-    pub id: Option<i64>,
+    pub id: String,
+    pub app_type: String,
     pub name: String,
-    pub api_key: String,
-    pub base_url: String,
-    pub model_id: Option<String>,
-    pub official_site: Option<String>,
-    pub api_timeout: String,
-    pub disable_traffic: i32, // 0 for false, 1 for true
+    pub settings_config: String,
+    pub website_url: Option<String>,
+    pub category: Option<String>,
+    pub created_at: Option<i64>,
+    pub sort_index: Option<i64>,
+    pub notes: Option<String>,
+    pub icon: Option<String>,
+    pub icon_color: Option<String>,
+    pub meta: String,
+    pub is_current: bool,
+    pub in_failover_queue: bool,
+    pub cost_multiplier: String,
+    pub limit_daily_usd: Option<String>,
+    pub limit_monthly_usd: Option<String>,
+    pub provider_type: Option<String>,
+    pub endpoints: Vec<AIProviderEndpoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AIProviderEndpoint {
+    pub id: Option<i64>,
+    pub provider_id: String,
+    pub app_type: String,
+    pub url: String,
+    pub added_at: Option<i64>,
 }
 
 impl Default for AppConfig {
@@ -293,35 +313,87 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
             open_id TEXT,
             hook_events_filter TEXT,
             updated_at INTEGER NOT NULL,
-            default_provider_id INTEGER
+            default_provider_id TEXT
         )",
         [],
     )?;
+
+    // 检查是否需要重建表（旧表 id 是 INTEGER 导致导入 datatype mismatch）
+    let mut needs_rebuild = false;
+    if let Ok(mut stmt) = conn.prepare("PRAGMA table_info(ai_providers)") {
+        let _ = stmt.query_map([], |row| {
+            let name: String = row.get(1)?;
+            let type_str: String = row.get(2)?;
+            if name == "id" && type_str.to_uppercase().contains("INT") {
+                needs_rebuild = true;
+            }
+            Ok(())
+        })
+        .and_then(|mapped| {
+            for _ in mapped {}
+            Ok(())
+        });
+    }
+
+    if needs_rebuild {
+        let _ = conn.execute("ALTER TABLE ai_providers RENAME TO ai_providers_old_v1", []);
+    }
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS ai_providers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL,
+            app_type TEXT NOT NULL,
             name TEXT NOT NULL,
-            api_key TEXT NOT NULL,
-            base_url TEXT NOT NULL,
-            model_id TEXT,
-            api_timeout TEXT NOT NULL,
-            disable_traffic INTEGER NOT NULL DEFAULT 0
+            settings_config TEXT NOT NULL,
+            website_url TEXT,
+            category TEXT,
+            created_at INTEGER,
+            sort_index INTEGER,
+            notes TEXT,
+            icon TEXT,
+            icon_color TEXT,
+            meta TEXT NOT NULL DEFAULT '{}',
+            is_current BOOLEAN NOT NULL DEFAULT 0,
+            in_failover_queue BOOLEAN NOT NULL DEFAULT 0,
+            cost_multiplier TEXT NOT NULL DEFAULT '1.0',
+            limit_daily_usd TEXT,
+            limit_monthly_usd TEXT,
+            provider_type TEXT,
+            PRIMARY KEY (id, app_type)
         )",
         [],
     )?;
 
-    // 迁移：给已存在的表添加 open_id 列
-    let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN open_id TEXT", []);
-    let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN hook_events_filter TEXT", []);
-    let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN app_name TEXT", []);
-    let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN anthropic_logo_img_key TEXT", []);
-    let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN terminal_bg_color TEXT", []);
-    let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN terminal_fg_color TEXT", []);
-    let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN terminal_font_size INTEGER", []);
-    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN official_site TEXT", []);
-    let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN default_provider_id INTEGER", []);
-    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN model_id TEXT", []);
+    // 迁移：如果旧表存在旧列，进行处理（这里采用简单的 ALTER TABLE if needed，但考虑到结构变化大且是测试阶段，也可以建议用户重置）
+    // 为了稳妥，我们尝试 ALTER 添加缺失字段
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN app_type TEXT", []);
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN settings_config TEXT", []);
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN website_url TEXT", []);
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN category TEXT", []);
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN created_at INTEGER", []);
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN sort_index INTEGER", []);
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN notes TEXT", []);
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN icon TEXT", []);
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN icon_color TEXT", []);
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'", []);
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN is_current BOOLEAN NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN in_failover_queue BOOLEAN NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN cost_multiplier TEXT NOT NULL DEFAULT '1.0'", []);
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN limit_daily_usd TEXT", []);
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN limit_monthly_usd TEXT", []);
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN provider_type TEXT", []);
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS provider_endpoints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider_id TEXT NOT NULL,
+            app_type TEXT NOT NULL,
+            url TEXT NOT NULL,
+            added_at INTEGER,
+            FOREIGN KEY (provider_id, app_type) REFERENCES ai_providers(id, app_type) ON DELETE CASCADE
+        )",
+        [],
+    )?;
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS app_config_dingtalk (
@@ -544,7 +616,7 @@ fn migrate_app_config_table(conn: &Connection) -> Result<(), String> {
 fn load_config_from_db(conn: &Connection) -> Result<Option<AppConfig>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name, anthropic_logo_img_key, terminal_bg_color, terminal_fg_color, terminal_font_size
+            "SELECT app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name, anthropic_logo_img_key, terminal_bg_color, terminal_fg_color, terminal_font_size, default_provider_id
              FROM app_config_feishu WHERE id = 1",
         )
         .map_err(|e| e.to_string())?;
@@ -990,54 +1062,122 @@ fn save_config(config: AppConfig) -> Result<(), String> {
 #[tauri::command(rename_all = "snake_case")]
 fn get_ai_providers() -> Result<Vec<AIProvider>, String> {
     let conn = open_db()?;
-    let mut stmt = conn.prepare("SELECT id, name, api_key, base_url, model_id, api_timeout, disable_traffic, official_site FROM ai_providers ORDER BY id ASC")
+    let mut stmt = conn.prepare("SELECT id, app_type, name, settings_config, website_url, category, created_at, sort_index, notes, icon, icon_color, meta, is_current, in_failover_queue, cost_multiplier, limit_daily_usd, limit_monthly_usd, provider_type FROM ai_providers ORDER BY sort_index ASC, created_at ASC")
         .map_err(|e| e.to_string())?;
     
     let rows = stmt.query_map([], |row| {
-        Ok(AIProvider {
-            id: Some(row.get(0)?),
-            name: row.get(1)?,
-            api_key: row.get(2)?,
-            base_url: row.get(3)?,
-            model_id: row.get(4).ok(),
-            api_timeout: row.get(5)?,
-            disable_traffic: row.get(6)?,
-            official_site: row.get::<_, Option<String>>(7).ok().flatten(),
-        })
+        let provider_id: String = row.get(0)?;
+        let app_type: String = row.get(1)?;
+        Ok((provider_id, app_type, AIProvider {
+            id: row.get(0)?,
+            app_type: row.get(1)?,
+            name: row.get(2)?,
+            settings_config: row.get(3)?,
+            website_url: row.get(4)?,
+            category: row.get(5)?,
+            created_at: row.get(6)?,
+            sort_index: row.get(7)?,
+            notes: row.get(8)?,
+            icon: row.get(9)?,
+            icon_color: row.get(10)?,
+            meta: row.get(11)?,
+            is_current: row.get(12)?,
+            in_failover_queue: row.get(13)?,
+            cost_multiplier: row.get(14)?,
+            limit_daily_usd: row.get(15)?,
+            limit_monthly_usd: row.get(16)?,
+            provider_type: row.get(17)?,
+            endpoints: Vec::new(),
+        }))
     }).map_err(|e| e.to_string())?;
 
-    let mut providers = Vec::new();
+    let mut result = Vec::new();
     for row in rows {
-        providers.push(row.map_err(|e| e.to_string())?);
+        if let Ok((pid, atype, mut provider)) = row {
+            // 获取 endpoints
+            let mut estmt = conn.prepare("SELECT id, provider_id, app_type, url, added_at FROM provider_endpoints WHERE provider_id = ?1 AND app_type = ?2")
+                .map_err(|e| e.to_string())?;
+            let erows = estmt.query_map(params![pid, atype], |erow| {
+                Ok(AIProviderEndpoint {
+                    id: Some(erow.get(0)?),
+                    provider_id: erow.get(1)?,
+                    app_type: erow.get(2)?,
+                    url: erow.get(3)?,
+                    added_at: erow.get(4)?,
+                })
+            }).map_err(|e| e.to_string())?;
+            
+            for erow in erows {
+                if let Ok(endpoint) = erow {
+                    provider.endpoints.push(endpoint);
+                }
+            }
+            result.push(provider);
+        }
     }
-    Ok(providers)
+    Ok(result)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn upsert_ai_provider(provider: AIProvider) -> Result<i64, String> {
+fn upsert_ai_provider(provider: AIProvider) -> Result<String, String> {
     let conn = open_db()?;
-    if let Some(id) = provider.id {
+    // 检查是否存在
+    let existing_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM ai_providers WHERE id = ?1 AND app_type = ?2",
+        params![provider.id, provider.app_type],
+        |r| r.get(0),
+    ).unwrap_or(0);
+
+    if existing_count > 0 {
         conn.execute(
-            "UPDATE ai_providers SET name=?1, api_key=?2, base_url=?3, model_id=?4, api_timeout=?5, disable_traffic=?6, official_site=?7 WHERE id=?8",
-            params![provider.name, provider.api_key, provider.base_url, provider.model_id, provider.api_timeout, provider.disable_traffic, provider.official_site, id],
+            "UPDATE ai_providers SET name=?1, settings_config=?2, website_url=?3, category=?4, created_at=?5, sort_index=?6, notes=?7, icon=?8, icon_color=?9, meta=?10, is_current=?11, in_failover_queue=?12, cost_multiplier=?13, limit_daily_usd=?14, limit_monthly_usd=?15, provider_type=?16 WHERE id=?17 AND app_type=?18",
+            params![
+                provider.name, provider.settings_config, provider.website_url, provider.category, 
+                provider.created_at, provider.sort_index, provider.notes, provider.icon, 
+                provider.icon_color, provider.meta, provider.is_current, provider.in_failover_queue, 
+                provider.cost_multiplier, provider.limit_daily_usd, provider.limit_monthly_usd, 
+                provider.provider_type, provider.id, provider.app_type
+            ],
         ).map_err(|e| e.to_string())?;
-        Ok(id)
     } else {
         conn.execute(
-            "INSERT INTO ai_providers (name, api_key, base_url, model_id, api_timeout, disable_traffic, official_site) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![provider.name, provider.api_key, provider.base_url, provider.model_id, provider.api_timeout, provider.disable_traffic, provider.official_site],
+            "INSERT INTO ai_providers (id, app_type, name, settings_config, website_url, category, created_at, sort_index, notes, icon, icon_color, meta, is_current, in_failover_queue, cost_multiplier, limit_daily_usd, limit_monthly_usd, provider_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            params![
+                provider.id, provider.app_type, provider.name, provider.settings_config, 
+                provider.website_url, provider.category, provider.created_at, provider.sort_index, 
+                provider.notes, provider.icon, provider.icon_color, provider.meta, 
+                provider.is_current, provider.in_failover_queue, provider.cost_multiplier, 
+                provider.limit_daily_usd, provider.limit_monthly_usd, provider.provider_type
+            ],
         ).map_err(|e| e.to_string())?;
-        Ok(conn.last_insert_rowid())
     }
+
+    // 处理 endpoints
+    conn.execute("DELETE FROM provider_endpoints WHERE provider_id = ?1 AND app_type = ?2", params![provider.id, provider.app_type]).map_err(|e| e.to_string())?;
+    for endpoint in provider.endpoints {
+        conn.execute(
+            "INSERT INTO provider_endpoints (provider_id, app_type, url, added_at) VALUES (?1, ?2, ?3, ?4)",
+            params![provider.id, provider.app_type, endpoint.url, endpoint.added_at],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    Ok(provider.id)
 }
 
 #[tauri::command(rename_all = "snake_case")]
 async fn test_ai_provider_connection(provider: AIProvider) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let url = if provider.base_url.is_empty() {
+    
+    // 解析 settings_config 获取 api_key 和 base_url
+    let settings: serde_json::Value = serde_json::from_str(&provider.settings_config).map_err(|e| e.to_string())?;
+    let api_key = settings.get("api_key").and_then(|v| v.as_str()).unwrap_or_default();
+    let base_url = settings.get("base_url").and_then(|v| v.as_str()).unwrap_or_default();
+    let model_id = settings.get("model_id").and_then(|v| v.as_str()).unwrap_or("claude-3-5-sonnet-20241022");
+
+    let url = if base_url.is_empty() {
         "https://api.anthropic.com/v1/messages".to_string()
     } else {
-        let base = provider.base_url.trim_end_matches('/');
+        let base = base_url.trim_end_matches('/');
         if base.contains("/v1/messages") {
             base.to_string()
         } else {
@@ -1045,14 +1185,12 @@ async fn test_ai_provider_connection(provider: AIProvider) -> Result<String, Str
         }
     };
 
-    let model = provider.model_id.unwrap_or_else(|| "claude-3-5-sonnet-20241022".to_string());
-    
     let res = client.post(&url)
-        .header("x-api-key", &provider.api_key)
+        .header("x-api-key", api_key)
         .header("anthropic-version", "2023-06-01")
         .header("content-type", "application/json")
         .json(&serde_json::json!({
-            "model": model,
+            "model": model_id,
             "max_tokens": 10,
             "messages": [
                 {"role": "user", "content": "Hi"}
@@ -1072,10 +1210,108 @@ async fn test_ai_provider_connection(provider: AIProvider) -> Result<String, Str
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn delete_ai_provider(id: i64) -> Result<(), String> {
+fn delete_ai_provider(id: String, app_type: String) -> Result<(), String> {
     let conn = open_db()?;
-    conn.execute("DELETE FROM ai_providers WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM ai_providers WHERE id = ?1 AND app_type = ?2", params![id, app_type]).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn import_from_ccswitch() -> Result<Vec<AIProvider>, String> {
+    let home_dir = dirs::home_dir().ok_or("Failed to get home directory")?;
+    let db_path = home_dir.join(".cc-switch").join("cc-switch.db");
+    
+    if !db_path.exists() {
+        return Err("未找到 cc-switch 数据库文件 (~/.cc-switch/cc-switch.db)。".to_string());
+    }
+
+    let cc_conn = Connection::open(&db_path).map_err(|e| format!("无法打开 cc-switch 数据库: {}", e))?;
+    
+    let mut stmt = cc_conn.prepare("SELECT id, app_type, name, settings_config, website_url, category, created_at, sort_index, notes, icon, icon_color, meta, is_current, in_failover_queue, cost_multiplier, limit_daily_usd, limit_monthly_usd, provider_type FROM providers WHERE app_type = 'claude'")
+        .map_err(|e| format!("查询 cc-switch providers 失败: {}", e))?;
+
+    let rows = stmt.query_map([], |row| {
+        let raw_settings_config: String = row.get(3)?;
+        let mut mapped_settings = serde_json::json!({});
+        
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw_settings_config) {
+            if let Some(env) = json.get("env").and_then(|e| e.as_object()) {
+                mapped_settings["api_key"] = env.get("ANTHROPIC_AUTH_TOKEN").unwrap_or(&serde_json::json!("")).clone();
+                mapped_settings["base_url"] = env.get("ANTHROPIC_BASE_URL").unwrap_or(&serde_json::json!("")).clone();
+                mapped_settings["model_id"] = env.get("CLAUDE_CODE_MODEL_ID").or_else(|| env.get("ANTHROPIC_MODEL")).unwrap_or(&serde_json::json!("")).clone();
+                mapped_settings["api_timeout"] = env.get("API_TIMEOUT_MS").unwrap_or(&serde_json::json!("3000000")).clone();
+                mapped_settings["disable_traffic"] = env.get("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC").unwrap_or(&serde_json::json!(1)).clone();
+            }
+        }
+        
+        Ok(AIProvider {
+            id: row.get(0)?,
+            app_type: row.get(1)?,
+            name: row.get(2)?,
+            settings_config: mapped_settings.to_string(),
+            website_url: row.get(4)?,
+            category: row.get(5)?,
+            created_at: row.get(6)?,
+            sort_index: row.get(7)?,
+            notes: row.get(8)?,
+            icon: row.get(9)?,
+            icon_color: row.get(10)?,
+            meta: row.get(11)?,
+            is_current: row.get(12)?,
+            in_failover_queue: row.get(13)?,
+            cost_multiplier: row.get(14)?,
+            limit_daily_usd: row.get(15)?,
+            limit_monthly_usd: row.get(16)?,
+            provider_type: row.get(17)?,
+            endpoints: Vec::new(),
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut imported = Vec::new();
+    let our_conn = open_db()?;
+
+    for row_res in rows {
+        if let Ok(provider) = row_res {
+            // 简单去重（通过 id 和 app_type）
+            let count: i64 = our_conn.query_row(
+                "SELECT COUNT(*) FROM ai_providers WHERE id = ?1 AND app_type = ?2",
+                params![provider.id, provider.app_type],
+                |r| r.get(0),
+            ).unwrap_or(0);
+
+            if count == 0 {
+                our_conn.execute(
+                    "INSERT INTO ai_providers (id, app_type, name, settings_config, website_url, category, created_at, sort_index, notes, icon, icon_color, meta, is_current, in_failover_queue, cost_multiplier, limit_daily_usd, limit_monthly_usd, provider_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                    params![
+                        provider.id, provider.app_type, provider.name, provider.settings_config, 
+                        provider.website_url, provider.category, provider.created_at, provider.sort_index, 
+                        provider.notes, provider.icon, provider.icon_color, provider.meta, 
+                        provider.is_current, provider.in_failover_queue, provider.cost_multiplier, 
+                        provider.limit_daily_usd, provider.limit_monthly_usd, provider.provider_type
+                    ],
+                ).map_err(|e| e.to_string())?;
+                
+                // 导入 endpoints
+                let mut estmt = cc_conn.prepare("SELECT id, provider_id, app_type, url, added_at FROM provider_endpoints WHERE provider_id = ?1 AND app_type = ?2")
+                    .map_err(|e| e.to_string())?;
+                let erows = estmt.query_map(params![provider.id, provider.app_type], |erow| {
+                    Ok((erow.get::<_, String>(3)?, erow.get::<_, Option<i64>>(4)?))
+                }).map_err(|e| e.to_string())?;
+                
+                for erow in erows {
+                    if let Ok((url, added_at)) = erow {
+                        our_conn.execute(
+                            "INSERT INTO provider_endpoints (provider_id, app_type, url, added_at) VALUES (?1, ?2, ?3, ?4)",
+                            params![provider.id, provider.app_type, url, added_at],
+                        ).map_err(|e| e.to_string())?;
+                    }
+                }
+                imported.push(provider);
+            }
+        }
+    }
+
+    Ok(imported)
 }
 
 pub fn find_executable(cmd_name: &str) -> Option<String> {
@@ -2775,7 +3011,8 @@ pub fn run() {
             check_code_server_connection,
             install_code_server,
             get_latest_claude_jsonl,
-            set_active_terminal_id
+            set_active_terminal_id,
+            import_from_ccswitch
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

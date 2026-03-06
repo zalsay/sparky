@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, HomeOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, HomeOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -28,18 +28,37 @@ interface AppConfig {
   terminal_bg_color?: string;
   terminal_fg_color?: string;
   terminal_font_size?: number;
-  default_provider_id?: number;
+  default_provider_id?: string;
 }
 
 interface AIProvider {
-  id?: number;
+  id: string;
+  app_type: string;
   name: string;
-  api_key: string;
-  base_url: string;
-  model_id?: string;
-  official_site?: string;
-  api_timeout: string;
-  disable_traffic: number;
+  settings_config: string;
+  website_url?: string;
+  category?: string;
+  created_at?: number;
+  sort_index?: number;
+  notes?: string;
+  icon?: string;
+  icon_color?: string;
+  meta: string;
+  is_current: boolean;
+  in_failover_queue: boolean;
+  cost_multiplier: string;
+  limit_daily_usd?: string;
+  limit_monthly_usd?: string;
+  provider_type?: string;
+  endpoints: AIProviderEndpoint[];
+}
+
+interface AIProviderEndpoint {
+  id?: number;
+  provider_id: string;
+  app_type: string;
+  url: string;
+  added_at?: number;
 }
 
 interface Project {
@@ -95,11 +114,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   interface TerminalTab {
     id: string;
     title: string | React.ReactNode;
-    providerId?: number;
+    providerId?: string;
   }
   const [projectTerminals, setProjectTerminals] = useState<Record<string, TerminalTab[]>>({});
   const [providers, setProviders] = useState<AIProvider[]>([]);
   const [providersLoaded, setProvidersLoaded] = useState(false);
+  const [selectedProviderKeys, setSelectedProviderKeys] = useState<React.Key[]>([]);
+  const [batchDeleting, setBatchDeleting] = useState(false);
+  const [refreshingProviders, setRefreshingProviders] = useState(false);
   const [providerModalOpen, setProviderModalOpen] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Partial<AIProvider> | null>(null);
   const [testingProvider, setTestingProvider] = useState(false);
@@ -150,7 +172,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
         setProvidersLoaded(true);
         // 如果只有一个 provider 且没有默认设置，自动将其设为默认
         if (res.length === 1 && appConfig && !appConfig.default_provider_id) {
-          handleSetDefaultProvider(res[0].id!);
+          handleSetDefaultProvider(res[0].id!, res[0].app_type);
         }
       }).catch(e => console.error('Failed to fetch AI providers:', e));
     }
@@ -601,16 +623,17 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     });
   };
 
-  const handleSetDefaultProvider = async (id: number) => {
-    if (!tauriAvailable || !appConfig) return;
+  const handleSetDefaultProvider = async (id: string, app_type: string) => {
+    if (!appConfig) return;
+    // 在我们的 AppConfig 里暂存这个 ID (由于 AppConfig 的 default_provider_id 是 i64，这里需要考虑兼容性，临时改为 string 或者映射, 修改为 ${app_type}::${id})
+    const newConfig = { ...appConfig, default_provider_id: `${app_type}::${id}` } as AppConfig;
     try {
-      const newConfig = { ...appConfig, default_provider_id: id };
       await invoke('save_config', { config: newConfig });
       setAppConfig(newConfig);
       form.setFieldsValue(newConfig);
-      // messageApi.success('已设为默认');
+      messageApi.success('已设为默认');
     } catch (e) {
-      console.error('Failed to set default provider:', e);
+      messageApi.error(`设置默认失败: ${e} `);
     }
   };
 
@@ -638,6 +661,43 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [importing, setImporting] = useState(false);
+
+  const handleRefreshProviders = async () => {
+    setRefreshingProviders(true);
+    try {
+      const res = await invoke<AIProvider[]>('get_ai_providers');
+      setProviders(res);
+      messageApi.success('列表已刷新');
+    } catch (e) {
+      messageApi.error(`刷新失败: ${e}`);
+    } finally {
+      setRefreshingProviders(false);
+    }
+  };
+
+  const handleImportFromCCSwitch = async () => {
+    setImporting(true);
+    try {
+      const imported = await invoke<AIProvider[]>('import_from_ccswitch');
+      if (imported.length > 0) {
+        // 重新获取列表以反映新导入的项目
+        const res = await invoke<AIProvider[]>('get_ai_providers');
+        setProviders(res);
+        // 如果目前没有默认模型，自动设置第一个为默认
+        if (!appConfig?.default_provider_id && res.length > 0) {
+          handleSetDefaultProvider(res[0].id, res[0].app_type);
+        }
+        messageApi.success(`成功导入 ${imported.length} 个 AI模型 `);
+      } else {
+        messageApi.info('未发现新模型或 cc-switch 数据库为空');
+      }
+    } catch (error) {
+      messageApi.error(`导入失败: ${error} `);
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const handleUploadAnthropicLogo = async () => {
     if (!tauriAvailable) {
@@ -956,22 +1016,93 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           <p className="card-description" style={{ margin: 0 }}>管理 Claude Code 的环境变量预设</p>
                         </div>
                       </div>
-                      <Button
-                        type="primary"
-                        icon={<PlusOutlined />}
-                        onClick={() => {
-                          setEditingProvider({ name: '', api_key: '', base_url: '', api_timeout: '3000000', disable_traffic: 1 });
-                          setProviderModalOpen(true);
-                        }}
-                      >
-                        添加 AI模型
-                      </Button>
+                      <Space>
+                        <Button
+                          icon={<DownloadOutlined />}
+                          loading={importing}
+                          onClick={handleImportFromCCSwitch}
+                        >
+                          从 cc-switch 导入
+                        </Button>
+                        {selectedProviderKeys.length > 0 && (
+                          <Popconfirm
+                            title={`确定要删除选中的 ${selectedProviderKeys.length} 个 AI模型 吗？`}
+                            onConfirm={async () => {
+                              setBatchDeleting(true);
+                              try {
+                                for (const key of selectedProviderKeys) {
+                                  if (typeof key === 'string') {
+                                    const [app_type, id] = key.split('::');
+                                    if (id && app_type) {
+                                      await invoke('delete_ai_provider', { id, app_type });
+                                    }
+                                  }
+                                }
+                                const res = await invoke<AIProvider[]>('get_ai_providers');
+                                setProviders(res);
+                                setSelectedProviderKeys([]);
+                                messageApi.success(`成功删除了 ${selectedProviderKeys.length} 个模型`);
+
+                                // 如果默认模型被删除，且列表中还有模型，设置第一个为默认
+                                if (appConfig?.default_provider_id && selectedProviderKeys.includes(appConfig.default_provider_id)) {
+                                  if (res.length > 0) {
+                                    handleSetDefaultProvider(res[0].id, res[0].app_type);
+                                  } else {
+                                    const newConfig = { ...appConfig, default_provider_id: undefined } as AppConfig;
+                                    setAppConfig(newConfig);
+                                    invoke('save_config', { config: newConfig }).catch(console.error);
+                                  }
+                                }
+                              } catch (e) {
+                                messageApi.error(`批量删除失败: ${e}`);
+                              } finally {
+                                setBatchDeleting(false);
+                              }
+                            }}
+                          >
+                            <Button danger loading={batchDeleting} icon={<DeleteOutlined />}>
+                              批量删除 ({selectedProviderKeys.length})
+                            </Button>
+                          </Popconfirm>
+                        )}
+                        <Button
+                          type="primary"
+                          icon={<PlusOutlined />}
+                          onClick={() => {
+                            setEditingProvider({
+                              name: '',
+                              settings_config: JSON.stringify({ api_timeout: '3000000', disable_traffic: 1 }),
+                              app_type: 'ClaudeCode',
+                              cost_multiplier: '1.0',
+                              is_current: false,
+                              in_failover_queue: false,
+                              meta: '{}',
+                              endpoints: []
+                            });
+                            setProviderModalOpen(true);
+                          }}
+                        >
+                          添加 AI模型
+                        </Button>
+                        <Button
+                          icon={<ReloadOutlined />}
+                          onClick={handleRefreshProviders}
+                          loading={refreshingProviders}
+                          title="刷新列表"
+                        />
+                      </Space>
                     </div>
                     <Divider />
                     <Table
                       dataSource={providers}
-                      rowKey="id"
-                      pagination={false}
+                      rowKey={(record) => `${record.app_type}::${record.id}`}
+                      rowSelection={{
+                        selectedRowKeys: selectedProviderKeys,
+                        onChange: (newSelectedRowKeys) => {
+                          setSelectedProviderKeys(newSelectedRowKeys);
+                        },
+                      }}
+                      pagination={{ pageSize: 10, showSizeChanger: true }}
                       columns={[
                         {
                           title: '名称',
@@ -980,7 +1111,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           render: (text, record) => (
                             <Space>
                               {text}
-                              {appConfig?.default_provider_id === record.id && (
+                              {appConfig?.default_provider_id === `${record.app_type}::${record.id}` && (
                                 <Tag className="active-project-tag">默认</Tag>
                               )}
                             </Space>
@@ -988,21 +1119,31 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                         },
                         {
                           title: '官网',
-                          dataIndex: 'official_site',
-                          key: 'official_site',
+                          dataIndex: 'website_url',
+                          key: 'website_url',
                           render: (val) => val ? <a href={val} target="_blank" rel="noreferrer" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><InfoCircleOutlined /> 访问官网</a> : '-'
                         },
-                        { title: 'Base URL', dataIndex: 'base_url', key: 'base_url', render: (val) => val || '默认' },
+                        {
+                          title: 'Base URL',
+                          dataIndex: 'settings_config',
+                          key: 'base_url',
+                          render: (val) => {
+                            try {
+                              const s = JSON.parse(val);
+                              return s.base_url || '默认';
+                            } catch { return '默认'; }
+                          }
+                        },
                         {
                           title: '操作',
                           key: 'action',
                           width: 200,
                           render: (_, record) => (
                             <Space>
-                              {appConfig?.default_provider_id !== record.id && (
+                              {appConfig?.default_provider_id !== `${record.app_type}::${record.id}` && (
                                 <Button
                                   size="small"
-                                  onClick={() => handleSetDefaultProvider(record.id!)}
+                                  onClick={() => handleSetDefaultProvider(record.id, record.app_type)}
                                 >
                                   设为默认
                                 </Button>
@@ -1020,18 +1161,17 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 title="确定删除此 AI模型 吗？"
                                 onConfirm={async () => {
                                   try {
-                                    await invoke('delete_ai_provider', { id: record.id });
+                                    await invoke('delete_ai_provider', { id: record.id, app_type: record.app_type });
                                     setProviders(prev => {
-                                      const next = prev.filter(p => p.id !== record.id);
+                                      const next = prev.filter(p => p.id !== record.id || p.app_type !== record.app_type);
                                       // 如果删除的是默认，且还剩下一个，自动把剩下的设为默认
-                                      if (appConfig?.default_provider_id === record.id) {
+                                      if (appConfig?.default_provider_id === `${record.app_type}::${record.id}`) {
                                         if (next.length === 1) {
-                                          handleSetDefaultProvider(next[0].id!);
+                                          handleSetDefaultProvider(next[0].id, next[0].app_type);
                                         } else if (appConfig) {
-                                          // 否则清除默认
                                           const newConfig = { ...appConfig, default_provider_id: undefined } as AppConfig;
-                                          invoke('save_config', { config: newConfig });
                                           setAppConfig(newConfig);
+                                          invoke('save_config', { config: newConfig }).catch(console.error);
                                           form.setFieldsValue(newConfig);
                                         }
                                       }
@@ -1039,7 +1179,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                     });
                                     messageApi.success('已删除');
                                   } catch (e) {
-                                    messageApi.error(`删除失败: ${e}`);
+                                    messageApi.error(`删除失败: ${e} `);
                                   }
                                 }}
                               >
@@ -1264,7 +1404,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           onCancel={() => { setTestModalOpen(false); setCurlResult(''); }}
                           footer={null}
                           width={720}
-                          destroyOnClose
+                          destroyOnHidden
                           className="test-modal" styles={{ mask: { backdropFilter: "blur(4px)" }, header: { background: "transparent", borderBottom: 0, marginBottom: 0, paddingBottom: 0 }, content: { background: "var(--header-bg)" } }}
                         >
                           <Tabs
@@ -1732,7 +1872,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                             variant="filled"
                                             style={{ width: '100%', background: 'rgba(0, 0, 0, 0.2)', borderRadius: '4px' }}
                                             value={term.providerId || appConfig?.default_provider_id}
-                                            options={providers.map(p => ({ label: p.name, value: p.id }))}
+                                            options={providers.map(p => ({ label: p.name, value: `${p.app_type}::${p.id}` }))}
                                             onChange={(val) => {
                                               setProjectTerminals(prev => {
                                                 const current = prev[selectedProject!.path] || [];
@@ -1764,16 +1904,22 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                       {/* To maintain alignment we just replaced the overlay buttons */}
                                       <div style={{ flex: 1, display: (viewModes[term.id] || 'terminal') === 'terminal' ? 'block' : 'none' }}>
                                         {(() => {
-                                          const providerId = term.providerId || appConfig?.default_provider_id;
-                                          const provider = providers.find(p => p.id === providerId);
+                                          const providerIdStr = term.providerId || appConfig?.default_provider_id;
+                                          const provider = providers.find(p => `${p.app_type}::${p.id}` === providerIdStr);
                                           const envs: Record<string, string> = {};
                                           if (provider) {
-                                            envs["ANTHROPIC_AUTH_TOKEN"] = provider.api_key;
-                                            if (provider.base_url) envs["ANTHROPIC_BASE_URL"] = provider.base_url;
-                                            if (provider.model_id) envs["CLAUDE_CODE_MODEL_ID"] = provider.model_id;
-                                            if (provider.api_timeout) envs["API_TIMEOUT_MS"] = provider.api_timeout;
-                                            if (provider.disable_traffic !== undefined) {
-                                              envs["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = provider.disable_traffic.toString();
+                                            try {
+                                              const settings = JSON.parse(provider.settings_config || '{}');
+                                              envs["ANTHROPIC_AUTH_TOKEN"] = settings.api_key || '';
+                                              const baseUrl = provider.endpoints && provider.endpoints.length > 0 ? provider.endpoints[0].url : settings.base_url;
+                                              if (baseUrl) envs["ANTHROPIC_BASE_URL"] = baseUrl;
+                                              if (settings.model_id) envs["CLAUDE_CODE_MODEL_ID"] = settings.model_id;
+                                              if (settings.api_timeout) envs["API_TIMEOUT_MS"] = settings.api_timeout;
+                                              if (settings.disable_traffic !== undefined) {
+                                                envs["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = settings.disable_traffic.toString();
+                                              }
+                                            } catch (e) {
+                                              console.error("Failed to parse settings_config for provider:", provider.name, e);
                                             }
                                           }
                                           return (
@@ -2054,7 +2200,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         footer={
                                           <Button onClick={() => setHookDetailOpen(false)}>关闭</Button>
                                         }
-                                        destroyOnClose
+                                        destroyOnHidden
                                         width={800}
                                         className="hook-detail-modal"
                                       >
@@ -2498,7 +2644,26 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
               const values = providerForm.getFieldsValue();
               setTestingProvider(true);
               try {
-                const res = await invoke<string>('test_ai_provider_connection', { provider: { ...values, id: editingProvider?.id, disable_traffic: values.disable_traffic ? 1 : 0 } });
+                // 转换为 AIProvider 结构
+                const settings = {
+                  api_key: values.api_key,
+                  base_url: values.base_url,
+                  model_id: values.model_id,
+                  api_timeout: values.api_timeout,
+                  disable_traffic: values.disable_traffic ? 1 : 0
+                };
+                const provider = {
+                  ...values,
+                  id: editingProvider?.id || (window as any).crypto.randomUUID(),
+                  app_type: 'ClaudeCode', // 我们的默认类型
+                  settings_config: JSON.stringify(settings),
+                  meta: JSON.stringify({}),
+                  cost_multiplier: '1.0',
+                  is_current: false,
+                  in_failover_queue: false,
+                  endpoints: [{ url: values.base_url, provider_id: '', app_type: 'ClaudeCode', added_at: Date.now() }]
+                };
+                const res = await invoke<string>('test_ai_provider_connection', { provider });
                 messageApi.success(res);
               } catch (e) {
                 messageApi.error(String(e));
@@ -2509,27 +2674,50 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
             <Button key="cancel" onClick={() => setProviderModalOpen(false)}>取消</Button>,
             <Button key="ok" type="primary" onClick={() => providerForm.submit()}>确定</Button>
           ]}
-          destroyOnClose
+          destroyOnHidden
         >
           <Form
             form={providerForm}
             layout="vertical"
             key={editingProvider?.id || 'new'}
-            initialValues={editingProvider || { name: '', api_key: '', base_url: '', model_id: '', official_site: '', api_timeout: '3000000', disable_traffic: 1 }}
+            initialValues={editingProvider ? {
+              ...editingProvider,
+              ... (editingProvider.settings_config ? JSON.parse(editingProvider.settings_config) : {})
+            } : { name: '', api_key: '', base_url: '', model_id: '', website_url: '', api_timeout: '3000000', disable_traffic: 1 }}
             onFinish={async (values) => {
               try {
-                const res = await invoke<number>('upsert_ai_provider', {
-                  provider: { ...values, id: editingProvider?.id, disable_traffic: values.disable_traffic ? 1 : 0 }
-                });
-                const newProvider = { ...values, id: res, disable_traffic: values.disable_traffic ? 1 : 0 } as AIProvider;
+                const settings = {
+                  api_key: values.api_key,
+                  base_url: values.base_url,
+                  model_id: values.model_id,
+                  api_timeout: values.api_timeout,
+                  disable_traffic: values.disable_traffic ? 1 : 0
+                };
+                const newId = editingProvider?.id || (window as any).crypto.randomUUID();
+                const provider = {
+                  id: newId,
+                  app_type: editingProvider?.app_type || 'ClaudeCode',
+                  name: values.name,
+                  settings_config: JSON.stringify(settings),
+                  website_url: values.website_url,
+                  meta: editingProvider?.meta || JSON.stringify({}),
+                  cost_multiplier: editingProvider?.cost_multiplier || '1.0',
+                  is_current: editingProvider?.is_current || false,
+                  in_failover_queue: editingProvider?.in_failover_queue || false,
+                  created_at: editingProvider?.created_at || Date.now(),
+                  sort_index: editingProvider?.sort_index || 0,
+                  endpoints: editingProvider?.endpoints || [{ url: values.base_url, provider_id: newId, app_type: editingProvider?.app_type || 'ClaudeCode', added_at: Date.now() }]
+                } as AIProvider;
+
+                await invoke('upsert_ai_provider', { provider });
+
                 if (editingProvider?.id) {
-                  setProviders(prev => prev.map(p => p.id === editingProvider.id ? newProvider : p));
+                  setProviders(prev => prev.map(p => (p.id === editingProvider.id && p.app_type === editingProvider.app_type) ? provider : p));
                 } else {
                   setProviders(prev => {
-                    const next = [...prev, newProvider];
-                    // 如果是第一个 provider，自动设为默认
+                    const next = [...prev, provider];
                     if (next.length === 1) {
-                      handleSetDefaultProvider(res);
+                      handleSetDefaultProvider(provider.id, provider.app_type);
                     }
                     return next;
                   });
@@ -2537,7 +2725,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                 setProviderModalOpen(false);
                 messageApi.success('保存成功');
               } catch (e) {
-                messageApi.error(`保存失败: ${e}`);
+                messageApi.error(`保存失败: ${e} `);
               }
             }}
           >
@@ -2553,7 +2741,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
             <Form.Item name="model_id" label="Model ID">
               <Input placeholder="例如: claude-3-5-sonnet-20241022 (可选)" />
             </Form.Item>
-            <Form.Item name="official_site" label="官网">
+            <Form.Item name="website_url" label="官网">
               <Input placeholder="Provider 官网链接 (可选)" />
             </Form.Item>
             <Form.Item name="api_timeout" label="超时时间 (ms)">
