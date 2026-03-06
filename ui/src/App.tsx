@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm } from 'antd';
+import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select } from 'antd';
 import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, HomeOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -28,6 +28,18 @@ interface AppConfig {
   terminal_bg_color?: string;
   terminal_fg_color?: string;
   terminal_font_size?: number;
+  default_provider_id?: number;
+}
+
+interface AIProvider {
+  id?: number;
+  name: string;
+  api_key: string;
+  base_url: string;
+  model_id?: string;
+  official_site?: string;
+  api_timeout: string;
+  disable_traffic: number;
 }
 
 interface Project {
@@ -70,6 +82,7 @@ interface SessionInfo {
 function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsDarkMode: (v: boolean) => void }) {
   const { message: messageApi, modal: modalApi } = AntApp.useApp();
   const [form] = Form.useForm();
+  const [providerForm] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [testingConnection, setTestingConnection] = useState(false);
   const [activeMenu, setActiveMenu] = useState<string>('project');
@@ -82,8 +95,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   interface TerminalTab {
     id: string;
     title: string | React.ReactNode;
+    providerId?: number;
   }
   const [projectTerminals, setProjectTerminals] = useState<Record<string, TerminalTab[]>>({});
+  const [providers, setProviders] = useState<AIProvider[]>([]);
+  const [providersLoaded, setProvidersLoaded] = useState(false);
+  const [providerModalOpen, setProviderModalOpen] = useState(false);
+  const [editingProvider, setEditingProvider] = useState<Partial<AIProvider> | null>(null);
+  const [testingProvider, setTestingProvider] = useState(false);
   const [activeTerminalId, setActiveTerminalId] = useState<Record<string, string>>({});
   const [externalFileTabs, setExternalFileTabs] = useState<{ path: string, folderPath: string }[]>([]);
   const [showDetailTab, setShowDetailTab] = useState<Record<string, boolean>>({});
@@ -124,7 +143,19 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     return ['50%', '50%'];
   });
 
-  // Auto-save window size on resize with a 500ms debounce
+  useEffect(() => {
+    if (tauriAvailable) {
+      invoke<AIProvider[]>('get_ai_providers').then(res => {
+        setProviders(res);
+        setProvidersLoaded(true);
+        // 如果只有一个 provider 且没有默认设置，自动将其设为默认
+        if (res.length === 1 && appConfig && !appConfig.default_provider_id) {
+          handleSetDefaultProvider(res[0].id!);
+        }
+      }).catch(e => console.error('Failed to fetch AI providers:', e));
+    }
+  }, [tauriAvailable, appConfig?.default_provider_id]);
+
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let timeoutId: NodeJS.Timeout;
@@ -570,6 +601,19 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     });
   };
 
+  const handleSetDefaultProvider = async (id: number) => {
+    if (!tauriAvailable || !appConfig) return;
+    try {
+      const newConfig = { ...appConfig, default_provider_id: id };
+      await invoke('save_config', { config: newConfig });
+      setAppConfig(newConfig);
+      form.setFieldsValue(newConfig);
+      // messageApi.success('已设为默认');
+    } catch (e) {
+      console.error('Failed to set default provider:', e);
+    }
+  };
+
   const handleSave = async (values: any) => {
     if (!tauriAvailable) {
       messageApi.warning('请在桌面应用中保存配置');
@@ -807,6 +851,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                 style={{ height: '100%', borderRight: 0 }}
                 items={[
                   { key: 'project', icon: <ProjectOutlined />, label: '项目' },
+                  { key: 'ai-models', icon: <ApiOutlined />, label: 'AI模型' },
                   { key: 'settings', icon: <SettingOutlined />, label: '设置' },
                   { key: 'help', icon: <EyeOutlined />, label: '帮助' },
                 ]}
@@ -896,6 +941,115 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                         ]}
                       />
                     )}
+                  </Card>
+                </div>
+              )}
+
+              {activeMenu === 'ai-models' && (
+                <div className="ai-models-page">
+                  <Card className="projects-card" variant="borderless" style={{ height: 'auto', flex: 1 }}>
+                    <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <ApiOutlined className="card-icon" />
+                        <div>
+                          <h2 style={{ margin: 0 }}>AI模型</h2>
+                          <p className="card-description" style={{ margin: 0 }}>管理 Claude Code 的环境变量预设</p>
+                        </div>
+                      </div>
+                      <Button
+                        type="primary"
+                        icon={<PlusOutlined />}
+                        onClick={() => {
+                          setEditingProvider({ name: '', api_key: '', base_url: '', api_timeout: '3000000', disable_traffic: 1 });
+                          setProviderModalOpen(true);
+                        }}
+                      >
+                        添加 AI模型
+                      </Button>
+                    </div>
+                    <Divider />
+                    <Table
+                      dataSource={providers}
+                      rowKey="id"
+                      pagination={false}
+                      columns={[
+                        {
+                          title: '名称',
+                          dataIndex: 'name',
+                          key: 'name',
+                          render: (text, record) => (
+                            <Space>
+                              {text}
+                              {appConfig?.default_provider_id === record.id && (
+                                <Tag className="active-project-tag">默认</Tag>
+                              )}
+                            </Space>
+                          )
+                        },
+                        {
+                          title: '官网',
+                          dataIndex: 'official_site',
+                          key: 'official_site',
+                          render: (val) => val ? <a href={val} target="_blank" rel="noreferrer" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><InfoCircleOutlined /> 访问官网</a> : '-'
+                        },
+                        { title: 'Base URL', dataIndex: 'base_url', key: 'base_url', render: (val) => val || '默认' },
+                        {
+                          title: '操作',
+                          key: 'action',
+                          width: 200,
+                          render: (_, record) => (
+                            <Space>
+                              {appConfig?.default_provider_id !== record.id && (
+                                <Button
+                                  size="small"
+                                  onClick={() => handleSetDefaultProvider(record.id!)}
+                                >
+                                  设为默认
+                                </Button>
+                              )}
+                              <Button
+                                size="small"
+                                type="text"
+                                icon={<EditOutlined />}
+                                onClick={() => {
+                                  setEditingProvider(record);
+                                  setProviderModalOpen(true);
+                                }}
+                              />
+                              <Popconfirm
+                                title="确定删除此 AI模型 吗？"
+                                onConfirm={async () => {
+                                  try {
+                                    await invoke('delete_ai_provider', { id: record.id });
+                                    setProviders(prev => {
+                                      const next = prev.filter(p => p.id !== record.id);
+                                      // 如果删除的是默认，且还剩下一个，自动把剩下的设为默认
+                                      if (appConfig?.default_provider_id === record.id) {
+                                        if (next.length === 1) {
+                                          handleSetDefaultProvider(next[0].id!);
+                                        } else if (appConfig) {
+                                          // 否则清除默认
+                                          const newConfig = { ...appConfig, default_provider_id: undefined } as AppConfig;
+                                          invoke('save_config', { config: newConfig });
+                                          setAppConfig(newConfig);
+                                          form.setFieldsValue(newConfig);
+                                        }
+                                      }
+                                      return next;
+                                    });
+                                    messageApi.success('已删除');
+                                  } catch (e) {
+                                    messageApi.error(`删除失败: ${e}`);
+                                  }
+                                }}
+                              >
+                                <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                              </Popconfirm>
+                            </Space>
+                          )
+                        }
+                      ]}
+                    />
                   </Card>
                 </div>
               )}
@@ -1571,6 +1725,23 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         zIndex: 100,
                                         alignItems: 'center'
                                       }}>
+                                        <div style={{ marginRight: '8px', minWidth: '120px' }}>
+                                          <Select
+                                            size="small"
+                                            placeholder="选择 AI Provider"
+                                            variant="filled"
+                                            style={{ width: '100%', background: 'rgba(0, 0, 0, 0.2)', borderRadius: '4px' }}
+                                            value={term.providerId || appConfig?.default_provider_id}
+                                            options={providers.map(p => ({ label: p.name, value: p.id }))}
+                                            onChange={(val) => {
+                                              setProjectTerminals(prev => {
+                                                const current = prev[selectedProject!.path] || [];
+                                                const next = current.map(t => t.id === term.id ? { ...t, providerId: val } : t);
+                                                return { ...prev, [selectedProject!.path]: next };
+                                              });
+                                            }}
+                                          />
+                                        </div>
                                         <ContextDonut
                                           projectPath={selectedProject!.path}
                                         />
@@ -1592,60 +1763,77 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                       </div>
                                       {/* To maintain alignment we just replaced the overlay buttons */}
                                       <div style={{ flex: 1, display: (viewModes[term.id] || 'terminal') === 'terminal' ? 'block' : 'none' }}>
-                                        <TerminalComponent
-                                          projectPath={selectedProject!.path}
-                                          terminalId={term.id}
-                                          title={term.title as string}
-                                          onData={handleTerminalInput}
-                                          onLinkClick={async (path) => {
-                                            // Validate file exists before opening
-                                            try {
-                                              const exists = await invoke<boolean>('check_file_exists', { file_path: path });
-                                              if (!exists) {
-                                                messageApi.warning(`文件路径不存在: ${path}，Claude 可能省略了上级目录，请使用准确路径`);
-                                                return;
-                                              }
-                                            } catch (e) {
-                                              console.error('Failed to check file existence:', e);
+                                        {(() => {
+                                          const providerId = term.providerId || appConfig?.default_provider_id;
+                                          const provider = providers.find(p => p.id === providerId);
+                                          const envs: Record<string, string> = {};
+                                          if (provider) {
+                                            envs["ANTHROPIC_AUTH_TOKEN"] = provider.api_key;
+                                            if (provider.base_url) envs["ANTHROPIC_BASE_URL"] = provider.base_url;
+                                            if (provider.model_id) envs["CLAUDE_CODE_MODEL_ID"] = provider.model_id;
+                                            if (provider.api_timeout) envs["API_TIMEOUT_MS"] = provider.api_timeout;
+                                            if (provider.disable_traffic !== undefined) {
+                                              envs["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = provider.disable_traffic.toString();
                                             }
-
-                                            if (path.startsWith(selectedProject!.path)) {
-                                              console.log('Invoking open_in_coder with path:', path);
-                                              invoke('open_in_coder', { file_path: path }).catch((err) => {
-                                                console.error('Failed to open file in Coder IDE:', err);
-                                              });
-                                            } else {
-                                              console.log('Path is outside project, opening in new tab:', path);
-                                              const folderPath = path.substring(0, path.lastIndexOf('/'));
-                                              setExternalFileTabs(prev => {
-                                                if (!prev.some(tab => tab.path === path)) {
-                                                  return [...prev, { path, folderPath }];
+                                          }
+                                          return (
+                                            <TerminalComponent
+                                              projectPath={selectedProject!.path}
+                                              terminalId={term.id}
+                                              title={term.title as string}
+                                              onData={handleTerminalInput}
+                                              onLinkClick={async (path) => {
+                                                // Validate file exists before opening
+                                                try {
+                                                  const exists = await invoke<boolean>('check_file_exists', { path });
+                                                  if (!exists) {
+                                                    messageApi.warning(`文件路径不存在: ${path}，Claude 可能省略了上级目录，请使用准确路径`);
+                                                    return;
+                                                  }
+                                                } catch (e) {
+                                                  console.error('Failed to check file existence:', e);
                                                 }
-                                                return prev;
-                                              });
-                                              setActiveTerminalId(prev => ({
-                                                ...prev,
-                                                [selectedProject!.path]: `vscode-external-${path}`
-                                              }));
-                                              setTimeout(() => {
-                                                invoke('open_in_coder', { file_path: path }).catch((err) => {
-                                                  console.error('Failed to open external file in Coder IDE:', err);
-                                                });
-                                              }, 500);
-                                            }
-                                          }}
-                                          mergeTop
-                                          historyLines={terminalHistory[selectedProject!.path] || []}
-                                          fullscreen={terminalFullscreen}
-                                          theme={{
-                                            background: appConfig?.terminal_bg_color,
-                                            foreground: appConfig?.terminal_fg_color,
-                                            fontSize: appConfig?.terminal_font_size,
-                                          }}
-                                          ref={(el) => {
-                                            if (el) terminalRefs.current[term.id] = el;
-                                          }}
-                                        />
+
+                                                if (path.startsWith(selectedProject!.path)) {
+                                                  console.log('Invoking open_in_coder with path:', path);
+                                                  invoke('open_in_coder', { path, projectPath: selectedProject!.path }).catch((err) => {
+                                                    console.error('Failed to open file in Coder IDE:', err);
+                                                  });
+                                                } else {
+                                                  console.log('Path is outside project, opening in new tab:', path);
+                                                  const folderPath = path.substring(0, path.lastIndexOf('/'));
+                                                  setExternalFileTabs(prev => {
+                                                    if (!prev.some(tab => tab.path === path)) {
+                                                      return [...prev, { path, folderPath }];
+                                                    }
+                                                    return prev;
+                                                  });
+                                                  setActiveTerminalId(prev => ({
+                                                    ...prev,
+                                                    [selectedProject!.path]: `vscode-external-${path}`
+                                                  }));
+                                                  setTimeout(() => {
+                                                    invoke('open_in_coder', { path, projectPath: selectedProject!.path }).catch((err) => {
+                                                      console.error('Failed to open external file in Coder IDE:', err);
+                                                    });
+                                                  }, 500);
+                                                }
+                                              }}
+                                              ref={(el) => {
+                                                if (el) terminalRefs.current[term.id] = el;
+                                              }}
+                                              mergeTop
+                                              historyLines={terminalHistory[term.id] || []}
+                                              fullscreen={terminalFullscreen}
+                                              theme={{
+                                                background: appConfig?.terminal_bg_color,
+                                                foreground: appConfig?.terminal_fg_color,
+                                                fontSize: appConfig?.terminal_font_size,
+                                              }}
+                                              envs={envs}
+                                            />
+                                          );
+                                        })()}
                                       </div>
                                       {viewModes[term.id] === 'chat' && (
                                         <ChatView projectPath={selectedProject!.path} activeTerminalId={term.id} />
@@ -2081,7 +2269,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                               <Slider min={10} max={24} step={1} defaultValue={13} tooltip={{ formatter: (val) => `${val}px` }} style={{ margin: '14px 8px 10px 8px' }} />
                                             </Form.Item>
                                             <Tag style={{ margin: 0, padding: '0 8px', borderRadius: '4px', minWidth: '36px', textAlign: 'center' }}>
-                                              {watchedFontSize ?? 13}px
+                                              {watchedFontSize || 13}
                                             </Tag>
                                           </div>
                                         </Card>
@@ -2089,12 +2277,26 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                     </Form.Item>
 
                                     <Divider style={{ margin: '24px 0 16px 0' }} />
-                                    <div className="action-buttons" style={{ marginTop: 0, display: 'flex', gap: '12px' }}>
-                                      <Button type="primary" icon={<SaveOutlined />} onClick={() => handleSave(form.getFieldsValue())} loading={loading} size="large">保存设置</Button>
-                                    </div>
-
+                                    <Form.Item
+                                      label={
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <span style={{ fontSize: '15px', fontWeight: 500 }}>默认 AI Provider</span>
+                                          </div>
+                                          <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 'normal' }}>新终端将默认使用此 Provider 的配置</span>
+                                        </div>
+                                      }
+                                      name="default_provider_id"
+                                    >
+                                      <Select
+                                        placeholder="选择默认 Provider"
+                                        allowClear
+                                        style={{ width: '100%', maxWidth: '400px' }}
+                                        options={providers.map(p => ({ label: p.name, value: p.id }))}
+                                      />
+                                    </Form.Item>
                                   </Card>
-                                )
+                                ),
                               },
                               {
                                 key: 'channel',
@@ -2287,6 +2489,81 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
           </div>
         </Modal>
 
+        <Modal
+          title={editingProvider?.id ? '编辑 AI模型' : '添加 AI模型'}
+          open={providerModalOpen}
+          onCancel={() => setProviderModalOpen(false)}
+          footer={[
+            <Button key="test" loading={testingProvider} icon={<ThunderboltOutlined />} onClick={async () => {
+              const values = providerForm.getFieldsValue();
+              setTestingProvider(true);
+              try {
+                const res = await invoke<string>('test_ai_provider_connection', { provider: { ...values, id: editingProvider?.id, disable_traffic: values.disable_traffic ? 1 : 0 } });
+                messageApi.success(res);
+              } catch (e) {
+                messageApi.error(String(e));
+              } finally {
+                setTestingProvider(false);
+              }
+            }}>测试连接</Button>,
+            <Button key="cancel" onClick={() => setProviderModalOpen(false)}>取消</Button>,
+            <Button key="ok" type="primary" onClick={() => providerForm.submit()}>确定</Button>
+          ]}
+          destroyOnClose
+        >
+          <Form
+            form={providerForm}
+            layout="vertical"
+            key={editingProvider?.id || 'new'}
+            initialValues={editingProvider || { name: '', api_key: '', base_url: '', model_id: '', official_site: '', api_timeout: '3000000', disable_traffic: 1 }}
+            onFinish={async (values) => {
+              try {
+                const res = await invoke<number>('upsert_ai_provider', {
+                  provider: { ...values, id: editingProvider?.id, disable_traffic: values.disable_traffic ? 1 : 0 }
+                });
+                const newProvider = { ...values, id: res, disable_traffic: values.disable_traffic ? 1 : 0 } as AIProvider;
+                if (editingProvider?.id) {
+                  setProviders(prev => prev.map(p => p.id === editingProvider.id ? newProvider : p));
+                } else {
+                  setProviders(prev => {
+                    const next = [...prev, newProvider];
+                    // 如果是第一个 provider，自动设为默认
+                    if (next.length === 1) {
+                      handleSetDefaultProvider(res);
+                    }
+                    return next;
+                  });
+                }
+                setProviderModalOpen(false);
+                messageApi.success('保存成功');
+              } catch (e) {
+                messageApi.error(`保存失败: ${e}`);
+              }
+            }}
+          >
+            <Form.Item name="name" label="名称" rules={[{ required: true }]}>
+              <Input placeholder="例如: Official Claude" />
+            </Form.Item>
+            <Form.Item name="api_key" label="API Key" rules={[{ required: true }]}>
+              <Input.Password placeholder="ANTHROPIC_AUTH_TOKEN" />
+            </Form.Item>
+            <Form.Item name="base_url" label="Base URL">
+              <Input placeholder="ANTHROPIC_BASE_URL (可选)" />
+            </Form.Item>
+            <Form.Item name="model_id" label="Model ID">
+              <Input placeholder="例如: claude-3-5-sonnet-20241022 (可选)" />
+            </Form.Item>
+            <Form.Item name="official_site" label="官网">
+              <Input placeholder="Provider 官网链接 (可选)" />
+            </Form.Item>
+            <Form.Item name="api_timeout" label="超时时间 (ms)">
+              <Input placeholder="API_TIMEOUT_MS (默认 3000000)" />
+            </Form.Item>
+            <Form.Item name="disable_traffic" label="禁用非必要流量" valuePropName="checked">
+              <Switch />
+            </Form.Item>
+          </Form>
+        </Modal>
       </div >
     </ConfigProvider >
   );

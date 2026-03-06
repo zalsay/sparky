@@ -21,6 +21,7 @@ interface TerminalProps {
     foreground?: string;
     fontSize?: number;
   };
+  envs?: Record<string, string>;
 }
 
 export interface TerminalRef {
@@ -99,7 +100,7 @@ function getOrCreateTerminal(terminalId: string, title?: string, themeVals?: { b
   return created;
 }
 
-export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent({ projectPath, terminalId, title, onData, onLinkClick, mergeTop, historyLines, fullscreen, theme }: TerminalProps, ref) {
+export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent({ projectPath, terminalId, title, onData, onLinkClick, mergeTop, historyLines, fullscreen, theme, envs }: TerminalProps, ref) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -107,7 +108,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
   const onLinkClickRef = useRef(onLinkClick);
 
 
-  const { startPty, write, clearPty } = usePty();
+  const { startPty, write, clearPty } = usePty(terminalId, projectPath, envs);
 
   useImperativeHandle(ref, () => ({
     scrollToBottom: () => {
@@ -375,7 +376,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
     resizeObserver.observe(container);
 
     // Start PTY, then mark ready and do initial fit
-    startPty(projectPath, terminalId).then((result) => {
+    startPty().then((result) => {
       if (!disposed && result) {
         ptyReady = true;
         setTimeout(() => {

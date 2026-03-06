@@ -44,6 +44,19 @@ pub struct AppConfig {
     pub terminal_bg_color: Option<String>,
     pub terminal_fg_color: Option<String>,
     pub terminal_font_size: Option<i64>,
+    pub default_provider_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AIProvider {
+    pub id: Option<i64>,
+    pub name: String,
+    pub api_key: String,
+    pub base_url: String,
+    pub model_id: Option<String>,
+    pub official_site: Option<String>,
+    pub api_timeout: String,
+    pub disable_traffic: i32, // 0 for false, 1 for true
 }
 
 impl Default for AppConfig {
@@ -62,6 +75,7 @@ impl Default for AppConfig {
             terminal_bg_color: None,
             terminal_fg_color: None,
             terminal_font_size: None,
+            default_provider_id: None,
         }
     }
 }
@@ -278,7 +292,21 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
             project_path TEXT,
             open_id TEXT,
             hook_events_filter TEXT,
-            updated_at INTEGER NOT NULL
+            updated_at INTEGER NOT NULL,
+            default_provider_id INTEGER
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS ai_providers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            api_key TEXT NOT NULL,
+            base_url TEXT NOT NULL,
+            model_id TEXT,
+            api_timeout TEXT NOT NULL,
+            disable_traffic INTEGER NOT NULL DEFAULT 0
         )",
         [],
     )?;
@@ -291,6 +319,9 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN terminal_bg_color TEXT", []);
     let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN terminal_fg_color TEXT", []);
     let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN terminal_font_size INTEGER", []);
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN official_site TEXT", []);
+    let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN default_provider_id INTEGER", []);
+    let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN model_id TEXT", []);
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS app_config_dingtalk (
@@ -489,6 +520,7 @@ fn load_config_from_table(conn: &Connection, table_name: &str) -> Result<Option<
             terminal_bg_color: None,
             terminal_fg_color: None,
             terminal_font_size: None,
+            default_provider_id: None,
         }))
     } else {
         Ok(None)
@@ -532,6 +564,7 @@ fn load_config_from_db(conn: &Connection) -> Result<Option<AppConfig>, String> {
             terminal_bg_color: row.get(10).ok(),
             terminal_fg_color: row.get(11).ok(),
             terminal_font_size: row.get(12).ok(),
+            default_provider_id: row.get(13).ok(),
         }))
     } else {
         Ok(None)
@@ -544,8 +577,8 @@ fn upsert_config(conn: &Connection, config: &AppConfig) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .as_secs() as i64;
     conn.execute(
-        "INSERT INTO app_config_feishu (id, app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name, terminal_bg_color, terminal_fg_color, terminal_font_size, updated_at)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "INSERT INTO app_config_feishu (id, app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name, terminal_bg_color, terminal_fg_color, terminal_font_size, default_provider_id, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
          ON CONFLICT(id) DO UPDATE SET
            app_id = excluded.app_id,
            app_secret = excluded.app_secret,
@@ -556,9 +589,11 @@ fn upsert_config(conn: &Connection, config: &AppConfig) -> Result<(), String> {
            project_path = excluded.project_path,
            open_id = COALESCE(excluded.open_id, app_config_feishu.open_id),
            hook_events_filter = excluded.hook_events_filter,
+           anthropic_logo_img_key = excluded.anthropic_logo_img_key,
            terminal_bg_color = excluded.terminal_bg_color,
            terminal_fg_color = excluded.terminal_fg_color,
            terminal_font_size = excluded.terminal_font_size,
+           default_provider_id = excluded.default_provider_id,
            updated_at = excluded.updated_at",
         params![
             config.app_id,
@@ -573,6 +608,7 @@ fn upsert_config(conn: &Connection, config: &AppConfig) -> Result<(), String> {
             config.terminal_bg_color,
             config.terminal_fg_color,
             config.terminal_font_size,
+            config.default_provider_id,
             now
         ],
     )
@@ -951,6 +987,97 @@ fn save_config(config: AppConfig) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command(rename_all = "snake_case")]
+fn get_ai_providers() -> Result<Vec<AIProvider>, String> {
+    let conn = open_db()?;
+    let mut stmt = conn.prepare("SELECT id, name, api_key, base_url, model_id, api_timeout, disable_traffic, official_site FROM ai_providers ORDER BY id ASC")
+        .map_err(|e| e.to_string())?;
+    
+    let rows = stmt.query_map([], |row| {
+        Ok(AIProvider {
+            id: Some(row.get(0)?),
+            name: row.get(1)?,
+            api_key: row.get(2)?,
+            base_url: row.get(3)?,
+            model_id: row.get(4).ok(),
+            api_timeout: row.get(5)?,
+            disable_traffic: row.get(6)?,
+            official_site: row.get::<_, Option<String>>(7).ok().flatten(),
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut providers = Vec::new();
+    for row in rows {
+        providers.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(providers)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn upsert_ai_provider(provider: AIProvider) -> Result<i64, String> {
+    let conn = open_db()?;
+    if let Some(id) = provider.id {
+        conn.execute(
+            "UPDATE ai_providers SET name=?1, api_key=?2, base_url=?3, model_id=?4, api_timeout=?5, disable_traffic=?6, official_site=?7 WHERE id=?8",
+            params![provider.name, provider.api_key, provider.base_url, provider.model_id, provider.api_timeout, provider.disable_traffic, provider.official_site, id],
+        ).map_err(|e| e.to_string())?;
+        Ok(id)
+    } else {
+        conn.execute(
+            "INSERT INTO ai_providers (name, api_key, base_url, model_id, api_timeout, disable_traffic, official_site) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![provider.name, provider.api_key, provider.base_url, provider.model_id, provider.api_timeout, provider.disable_traffic, provider.official_site],
+        ).map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn test_ai_provider_connection(provider: AIProvider) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let url = if provider.base_url.is_empty() {
+        "https://api.anthropic.com/v1/messages".to_string()
+    } else {
+        let base = provider.base_url.trim_end_matches('/');
+        if base.contains("/v1/messages") {
+            base.to_string()
+        } else {
+            format!("{}/v1/messages", base)
+        }
+    };
+
+    let model = provider.model_id.unwrap_or_else(|| "claude-3-5-sonnet-20241022".to_string());
+    
+    let res = client.post(&url)
+        .header("x-api-key", &provider.api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({
+            "model": model,
+            "max_tokens": 10,
+            "messages": [
+                {"role": "user", "content": "Hi"}
+            ]
+        }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if res.status().is_success() {
+        Ok("成功: 已成功连接至模型服务。".to_string())
+    } else {
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        Err(format!("失败 ({}): {}", status, body))
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn delete_ai_provider(id: i64) -> Result<(), String> {
+    let conn = open_db()?;
+    conn.execute("DELETE FROM ai_providers WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn find_executable(cmd_name: &str) -> Option<String> {
     // 1. Try standard which (relies on current PATH)
     if let Ok(out) = std::process::Command::new("which").arg(cmd_name).output() {
@@ -1019,7 +1146,6 @@ pub fn find_executable(cmd_name: &str) -> Option<String> {
 
 #[tauri::command(rename_all = "snake_case")]
 fn check_file_exists(file_path: String) -> Result<bool, String> {
-    let path = std::path::Path::new(&file_path);
     // Strip :line:col suffix if present (e.g. path/to/file.tsx:650)
     let clean_path_str = file_path.split(':').next().unwrap_or(&file_path);
     let clean_path = std::path::Path::new(clean_path_str);
@@ -1591,7 +1717,7 @@ pub struct HookRecordsResponse {
 async fn notify_project_active(
     project_name: String,
     project_path: String,
-    manager: tauri::State<'_, PtyManager>,
+    _manager: tauri::State<'_, PtyManager>,
 ) -> Result<(), String> {
     let config = get_config()?;
     let (receive_id, receive_id_type) = if let Some(id) = config.chat_id.filter(|id| !id.is_empty()) {
@@ -2605,6 +2731,10 @@ pub fn run() {
             send_feishu_message,
             upload_anthropic_logo,
             get_hook_records,
+            get_ai_providers,
+            upsert_ai_provider,
+            delete_ai_provider,
+            test_ai_provider_connection,
             get_hook_status,
             delete_hook_record,
             delete_hook_records,
