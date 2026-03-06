@@ -138,6 +138,7 @@ pub struct AppState {
     pub event_tx: mpsc::Sender<String>,
     pub active_project: Arc<StdMutex<Option<String>>>,
     pub pending_selections: Arc<StdMutex<HashMap<String, Vec<String>>>>,
+    pub active_terminal_id: Arc<StdMutex<Option<String>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2222,6 +2223,14 @@ async fn set_active_project(state: tauri::State<'_, Arc<AppState>>, project_path
 }
 
 #[tauri::command(rename_all = "snake_case")]
+async fn set_active_terminal_id(state: tauri::State<'_, Arc<AppState>>, terminal_id: String) -> Result<(), String> {
+    log::info!("Setting active terminal ID to: {}", terminal_id);
+    let mut active = state.active_terminal_id.lock().unwrap();
+    *active = Some(terminal_id);
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
 async fn save_window_size(window: tauri::Window) -> Result<(), String> {
     let size = window.inner_size().map_err(|e| e.to_string())?;
     let conn = open_db()?;
@@ -2292,6 +2301,7 @@ pub fn run() {
         event_tx,
         active_project: Arc::new(std::sync::Mutex::new(None)),
         pending_selections: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        active_terminal_id: Arc::new(std::sync::Mutex::new(None)),
     });
 
     let ws_connected = Arc::new(AtomicBool::new(false));
@@ -2403,6 +2413,135 @@ pub fn run() {
                 }
             });
 
+            // Start HTTP listener for extension -> terminal communication
+            let app_handle_for_http = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use tokio::net::TcpListener;
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+                let listener = match TcpListener::bind("127.0.0.1:18081").await {
+                    Ok(l) => {
+                        log::info!("Extension HTTP endpoint listening on 127.0.0.1:18081");
+                        l
+                    }
+                    Err(e) => {
+                        log::error!("Failed to bind extension HTTP listener: {}", e);
+                        return;
+                    }
+                };
+
+                loop {
+                    let (mut stream, _) = match listener.accept().await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            log::error!("Failed to accept connection: {}", e);
+                            continue;
+                        }
+                    };
+
+                    let app = app_handle_for_http.clone();
+                    tokio::spawn(async move {
+                        let mut buf = vec![0u8; 8192];
+                        let mut request = Vec::new();
+
+                        // Read the full request
+                        loop {
+                            match stream.read(&mut buf).await {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    request.extend_from_slice(&buf[..n]);
+                                    // Check if we have the full request (headers + body)
+                                    let req_str = String::from_utf8_lossy(&request);
+                                    if let Some(header_end) = req_str.find("\r\n\r\n") {
+                                        // Check Content-Length
+                                        let headers = &req_str[..header_end];
+                                        if let Some(cl_line) = headers.lines().find(|l| l.to_lowercase().starts_with("content-length:")) {
+                                            if let Ok(cl) = cl_line.split(':').nth(1).unwrap_or("0").trim().parse::<usize>() {
+                                                let body_start = header_end + 4;
+                                                if request.len() >= body_start + cl {
+                                                    break;
+                                                }
+                                                continue;
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+
+                        let req_str = String::from_utf8_lossy(&request).to_string();
+
+                        // Parse method and path
+                        let first_line = req_str.lines().next().unwrap_or("");
+                        let is_post_send = first_line.starts_with("POST /send-to-terminal");
+                        let is_options = first_line.starts_with("OPTIONS");
+
+                        let cors_headers = "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n";
+
+                        if is_options {
+                            let response = format!("HTTP/1.1 204 No Content\r\n{}\r\n", cors_headers);
+                            let _ = stream.write_all(response.as_bytes()).await;
+                            return;
+                        }
+
+                        if !is_post_send {
+                            let response = format!("HTTP/1.1 404 Not Found\r\n{}Content-Length: 9\r\n\r\nNot Found", cors_headers);
+                            let _ = stream.write_all(response.as_bytes()).await;
+                            return;
+                        }
+
+                        // Extract JSON body
+                        let body = if let Some(pos) = req_str.find("\r\n\r\n") {
+                            &req_str[pos + 4..]
+                        } else {
+                            ""
+                        };
+
+                        #[derive(Deserialize)]
+                        struct SendRequest {
+                            code: String,
+                        }
+
+                        let parsed: Result<SendRequest, _> = serde_json::from_str(body);
+                        match parsed {
+                            Ok(req) => {
+                                let state = app.state::<Arc<AppState>>();
+                                let terminal_id = state.active_terminal_id.lock().unwrap().clone();
+
+                                if let Some(tid) = terminal_id {
+                                    let manager = app.state::<PtyManager>();
+                                    let safe_data = req.code.replace('\r', " ").replace('\n', " ");
+                                    match manager.write(&tid, &safe_data) {
+                                        Ok(_) => {
+                                            log::info!("Extension sent code to terminal {}", tid);
+                                            let response = format!("HTTP/1.1 200 OK\r\n{}Content-Type: application/json\r\nContent-Length: 15\r\n\r\n{{\"status\":\"ok\"}}", cors_headers);
+                                            let _ = stream.write_all(response.as_bytes()).await;
+                                        }
+                                        Err(e) => {
+                                            log::error!("Failed to write to terminal: {}", e);
+                                            let body = format!("{{\"error\":\"{}\"}}", e);
+                                            let response = format!("HTTP/1.1 500 Internal Server Error\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", cors_headers, body.len(), body);
+                                            let _ = stream.write_all(response.as_bytes()).await;
+                                        }
+                                    }
+                                } else {
+                                    let body = "{\"error\":\"No active terminal\"}";
+                                    let response = format!("HTTP/1.1 400 Bad Request\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", cors_headers, body.len(), body);
+                                    let _ = stream.write_all(response.as_bytes()).await;
+                                }
+                            }
+                            Err(e) => {
+                                let body = format!("{{\"error\":\"Invalid JSON: {}\"}}", e);
+                                let response = format!("HTTP/1.1 400 Bad Request\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", cors_headers, body.len(), body);
+                                let _ = stream.write_all(response.as_bytes()).await;
+                            }
+                        }
+                    });
+                }
+            });
+
             // 启动时自动连接飞书 WSS
             let app_handle_for_ws = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -2505,7 +2644,8 @@ pub fn run() {
             check_dependencies,
             check_code_server_connection,
             install_code_server,
-            get_latest_claude_jsonl
+            get_latest_claude_jsonl,
+            set_active_terminal_id
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

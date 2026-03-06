@@ -296,6 +296,16 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     return () => window.removeEventListener('message', handleMessage);
   }, [activeMenu, selectedProject, activeTerminalId, tauriAvailable]);
 
+  // Sync active terminal ID to backend for HTTP endpoint (extension -> terminal)
+  useEffect(() => {
+    if (!tauriAvailable || !selectedProject) return;
+    const activeTid = activeTerminalId[selectedProject.path];
+    if (activeTid) {
+      invoke('set_active_terminal_id', { terminal_id: activeTid })
+        .catch(err => console.error('Failed to set active terminal ID:', err));
+    }
+  }, [activeTerminalId, selectedProject, tauriAvailable]);
+
   useEffect(() => {
     if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject) {
       return;
