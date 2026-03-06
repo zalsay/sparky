@@ -5,6 +5,25 @@ set -e
 
 echo "🔨 Building Sparky..."
 
+# Environment Check
+echo "🔍 Checking environment..."
+if ! command -v npm &> /dev/null; then
+    echo "❌ Error: npm is not installed or not in PATH."
+    exit 1
+fi
+
+if ! command -v cargo &> /dev/null; then
+    echo "❌ Error: cargo (Rust) is not installed or not in PATH."
+    exit 1
+fi
+
+if ! cargo tauri --version &> /dev/null; then
+    echo "📦 cargo-tauri not found, attempting to install..."
+    cargo install tauri-cli --version "^2.0.0"
+fi
+
+echo "✅ Environment check passed."
+
 # Build frontend
 echo "📦 Building frontend..."
 cd ui
