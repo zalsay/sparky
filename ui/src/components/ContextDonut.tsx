@@ -1,10 +1,10 @@
 import { useEffect, useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Tooltip } from 'antd';
+import { Tooltip, Popover, Button } from 'antd';
+import { WarningOutlined } from '@ant-design/icons';
 
 interface ContextDonutProps {
     projectPath: string;
-    onClick?: () => void;
 }
 
 interface ContextData {
@@ -53,9 +53,10 @@ function parseContextFromJsonl(jsonlData: string): ContextData | null {
     return null;
 }
 
-export default function ContextDonut({ projectPath, onClick }: ContextDonutProps) {
+export default function ContextDonut({ projectPath }: ContextDonutProps) {
     const [contextData, setContextData] = useState<ContextData | null>(null);
     const [ignoredJsonl, setIgnoredJsonl] = useState<string | null>(null);
+    const [warningClosed, setWarningClosed] = useState(false);
 
     const fetchContext = useCallback(async () => {
         try {
@@ -76,23 +77,30 @@ export default function ContextDonut({ projectPath, onClick }: ContextDonutProps
         return () => clearInterval(interval);
     }, [fetchContext]);
 
-    if (!contextData) return null;
+    useEffect(() => {
+        const onResetEvent = (e: CustomEvent<string>) => {
+            if (e.detail === projectPath) {
+                // Visually clear immediately
+                setContextData(prev => prev ? { ...prev, inputTokens: 0, outputTokens: 0, usedPercent: 0 } : null);
+                // Reset warning state
+                setWarningClosed(false);
 
-    const handleReset = async (e: React.MouseEvent) => {
-        e.stopPropagation();
-        if (onClick) onClick();
-
-        // Visually clear immediately
-        setContextData({ ...contextData, inputTokens: 0, outputTokens: 0, usedPercent: 0 });
-
-        // Save current jsonl to ignore it in the future
-        try {
-            const currentJsonl: string = await invoke('get_latest_claude_jsonl', { project_path: projectPath });
-            if (currentJsonl) {
-                setIgnoredJsonl(currentJsonl);
+                // Save current jsonl to ignore it in the future
+                invoke('get_latest_claude_jsonl', { project_path: projectPath }).then((currentJsonl: unknown) => {
+                    if (currentJsonl && typeof currentJsonl === 'string') {
+                        setIgnoredJsonl(currentJsonl);
+                    }
+                }).catch(() => { });
             }
-        } catch { /* silent */ }
-    };
+        };
+
+        window.addEventListener('claude-context-reset', onResetEvent as EventListener);
+        return () => {
+            window.removeEventListener('claude-context-reset', onResetEvent as EventListener);
+        };
+    }, [projectPath]);
+
+    if (!contextData) return null;
 
     const { inputTokens, maxTokens, usedPercent, modelName } = contextData;
 
@@ -117,15 +125,13 @@ export default function ContextDonut({ projectPath, onClick }: ContextDonutProps
         </div>
     );
 
-    return (
+    const donut = (
         <Tooltip title={tooltipContent} placement="bottomRight" color="rgba(30,41,59,0.95)">
             <div
-                onClick={handleReset}
                 style={{
                     position: 'relative',
                     width: 28,
                     height: 28,
-                    cursor: 'pointer',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -163,4 +169,47 @@ export default function ContextDonut({ projectPath, onClick }: ContextDonutProps
             </div>
         </Tooltip>
     );
+
+    const showWarning = usedPercent >= 80 && !warningClosed;
+
+    return showWarning ? (
+        <Popover
+            content={
+                <div style={{ maxWidth: 200 }}>
+                    <div style={{ marginBottom: 8, fontWeight: 600 }}>
+                        <WarningOutlined style={{ color: '#faad14', marginRight: 8 }} />
+                        上下文即将耗尽
+                    </div>
+                    <div style={{ fontSize: 12, marginBottom: 12 }}>
+                        当前上下文使用已超过 80%，建议尽早清理或精简上下文以保持良好性能。
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                        <Button size="small" onClick={() => setWarningClosed(true)}>
+                            忽略
+                        </Button>
+                        <Button
+                            size="small"
+                            type="primary"
+                            onClick={() => {
+                                setWarningClosed(true);
+                                // Trigger the compact command through the existing event mechanism
+                                // App.tsx would need to handle this properly, but since the requirement 
+                                // didn't ask to actually compact here, we just provide the hint.
+                            }}
+                        >
+                            知道了
+                        </Button>
+                    </div>
+                </div>
+            }
+            placement="bottomRight"
+            open={showWarning}
+            trigger="click"
+            onOpenChange={(open) => {
+                if (!open) setWarningClosed(true);
+            }}
+        >
+            {donut}
+        </Popover>
+    ) : donut;
 }

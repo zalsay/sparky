@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, HomeOutlined } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, HomeOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -1143,17 +1143,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                                 : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
                                               <span>安装状态：{mcpStatus.installed ? '已安装' : '未安装'}</span>
                                             </div>
-                                            {mcpStatus.installed && (
-                                              <div style={{ fontSize: 12, color: 'var(--text-secondary)', paddingLeft: 22 }}>
-                                                路径: {mcpStatus.path}
-                                              </div>
-                                            )}
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                              {mcpStatus.running
-                                                ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
-                                                : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
-                                              <span>运行状态：{mcpStatus.running ? '运行中' : '未运行'}</span>
-                                            </div>
                                           </div>
                                         ) : (
                                           <div style={{ color: 'var(--text-secondary)' }}>点击刷新状态以检查</div>
@@ -1170,21 +1159,15 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         setMcpStarting(true);
                                         try {
                                           // 1. Check & start MCP if not running
-                                          const status = await invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status');
-                                          setMcpStatus(status);
-                                          if (!status.installed) {
-                                            messageApi.error('chrome-devtools-mcp 未安装，请先安装');
-                                            return;
-                                          }
-                                          if (!status.running) {
-                                            try {
-                                              await invoke<string>('start_mcp_server');
-                                              const newStatus = await invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status');
-                                              setMcpStatus(newStatus);
-                                            } catch (err) {
-                                              messageApi.error(`MCP 启动失败: ${err}`);
-                                              return;
+                                          try {
+                                            const status = await invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status');
+                                            setMcpStatus(status);
+                                            if (!status.installed) {
+                                              messageApi.warning('chrome-devtools-mcp 未安装，但仍可进入测试会话');
                                             }
+                                            // 运行状态检查已移除，不再尝试启动或报错
+                                          } catch (err) {
+                                            console.warn("MCP check failed:", err);
                                           }
 
                                           // 2. Create or reuse terminal tab named "MCP 测试"
@@ -1431,7 +1414,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         icon: <CompressOutlined />,
                                         onClick: () => {
                                           const tid = activeTerminalId[selectedProject.path];
-                                          if (tid) invoke('pty_write', { terminal_id: tid, data: '/compact\n' });
+                                          if (tid) {
+                                            invoke('pty_write', { terminal_id: tid, data: '/compact\n' });
+                                            window.dispatchEvent(new CustomEvent('claude-context-reset', { detail: selectedProject.path }));
+                                          }
                                         }
                                       },
                                       {
@@ -1568,9 +1554,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                       }}>
                                         <ContextDonut
                                           projectPath={selectedProject!.path}
-                                          onClick={() => {
-                                            invoke('pty_write', { terminal_id: term.id, data: '/clear\n' });
-                                          }}
                                         />
                                         {!terminalFullscreen && (
                                           <Button
