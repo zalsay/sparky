@@ -2374,22 +2374,22 @@ pub fn run() {
                 
                 use tauri::Manager;
                 // Get the path to our bundled extensions using Tauri's path resolver
-                // and copy them to ~/sparky/extensions if they don't exist there yet.
-                // This ensures we have a writable, unified extensions directory in release builds.
+                // and copy them to ~/sparky/extensions on every startup to ensure we have the latest version.
+                // This ensures we have a writable, unified extensions directory and prevents old cached versions from persisting.
                 let ext_dir = dirs::home_dir()
                     .map(|h| h.join("sparky").join("extensions"))
                     .unwrap_or_else(|| std::path::PathBuf::from("extensions"));
                 
-                if !ext_dir.exists() {
-                    if let Ok(resource_ext_dir) = app_handle.path().resource_dir().map(|p| p.join("extensions")) {
-                        if resource_ext_dir.exists() {
-                            log::info!("Copying bundled extensions to {:?}", ext_dir);
-                            let _ = std::fs::create_dir_all(&ext_dir);
-                            // Simple directory copy logic using standard command
-                            let _ = std::process::Command::new("cp")
-                                .args(["-R", &resource_ext_dir.to_string_lossy(), &ext_dir.parent().unwrap().to_string_lossy()])
-                                .status();
-                        }
+                if let Ok(resource_ext_dir) = app_handle.path().resource_dir().map(|p| p.join("extensions")) {
+                    if resource_ext_dir.exists() {
+                        log::info!("Syncing bundled extensions from {:?} to {:?}", resource_ext_dir, ext_dir);
+                        let _ = std::fs::create_dir_all(&ext_dir);
+                        
+                        // Use cp -Rf to copy everything from resource_ext_dir into ext_dir
+                        // We use the contents of resource_ext_dir (/*) to copy into ext_dir
+                        let _ = std::process::Command::new("cp")
+                            .args(["-Rf", &format!("{}/.", resource_ext_dir.to_string_lossy()), &ext_dir.to_string_lossy()])
+                            .status();
                     }
                 }
                     
