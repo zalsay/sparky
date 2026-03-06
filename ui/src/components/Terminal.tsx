@@ -106,6 +106,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
   const onDataRef = useRef(onData);
   const onLinkClickRef = useRef(onLinkClick);
 
+
   const { startPty, write, clearPty } = usePty();
 
   useImperativeHandle(ref, () => ({
@@ -397,6 +398,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
       dataDisposable.dispose();
       resizeDisposable.dispose();
 
+
       clearPty();
       // Don't delete from cache - keep terminal state for when user navigates back
       if (container) {
@@ -520,6 +522,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
           }}
         />
       </div>
+
     </div>
   );
 });

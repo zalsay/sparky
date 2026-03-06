@@ -1386,6 +1386,15 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                     }
                                   }} icon={<ExperimentOutlined />} />
                                 </Tooltip>
+                                <Tooltip title="清空当前输入">
+                                  <Button size="small" type="text" onClick={() => {
+                                    const tid = activeTerminalId[selectedProject.path];
+                                    if (tid) {
+                                      // \x05 (Ctrl+E) moves to end of line, \x15 (Ctrl+U) clears line
+                                      invoke('pty_write', { terminal_id: tid, data: '\x05\x15' });
+                                    }
+                                  }} icon={<ClearOutlined />} />
+                                </Tooltip>
                                 <Divider type="vertical" style={{ margin: '0 4px' }} />
                                 <span className={`ws-status-badge ${wsConnected ? 'connected' : 'disconnected'}`} style={{ border: 'none', background: 'transparent', padding: '0 4px', margin: 0 }}>
                                   <span className="ws-status-dot" />
