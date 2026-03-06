@@ -2364,9 +2364,24 @@ pub fn run() {
                 
                 use tauri::Manager;
                 // Get the path to our bundled extensions using Tauri's path resolver
-                let ext_dir = app_handle.path().resource_dir()
-                    .map(|p| p.join("extensions"))
-                    .unwrap_or_else(|_| std::path::PathBuf::from("extensions"));
+                // and copy them to ~/sparky/extensions if they don't exist there yet.
+                // This ensures we have a writable, unified extensions directory in release builds.
+                let ext_dir = dirs::home_dir()
+                    .map(|h| h.join("sparky").join("extensions"))
+                    .unwrap_or_else(|| std::path::PathBuf::from("extensions"));
+                
+                if !ext_dir.exists() {
+                    if let Ok(resource_ext_dir) = app_handle.path().resource_dir().map(|p| p.join("extensions")) {
+                        if resource_ext_dir.exists() {
+                            log::info!("Copying bundled extensions to {:?}", ext_dir);
+                            let _ = std::fs::create_dir_all(&ext_dir);
+                            // Simple directory copy logic using standard command
+                            let _ = std::process::Command::new("cp")
+                                .args(["-R", &resource_ext_dir.to_string_lossy(), &ext_dir.parent().unwrap().to_string_lossy()])
+                                .status();
+                        }
+                    }
+                }
                     
                 match std::process::Command::new(cmd_path)
                     .args([
