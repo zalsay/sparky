@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, HomeOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, HomeOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -118,7 +118,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   }
   const [projectTerminals, setProjectTerminals] = useState<Record<string, TerminalTab[]>>({});
   const [providers, setProviders] = useState<AIProvider[]>([]);
-  const [providersLoaded, setProvidersLoaded] = useState(false);
+  
   const [selectedProviderKeys, setSelectedProviderKeys] = useState<React.Key[]>([]);
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [refreshingProviders, setRefreshingProviders] = useState(false);
@@ -152,6 +152,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [wsConnected, setWsConnected] = useState(false);
   const [activeProjects, setActiveProjects] = useState<string[]>([]);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
+  const [systemClaudeSettings, setSystemClaudeSettings] = useState<string | null>(null);
   const appConfigRef = useRef<AppConfig | null>(null);
   const [sidebarCollapsed] = useState(() => {
     const saved = localStorage.getItem('sparky-sidebar-collapsed');
@@ -169,7 +170,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     if (tauriAvailable) {
       invoke<AIProvider[]>('get_ai_providers').then(res => {
         setProviders(res);
-        setProvidersLoaded(true);
+
         // 如果只有一个 provider 且没有默认设置，自动将其设为默认
         if (res.length === 1 && appConfig && !appConfig.default_provider_id) {
           handleSetDefaultProvider(res[0].id!, res[0].app_type);
@@ -226,6 +227,11 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [mcpLoading, setMcpLoading] = useState(false);
   const [mcpStarting, setMcpStarting] = useState(false);
   const [codeServerConnected, setCodeServerConnected] = useState<boolean | null>(null);
+
+  // IDE Plugins state
+  const [idePlugins, setIdePlugins] = useState<string[]>([]);
+  const [installingPlugin, setInstallingPlugin] = useState<string | null>(null);
+  const [customPluginId, setCustomPluginId] = useState('');
 
   // Track terminal vs chat view modes per terminal id
   const [viewModes] = useState<Record<string, 'terminal' | 'chat'>>({});
@@ -399,6 +405,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     fetchHookRecords(1);
   }, [activeMenu, selectedProject, tauriAvailable]);
 
+  // Fetch IDE plugins when the menu is active
+  useEffect(() => {
+    if (!tauriAvailable || activeMenu !== 'ide-plugins') return;
+    invoke<string[]>('get_installed_code_server_extensions')
+      .then(setIdePlugins)
+      .catch(err => console.error('Failed to get installed code-server extensions:', err));
+  }, [activeMenu, tauriAvailable]);
+
   // Check code-server connection when entering project detail
   useEffect(() => {
     if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject) {
@@ -505,6 +519,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       appConfigRef.current = config;
     } catch (error) {
       messageApi.error(`加载配置失败: ${error} `);
+    }
+    try {
+      const sysSettings = await invoke<string>('get_system_claude_settings');
+      setSystemClaudeSettings(sysSettings);
+    } catch (e) {
+      console.log('No system claude settings loaded:', e);
     }
   };
 
@@ -912,6 +932,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                 items={[
                   { key: 'project', icon: <ProjectOutlined />, label: '项目' },
                   { key: 'ai-models', icon: <ApiOutlined />, label: 'AI模型' },
+                  { key: 'ide-plugins', icon: <AppstoreAddOutlined />, label: 'IDE 插件' },
                   { key: 'settings', icon: <SettingOutlined />, label: '设置' },
                   { key: 'help', icon: <EyeOutlined />, label: '帮助' },
                 ]}
@@ -1187,6 +1208,131 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                               </Popconfirm>
                             </Space>
                           )
+                        }
+                      ]}
+                    />
+                  </Card>
+                </div>
+              )}
+
+              {activeMenu === 'ide-plugins' && (
+                <div className="ide-plugins-page">
+                  <Card className="projects-card" variant="borderless" style={{ height: 'auto', flex: 1 }}>
+                    <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <AppstoreAddOutlined className="card-icon" />
+                        <div>
+                          <h2 style={{ margin: 0 }}>IDE 插件</h2>
+                          <p className="card-description" style={{ margin: 0 }}>为本地的 Code-Server 安装 VS Code 插件</p>
+                        </div>
+                      </div>
+                      <Space>
+                        <Input
+                          placeholder="输入 publisher.extensionid"
+                          value={customPluginId}
+                          onChange={e => setCustomPluginId(e.target.value)}
+                          style={{ width: 250 }}
+                        />
+                        <Button
+                          type="primary"
+                          loading={installingPlugin === customPluginId}
+                          onClick={async () => {
+                            if (!customPluginId) return;
+                            setInstallingPlugin(customPluginId);
+                            try {
+                              await invoke('install_code_server_extension', { extension_id: customPluginId });
+                              messageApi.success(`插件 ${customPluginId} 安装成功`);
+                              setCustomPluginId('');
+                              const list = await invoke<string[]>('get_installed_code_server_extensions');
+                              setIdePlugins(list);
+                            } catch (e) {
+                              messageApi.error(`安装失败: ${e}`);
+                            } finally {
+                              setInstallingPlugin(null);
+                            }
+                          }}
+                        >
+                          安装
+                        </Button>
+                        <Button
+                          icon={<ReloadOutlined />}
+                          onClick={async () => {
+                            const list = await invoke<string[]>('get_installed_code_server_extensions');
+                            setIdePlugins(list);
+                            messageApi.success('插件列表已刷新');
+                          }}
+                        />
+                      </Space>
+                    </div>
+                    <Divider />
+                    <Table
+                      dataSource={[
+                        { id: 'saoudrizwan.claude-dev', name: 'Cline', desc: 'Autonomous coding agent right in your IDE' },
+                        { id: 'rooveterinaryinc.roo-cline', name: 'Roo Code', desc: 'AI coding assistant that lives in your editor' },
+                        { id: 'charliermarsh.ruff', name: 'Ruff', desc: 'An extremely fast Python linter and code formatter' },
+                        { id: 'dbaeumer.vscode-eslint', name: 'ESLint', desc: 'Integrates ESLint JavaScript into VS Code' },
+                      ]}
+                      rowKey="id"
+                      pagination={false}
+                      columns={[
+                        {
+                          title: '插件名',
+                          dataIndex: 'name',
+                          key: 'name',
+                          width: 200,
+                          render: (text) => <span style={{ fontWeight: 500 }}>{text}</span>
+                        },
+                        {
+                          title: 'ID (publisher.extensionid)',
+                          dataIndex: 'id',
+                          key: 'id',
+                          width: 250,
+                          render: (text) => <Typography.Text copyable style={{ fontSize: 13 }}>{text}</Typography.Text>
+                        },
+                        {
+                          title: '描述',
+                          dataIndex: 'desc',
+                          key: 'desc',
+                        },
+                        {
+                          title: '状态',
+                          key: 'status',
+                          width: 150,
+                          render: (_, record) => {
+                            const installed = idePlugins.some(p => p.toLowerCase() === record.id.toLowerCase());
+                            return installed ? <Tag color="green">已安装</Tag> : <Tag>未安装</Tag>;
+                          }
+                        },
+                        {
+                          title: '操作',
+                          key: 'action',
+                          width: 150,
+                          render: (_, record) => {
+                            const installed = idePlugins.some(p => p.toLowerCase() === record.id.toLowerCase());
+                            return (
+                              <Button
+                                size="small"
+                                type={installed ? 'default' : 'primary'}
+                                disabled={installed}
+                                loading={installingPlugin === record.id}
+                                onClick={async () => {
+                                  setInstallingPlugin(record.id);
+                                  try {
+                                    await invoke('install_code_server_extension', { extension_id: record.id });
+                                    messageApi.success(`插件 ${record.name} 安装成功`);
+                                    const list = await invoke<string[]>('get_installed_code_server_extensions');
+                                    setIdePlugins(list);
+                                  } catch (e) {
+                                    messageApi.error(`安装失败: ${e}`);
+                                  } finally {
+                                    setInstallingPlugin(null);
+                                  }
+                                }}
+                              >
+                                {installed ? '已安装' : '安装'}
+                              </Button>
+                            );
+                          }
                         }
                       ]}
                     />
@@ -1872,7 +2018,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                             variant="filled"
                                             style={{ width: '100%', background: 'rgba(0, 0, 0, 0.2)', borderRadius: '4px' }}
                                             value={term.providerId || appConfig?.default_provider_id}
-                                            options={providers.map(p => ({ label: p.name, value: `${p.app_type}::${p.id}` }))}
+                                            options={[
+                                              { label: '系统设置 (~/.claude/settings.json)', value: 'system::claude' },
+                                              ...providers.map(p => ({ label: p.name, value: `${p.app_type}::${p.id}` }))
+                                            ]}
                                             onChange={(val) => {
                                               setProjectTerminals(prev => {
                                                 const current = prev[selectedProject!.path] || [];
@@ -1905,21 +2054,43 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                       <div style={{ flex: 1, display: (viewModes[term.id] || 'terminal') === 'terminal' ? 'block' : 'none' }}>
                                         {(() => {
                                           const providerIdStr = term.providerId || appConfig?.default_provider_id;
-                                          const provider = providers.find(p => `${p.app_type}::${p.id}` === providerIdStr);
                                           const envs: Record<string, string> = {};
-                                          if (provider) {
-                                            try {
-                                              const settings = JSON.parse(provider.settings_config || '{}');
-                                              envs["ANTHROPIC_AUTH_TOKEN"] = settings.api_key || '';
-                                              const baseUrl = provider.endpoints && provider.endpoints.length > 0 ? provider.endpoints[0].url : settings.base_url;
-                                              if (baseUrl) envs["ANTHROPIC_BASE_URL"] = baseUrl;
-                                              if (settings.model_id) envs["CLAUDE_CODE_MODEL_ID"] = settings.model_id;
-                                              if (settings.api_timeout) envs["API_TIMEOUT_MS"] = settings.api_timeout;
-                                              if (settings.disable_traffic !== undefined) {
-                                                envs["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = settings.disable_traffic.toString();
+
+                                          if (providerIdStr === 'system::claude') {
+                                            if (systemClaudeSettings) {
+                                              try {
+                                                const settings = JSON.parse(systemClaudeSettings);
+                                                if (settings.env) {
+                                                  Object.entries(settings.env).forEach(([k, v]) => {
+                                                    envs[k] = String(v);
+                                                  });
+                                                }
+                                                // Some flat settings in root level might also be useful
+                                                if (settings.ANTHROPIC_AUTH_TOKEN) envs["ANTHROPIC_AUTH_TOKEN"] = settings.ANTHROPIC_AUTH_TOKEN;
+                                                if (settings.ANTHROPIC_BASE_URL) envs["ANTHROPIC_BASE_URL"] = settings.ANTHROPIC_BASE_URL;
+                                                if (settings.CLAUDE_CODE_MODEL_ID) envs["CLAUDE_CODE_MODEL_ID"] = settings.CLAUDE_CODE_MODEL_ID;
+                                                if (settings.API_TIMEOUT_MS) envs["API_TIMEOUT_MS"] = String(settings.API_TIMEOUT_MS);
+                                                if (settings.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC !== undefined) envs["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = String(settings.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC);
+                                              } catch (e) {
+                                                console.error("Failed to parse system claude settings:", e);
                                               }
-                                            } catch (e) {
-                                              console.error("Failed to parse settings_config for provider:", provider.name, e);
+                                            }
+                                          } else {
+                                            const provider = providers.find(p => `${p.app_type}::${p.id}` === providerIdStr);
+                                            if (provider) {
+                                              try {
+                                                const settings = JSON.parse(provider.settings_config || '{}');
+                                                envs["ANTHROPIC_AUTH_TOKEN"] = settings.api_key || '';
+                                                const baseUrl = provider.endpoints && provider.endpoints.length > 0 ? provider.endpoints[0].url : settings.base_url;
+                                                if (baseUrl) envs["ANTHROPIC_BASE_URL"] = baseUrl;
+                                                if (settings.model_id) envs["CLAUDE_CODE_MODEL_ID"] = settings.model_id;
+                                                if (settings.api_timeout) envs["API_TIMEOUT_MS"] = settings.api_timeout;
+                                                if (settings.disable_traffic !== undefined) {
+                                                  envs["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = settings.disable_traffic.toString();
+                                                }
+                                              } catch (e) {
+                                                console.error("Failed to parse settings_config for provider:", provider.name, e);
+                                              }
                                             }
                                           }
                                           return (

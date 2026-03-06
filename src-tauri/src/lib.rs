@@ -383,6 +383,8 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN limit_monthly_usd TEXT", []);
     let _ = conn.execute("ALTER TABLE ai_providers ADD COLUMN provider_type TEXT", []);
 
+    let _ = conn.execute("ALTER TABLE app_config_feishu ADD COLUMN default_provider_id TEXT", []);
+
     conn.execute(
         "CREATE TABLE IF NOT EXISTS provider_endpoints (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1057,6 +1059,20 @@ fn save_config(config: AppConfig) -> Result<(), String> {
     let conn = open_db()?;
     upsert_config(&conn, &config)?;
     Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn get_system_claude_settings() -> Result<String, String> {
+    let settings_path = dirs::home_dir()
+        .ok_or_else(|| "Cannot find home directory".to_string())?
+        .join(".claude")
+        .join("settings.json");
+    
+    if settings_path.exists() {
+        fs::read_to_string(settings_path).map_err(|e| e.to_string())
+    } else {
+        Err("System settings file does not exist".to_string())
+    }
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -2636,6 +2652,45 @@ async fn install_code_server() -> Result<String, String> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+async fn install_code_server_extension(extension_id: String) -> Result<String, String> {
+    log::info!("Attempting to install code-server extension: {}", extension_id);
+    let output = std::process::Command::new("sh")
+        .arg("-lc")
+        .arg(format!("code-server --install-extension {}", extension_id))
+        .output()
+        .map_err(|e| format!("Failed to execute command: {}", e))?;
+
+    if output.status.success() {
+        Ok(format!("Extension {} installed successfully", extension_id))
+    } else {
+        let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
+        Err(format!("Install failed: {}", err_msg))
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn get_installed_code_server_extensions() -> Result<Vec<String>, String> {
+    let output = std::process::Command::new("sh")
+        .arg("-lc")
+        .arg("code-server --list-extensions")
+        .output()
+        .map_err(|e| format!("Failed to execute command: {}", e))?;
+
+    if output.status.success() {
+        let output_str = String::from_utf8_lossy(&output.stdout);
+        let extensions: Vec<String> = output_str
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        Ok(extensions)
+    } else {
+        let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
+        Err(format!("Failed to list extensions: {}", err_msg))
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
 fn check_dependencies() -> Result<DependencyStatus, String> {
     Ok(DependencyStatus {
         claude: find_executable("claude").is_some(),
@@ -2967,6 +3022,7 @@ pub fn run() {
             send_feishu_message,
             upload_anthropic_logo,
             get_hook_records,
+            get_system_claude_settings,
             get_ai_providers,
             upsert_ai_provider,
             delete_ai_provider,
@@ -3010,6 +3066,8 @@ pub fn run() {
             check_dependencies,
             check_code_server_connection,
             install_code_server,
+            install_code_server_extension,
+            get_installed_code_server_extensions,
             get_latest_claude_jsonl,
             set_active_terminal_id,
             import_from_ccswitch
