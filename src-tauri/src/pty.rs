@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Mutex, Arc};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize, PtyPair, Child};
 use std::io::{Read, Write};
 use std::thread;
 use tauri::{Emitter, Manager};
 use rusqlite::params;
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 
 pub struct PtyManager {
     masters: Mutex<HashMap<String, Box<dyn portable_pty::MasterPty + Send>>>,
@@ -13,6 +14,8 @@ pub struct PtyManager {
     project_terminals: Mutex<HashMap<String, Vec<String>>>,
     spawning: Mutex<HashSet<String>>,
     verified_terminals: Mutex<HashSet<String>>,
+    terminal_providers: Mutex<HashMap<String, String>>, // terminal_id -> provider_id
+    terminal_settings_paths: Mutex<HashMap<String, std::path::PathBuf>>, // terminal_id -> temp settings file
 }
 
 impl PtyManager {
@@ -24,6 +27,8 @@ impl PtyManager {
             project_terminals: Mutex::new(HashMap::new()),
             spawning: Mutex::new(HashSet::new()),
             verified_terminals: Mutex::new(HashSet::new()),
+            terminal_providers: Mutex::new(HashMap::new()),
+            terminal_settings_paths: Mutex::new(HashMap::new()),
         }
     }
 
@@ -101,6 +106,13 @@ impl PtyManager {
         };
         if removed.is_some() {
             self.verified_terminals.lock().unwrap().remove(terminal_id);
+            self.terminal_providers.lock().unwrap().remove(terminal_id);
+            if let Some(path) = self.terminal_settings_paths.lock().unwrap().remove(terminal_id) {
+                if path.exists() {
+                    let _ = std::fs::remove_file(&path);
+                    log::info!("[remove_pty] Cleaned up settings file for terminal {}", terminal_id);
+                }
+            }
             self.update_active_ptys_in_db();
         }
         removed
@@ -155,6 +167,208 @@ impl PtyManager {
             }
         });
     }
+
+    pub fn set_terminal_provider(&self, terminal_id: String, provider_id: String) {
+        log::info!("[set_terminal_provider] terminal {} -> provider {}", terminal_id, provider_id);
+        self.terminal_providers.lock().unwrap().insert(terminal_id, provider_id);
+    }
+
+    pub fn get_terminal_provider(&self, terminal_id: &str) -> Option<String> {
+        self.terminal_providers.lock().unwrap().get(terminal_id).cloned()
+    }
+
+    pub fn store_settings_path(&self, terminal_id: String, path: std::path::PathBuf) {
+        log::info!("[store_settings_path] terminal {} -> {:?}", terminal_id, path);
+        self.terminal_settings_paths.lock().unwrap().insert(terminal_id, path);
+    }
+
+    pub fn get_settings_path(&self, terminal_id: &str) -> Option<String> {
+        self.terminal_settings_paths.lock().unwrap()
+            .get(terminal_id)
+            .map(|p| p.to_string_lossy().to_string())
+    }
+
+    pub fn get_provider_details(&self, provider_id: &str) -> Option<crate::AIProvider> {
+        let actual_id = provider_id.split("::").last().unwrap_or(provider_id);
+        log::info!("[get_provider_details] Searching for provider: {}", actual_id);
+
+        let conn = match crate::open_db() {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("[get_provider_details] Failed to open DB: {}", e);
+                return None;
+            }
+        };
+
+        let mut stmt = match conn.prepare("SELECT id, app_type, name, settings_config, website_url, category, created_at, sort_index, notes, icon, icon_color, meta, is_current, in_failover_queue, cost_multiplier, limit_daily_usd, limit_monthly_usd, provider_type FROM ai_providers WHERE id = ?") {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("[get_provider_details] Failed to prepare statement: {}", e);
+                return None;
+            }
+        };
+
+        let provider_res = stmt.query_row(params![actual_id], |row| {
+            Ok(crate::AIProvider {
+                id: row.get(0)?,
+                app_type: row.get(1)?,
+                name: row.get(2)?,
+                settings_config: row.get(3)?,
+                website_url: row.get(4)?,
+                category: row.get(5)?,
+                created_at: row.get(6)?,
+                sort_index: row.get(7)?,
+                notes: row.get(8)?,
+                icon: row.get(9)?,
+                icon_color: row.get(10)?,
+                meta: row.get(11)?,
+                is_current: row.get(12)?,
+                in_failover_queue: row.get(13)?,
+                cost_multiplier: row.get(14)?,
+                limit_daily_usd: row.get(15)?,
+                limit_monthly_usd: row.get(16)?,
+                provider_type: row.get(17)?,
+                endpoints: Vec::new(),
+            })
+        });
+
+        let mut provider = match provider_res {
+            Ok(p) => p,
+            Err(e) => {
+                log::error!("[get_provider_details] Query error for ID {}: {}", actual_id, e);
+                return None;
+            }
+        };
+
+        let mut stmt_endpoints = match conn.prepare("SELECT id, provider_id, app_type, url, added_at FROM provider_endpoints WHERE provider_id = ?") {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("[get_provider_details] Failed to prepare endpoints statement: {}", e);
+                return Some(provider);
+            }
+        };
+
+        let endpoints_iter = match stmt_endpoints.query_map(params![actual_id], |row| {
+            Ok(crate::AIProviderEndpoint {
+                id: row.get(0)?,
+                provider_id: row.get(1)?,
+                app_type: row.get(2)?,
+                url: row.get(3)?,
+                added_at: row.get(4)?,
+            })
+        }) {
+            Ok(it) => it,
+            Err(e) => {
+                log::error!("[get_provider_details] Endpoints query error: {}", e);
+                return Some(provider);
+            }
+        };
+
+        let mut endpoints = Vec::new();
+        for endpoint in endpoints_iter {
+            if let Ok(e) = endpoint {
+                endpoints.push(e);
+            }
+        }
+
+        provider.endpoints = endpoints;
+        log::info!("[get_provider_details] Successfully loaded provider: {} with {} endpoints", provider.name, provider.endpoints.len());
+        Some(provider)
+    }
+
+    pub fn get_provider_details_by_app_type(&self, app_type: &str) -> Option<crate::AIProvider> {
+        log::info!("[get_provider_details_by_app_type] Searching provider by app_type={}", app_type);
+
+        let conn = match crate::open_db() {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("[get_provider_details_by_app_type] Failed to open DB: {}", e);
+                return None;
+            }
+        };
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, app_type, name, settings_config, website_url, category, created_at, sort_index, notes, icon, icon_color, meta, is_current, in_failover_queue, cost_multiplier, limit_daily_usd, limit_monthly_usd, provider_type FROM ai_providers WHERE app_type = ? ORDER BY is_current DESC, sort_index ASC, created_at ASC LIMIT 1"
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("[get_provider_details_by_app_type] Failed to prepare statement: {}", e);
+                return None;
+            }
+        };
+
+        let provider_res = stmt.query_row(params![app_type], |row| {
+            Ok(crate::AIProvider {
+                id: row.get(0)?,
+                app_type: row.get(1)?,
+                name: row.get(2)?,
+                settings_config: row.get(3)?,
+                website_url: row.get(4)?,
+                category: row.get(5)?,
+                created_at: row.get(6)?,
+                sort_index: row.get(7)?,
+                notes: row.get(8)?,
+                icon: row.get(9)?,
+                icon_color: row.get(10)?,
+                meta: row.get(11)?,
+                is_current: row.get(12)?,
+                in_failover_queue: row.get(13)?,
+                cost_multiplier: row.get(14)?,
+                limit_daily_usd: row.get(15)?,
+                limit_monthly_usd: row.get(16)?,
+                provider_type: row.get(17)?,
+                endpoints: Vec::new(),
+            })
+        });
+
+        let mut provider = match provider_res {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("[get_provider_details_by_app_type] No provider found for app_type={}: {}", app_type, e);
+                return None;
+            }
+        };
+
+        let mut stmt_endpoints = match conn.prepare("SELECT id, provider_id, app_type, url, added_at FROM provider_endpoints WHERE provider_id = ?") {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("[get_provider_details_by_app_type] Failed to prepare endpoints statement: {}", e);
+                return Some(provider);
+            }
+        };
+
+        let endpoints_iter = match stmt_endpoints.query_map(params![provider.id.clone()], |row| {
+            Ok(crate::AIProviderEndpoint {
+                id: row.get(0)?,
+                provider_id: row.get(1)?,
+                app_type: row.get(2)?,
+                url: row.get(3)?,
+                added_at: row.get(4)?,
+            })
+        }) {
+            Ok(it) => it,
+            Err(e) => {
+                log::error!("[get_provider_details_by_app_type] Endpoints query error: {}", e);
+                return Some(provider);
+            }
+        };
+
+        let mut endpoints = Vec::new();
+        for endpoint in endpoints_iter {
+            if let Ok(e) = endpoint {
+                endpoints.push(e);
+            }
+        }
+
+        provider.endpoints = endpoints;
+        log::info!(
+            "[get_provider_details_by_app_type] Loaded provider: {} ({}) with {} endpoints",
+            provider.id,
+            provider.app_type,
+            provider.endpoints.len()
+        );
+        Some(provider)
+    }
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -168,19 +382,80 @@ pub async fn pty_spawn(
     rows: u16,
     project_path: String,
     terminal_id: String,
+    default_provider_id: Option<String>,
 ) -> Result<String, String> {
     // Atomic spawn lock: prevent concurrent duplicate spawns for same terminal
     {
-        let manager = app.state::<PtyManager>();
+        let manager = app.state::<Arc<PtyManager>>();
         let mut spawning = manager.spawning.lock().unwrap();
         if spawning.contains(&terminal_id) || manager.has_pty(&terminal_id) {
-            log::info!("[pty_spawn] SKIP duplicate for terminal: {}", terminal_id);
+            log::warn!(
+                "[pty_spawn] SKIP duplicate for terminal: {} (existing PTY keeps old env; recreate PTY to re-inject proxy vars)",
+                terminal_id
+            );
             return Ok(terminal_id);
         }
         spawning.insert(terminal_id.clone());
     }
 
     log::info!("Spawning PTY: program={}, args={:?}, cwd={}, project={}, terminal={}", program, args, cwd, project_path, terminal_id);
+
+    let manager = app.state::<Arc<PtyManager>>();
+    let has_direct_provider = if let Some(ref provider_id) = default_provider_id {
+        log::info!("[PTY_SPAWN] Setting provider {} for terminal {}", provider_id, terminal_id);
+        manager.set_terminal_provider(terminal_id.clone(), provider_id.clone());
+        true
+    } else {
+        false
+    };
+
+    let proxy_config = app.state::<crate::ProxyConfig>();
+    let proxy_root_url = format!("http://127.0.0.1:{}", proxy_config.port);
+
+    // Generate temp settings file for `claude --settings` with REAL provider config
+    if has_direct_provider {
+        let provider_id = default_provider_id.as_ref().unwrap();
+        if let Some(provider) = manager.get_provider_details(provider_id) {
+            let config: serde_json::Value = serde_json::from_str(&provider.settings_config)
+                .unwrap_or(serde_json::json!({}));
+
+            // API URL: endpoints first, then settings_config.base_url
+            let base_url = if !provider.endpoints.is_empty() {
+                Some(provider.endpoints[0].url.clone())
+            } else {
+                config.get("base_url").and_then(|v| v.as_str()).map(|s| s.to_string())
+            };
+
+            // API key
+            let api_key = config.get("api_key")
+                .or_else(|| config.get("env").and_then(|v| v.get("ANTHROPIC_API_KEY")))
+                .and_then(|v| v.as_str());
+
+            let mut env_vars = serde_json::Map::new();
+            if let Some(ref url) = base_url {
+                env_vars.insert("ANTHROPIC_BASE_URL".to_string(), serde_json::Value::String(url.clone()));
+            }
+            if let Some(key) = api_key {
+                env_vars.insert("ANTHROPIC_API_KEY".to_string(), serde_json::Value::String(key.to_string()));
+            }
+
+            let temp_dir = std::env::temp_dir();
+            let settings_file = temp_dir.join(format!("sparky_claude_settings_{}.json", terminal_id));
+            let settings = serde_json::json!({ "env": env_vars });
+            let content = serde_json::to_string_pretty(&settings)
+                .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+            std::fs::write(&settings_file, &content)
+                .map_err(|e| format!("Failed to write settings file: {}", e))?;
+
+            log::info!(
+                "[PTY_SPAWN] Direct provider settings: provider={}({}) base_url={:?} file={:?}",
+                provider.name, provider.id, base_url, settings_file
+            );
+            manager.store_settings_path(terminal_id.clone(), settings_file);
+        } else {
+            log::warn!("[PTY_SPAWN] Provider {} not found in DB, no settings file generated", provider_id);
+        }
+    }
 
     let pty_system = native_pty_system();
 
@@ -206,6 +481,14 @@ pub async fn pty_spawn(
     for (key, value) in std::env::vars() {
         cmd.env(&key, &value);
     }
+
+    // Inject utility env vars (no proxy routing — provider config is in --settings file)
+    cmd.env("SPARKY_PROXY_BASE_URL", &proxy_root_url);
+    cmd.env("SPARKY_TERMINAL_ID", &terminal_id);
+    log::info!(
+        "[PTY_SPAWN] Utility env set for terminal {}: SPARKY_TERMINAL_ID, SPARKY_PROXY_BASE_URL",
+        terminal_id
+    );
     let mut has_hook = false;
     for (key, value) in envs {
         if key == "CLAUDE_MONITOR_HOOK_COMMAND" {
@@ -223,7 +506,7 @@ pub async fn pty_spawn(
         .map_err(|e| format!("Failed to spawn command: {}", e))?;
 
     // Store the pair and child with project path as key
-    let manager = app.state::<PtyManager>();
+    let manager = app.state::<Arc<PtyManager>>();
     manager.add_pty(project_path.clone(), terminal_id.clone(), pair, child);
 
     // Remove from spawning set
@@ -236,7 +519,7 @@ pub async fn pty_spawn(
 
     // Get a reader clone
     let master_reader = {
-        let manager = app.state::<PtyManager>();
+        let manager = app.state::<Arc<PtyManager>>();
         let master_guard = manager.masters.lock().unwrap();
         let master = master_guard.get(&terminal_id).unwrap();
         master.try_clone_reader().map_err(|e| format!("Failed to clone master: {}", e))?
@@ -281,7 +564,7 @@ pub async fn pty_spawn(
                             Ok(valid) => {
                                 if !valid.is_empty() {
                                     // Mark terminal as verified now that it has produced output
-                                    app_handle.state::<PtyManager>().mark_verified(&terminal_id_clone);
+                                    app_handle.state::<Arc<PtyManager>>().mark_verified(&terminal_id_clone);
                                     let _ = app_handle.emit("pty-data", serde_json::json!({
                                         "projectPath": project_path_clone,
                                         "terminalId": terminal_id_clone,
@@ -295,7 +578,7 @@ pub async fn pty_spawn(
                                 let valid_up_to = err.valid_up_to();
                                 if valid_up_to > 0 {
                                     let valid = unsafe { std::str::from_utf8_unchecked(&pending[..valid_up_to]) };
-                                    app_handle.state::<PtyManager>().mark_verified(&terminal_id_clone);
+                                    app_handle.state::<Arc<PtyManager>>().mark_verified(&terminal_id_clone);
                                     let _ = app_handle.emit("pty-data", serde_json::json!({
                                         "projectPath": project_path_clone,
                                         "terminalId": terminal_id_clone,
@@ -352,7 +635,7 @@ pub async fn pty_spawn(
             thread::sleep(std::time::Duration::from_millis(500));
             
             // Check if THIS PTY still exists
-            let manager = app_handle_for_poll.state::<PtyManager>();
+            let manager = app_handle_for_poll.state::<Arc<PtyManager>>();
             if !manager.has_pty(&terminal_id_for_poll) {
                 log::info!("PTY closed, stopping command poller for terminal: {}", terminal_id_for_poll);
                 break;
@@ -428,7 +711,7 @@ fn get_pty_log_path(project_path: &str) -> std::path::PathBuf {
 pub fn pty_write(app: tauri::AppHandle, terminal_id: String, data: String) -> Result<(), String> {
     log::debug!("PTY write: terminal={}, data={}", terminal_id, data);
 
-    let manager = app.state::<PtyManager>();
+    let manager = app.state::<Arc<PtyManager>>();
     manager.write(&terminal_id, &data)
 }
 
@@ -436,7 +719,7 @@ pub fn pty_write(app: tauri::AppHandle, terminal_id: String, data: String) -> Re
 pub fn pty_kill(app: tauri::AppHandle, terminal_id: String) -> Result<(), String> {
     log::info!("[pty_kill] START terminal={}", terminal_id);
 
-    let manager = app.state::<PtyManager>();
+    let manager = app.state::<Arc<PtyManager>>();
     
     log::info!("[pty_kill] acquiring masters lock...");
     let master = manager.masters.lock().unwrap().remove(&terminal_id);
@@ -500,7 +783,7 @@ pub fn pty_kill(app: tauri::AppHandle, terminal_id: String) -> Result<(), String
 pub fn pty_resize(app: tauri::AppHandle, terminal_id: String, cols: u16, rows: u16) -> Result<(), String> {
     log::info!("PTY resize: terminal={}, cols={}, rows={}", terminal_id, cols, rows);
 
-    let manager = app.state::<PtyManager>();
+    let manager = app.state::<Arc<PtyManager>>();
     let mut masters = manager.masters.lock().unwrap();
 
     if let Some(master) = masters.get_mut(&terminal_id) {
@@ -520,6 +803,55 @@ pub fn pty_resize(app: tauri::AppHandle, terminal_id: String, cols: u16, rows: u
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn pty_exists(app: tauri::AppHandle, terminal_id: String) -> bool {
-    let manager = app.state::<PtyManager>();
-    manager.has_pty(&terminal_id)
+    let manager = app.state::<Arc<PtyManager>>();
+    let exists = manager.has_pty(&terminal_id);
+    if exists {
+        log::warn!(
+            "[pty_exists] Reusing existing terminal {}. Existing shell env is kept; if proxy logs are missing, close and recreate terminal.",
+            terminal_id
+        );
+    } else {
+        log::info!("[pty_exists] Terminal {} does not exist, will spawn new PTY", terminal_id);
+    }
+    exists
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn get_terminal_active_process(app: tauri::AppHandle, terminal_id: String) -> Result<String, String> {
+    let manager = app.state::<Arc<PtyManager>>();
+    let children = manager.children.lock().unwrap();
+    
+    let shell_pid = if let Some(child) = children.get(&terminal_id) {
+        let pid = child.process_id();
+        log::debug!("get_terminal_active_process: terminal={} shell_pid={:?}", terminal_id, pid);
+        pid
+    } else {
+        log::warn!("get_terminal_active_process: PTY not found for terminal={}", terminal_id);
+        return Err("PTY not found".to_string());
+    };
+
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::default()
+    );
+
+    let mut active_proc = "shell".to_string();
+    for process in sys.processes().values() {
+        if let Some(ppid) = process.parent() {
+            if Some(ppid.as_u32()) == shell_pid {
+                let name = process.name().to_string_lossy().to_lowercase();
+                log::debug!("get_terminal_active_process: found child={} for shell_pid={:?}", name, shell_pid);
+                if name.contains("claude") {
+                    return Ok("claude".to_string());
+                }
+                if active_proc == "shell" {
+                    active_proc = name;
+                }
+            }
+        }
+    }
+
+    Ok(active_proc)
 }

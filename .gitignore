@@ -24,3 +24,4 @@ release/
 # Code Server Extensions Cache
 src-tauri/extensions/extensions.json
 src-tauri/extensions/.obsolete
+cc-switch/

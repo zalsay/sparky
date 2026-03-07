@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select } from 'antd';
+import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select, Badge } from 'antd';
 import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, HomeOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -67,6 +67,7 @@ interface Project {
   path: string;
   hooks_installed: boolean;
   agent_teams_enabled?: boolean;
+  default_provider_id?: string;
 }
 
 interface HookRecord {
@@ -98,6 +99,8 @@ interface SessionInfo {
   project_name: string | null;
 }
 
+const LAST_PROVIDER_BY_PROJECT_STORAGE_KEY = 'sparky-last-provider-by-project';
+
 function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsDarkMode: (v: boolean) => void }) {
   const { message: messageApi, modal: modalApi } = AntApp.useApp();
   const [form] = Form.useForm();
@@ -126,8 +129,18 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [editingProvider, setEditingProvider] = useState<Partial<AIProvider> | null>(null);
   const [testingProvider, setTestingProvider] = useState(false);
   const [activeTerminalId, setActiveTerminalId] = useState<Record<string, string>>({});
+  const [createTerminalModalOpen, setCreateTerminalModalOpen] = useState(false);
+  const [newTerminalProviderId, setNewTerminalProviderId] = useState<string>();
   const [externalFileTabs, setExternalFileTabs] = useState<{ path: string, folderPath: string }[]>([]);
   const [showDetailTab, setShowDetailTab] = useState<Record<string, boolean>>({});
+  const [lastProviderByProject, setLastProviderByProject] = useState<Record<string, string>>(() => {
+    try {
+      const saved = localStorage.getItem(LAST_PROVIDER_BY_PROJECT_STORAGE_KEY);
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
 
   const [hookRecords, setHookRecords] = useState<HookRecord[]>([]);
   const [hookRecordsTotal, setHookRecordsTotal] = useState(0);
@@ -152,7 +165,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [wsConnected, setWsConnected] = useState(false);
   const [activeProjects, setActiveProjects] = useState<string[]>([]);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
-  const [systemClaudeSettings, setSystemClaudeSettings] = useState<string | null>(null);
   const appConfigRef = useRef<AppConfig | null>(null);
   const [sidebarCollapsed] = useState(() => {
     const saved = localStorage.getItem('sparky-sidebar-collapsed');
@@ -170,14 +182,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     if (tauriAvailable) {
       invoke<AIProvider[]>('get_ai_providers').then(res => {
         setProviders(res);
-
-        // 如果只有一个 provider 且没有默认设置，自动将其设为默认
-        if (res.length === 1 && appConfig && !appConfig.default_provider_id) {
-          handleSetDefaultProvider(res[0].id!, res[0].app_type);
-        }
       }).catch(e => console.error('Failed to fetch AI providers:', e));
     }
-  }, [tauriAvailable, appConfig?.default_provider_id]);
+  }, [tauriAvailable]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -235,10 +242,51 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
   // Track terminal vs chat view modes per terminal id
   const [viewModes] = useState<Record<string, 'terminal' | 'chat'>>({});
+  const [terminalStatus, setTerminalStatus] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!tauriAvailable) return;
+
+    const poll = async () => {
+      const allTerminals = Object.values(projectTerminals).flat();
+      if (allTerminals.length === 0) return;
+
+      const newStatus: Record<string, string> = { ...terminalStatus };
+      let changed = false;
+
+      await Promise.all(allTerminals.map(async (term) => {
+        try {
+          const status = await invoke<string>('get_terminal_active_process', { terminal_id: term.id });
+          if (newStatus[term.id] !== status) {
+            newStatus[term.id] = status;
+            changed = true;
+          }
+        } catch (e) {
+          if (newStatus[term.id] !== 'offline') {
+            newStatus[term.id] = 'offline';
+            changed = true;
+          }
+        }
+      }));
+
+      if (changed) {
+        setTerminalStatus(newStatus);
+      }
+    };
+
+    const interval = setInterval(poll, 3000);
+    poll(); // Initial check
+
+    return () => clearInterval(interval);
+  }, [tauriAvailable, projectTerminals]);
 
   useEffect(() => {
     localStorage.setItem('sparky-sidebar-collapsed', String(sidebarCollapsed));
   }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem(LAST_PROVIDER_BY_PROJECT_STORAGE_KEY, JSON.stringify(lastProviderByProject));
+  }, [lastProviderByProject]);
 
   // Dependency check
   const [missingDependencies, setMissingDependencies] = useState<{ claude: boolean, code_server: boolean } | null>(null);
@@ -370,20 +418,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       return;
     }
 
-    // 初始化项目的终端
-    const pTerminals = projectTerminals[selectedProject.path] || [];
-    if (pTerminals.length === 0) {
-      const newId = crypto.randomUUID();
-      setProjectTerminals(prev => ({
-        ...prev,
-        [selectedProject.path]: [{ id: newId, title: 'Claude-1' }]
-      }));
-      setActiveTerminalId(prev => ({
-        ...prev,
-        [selectedProject.path]: newId
-      }));
-    }
-
     // load history
     invoke<string[]>('get_terminal_history', { project_path: selectedProject.path })
       .then((history) => {
@@ -487,6 +521,40 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     setActiveMenu('project-detail');
   };
 
+  const openCreateTerminalModal = () => {
+    if (!selectedProject) return;
+
+    if (providers.length === 0) {
+      messageApi.warning('请先添加至少一个 AI Provider');
+      return;
+    }
+
+    const lastProvider = lastProviderByProject[selectedProject.path];
+    const lastProviderExists = !!lastProvider && providers.some(p => `${p.app_type}::${p.id}` === lastProvider);
+    setNewTerminalProviderId(lastProviderExists ? lastProvider : undefined);
+    setCreateTerminalModalOpen(true);
+  };
+
+  const handleConfirmCreateTerminal = () => {
+    if (!selectedProject || !newTerminalProviderId) return;
+
+    const current = projectTerminals[selectedProject.path] || [];
+    const newId = crypto.randomUUID();
+    setProjectTerminals(prev => ({
+      ...prev,
+      [selectedProject.path]: [...current, { id: newId, title: `Claude-${current.length + 1}`, providerId: newTerminalProviderId }]
+    }));
+    setActiveTerminalId(prev => ({
+      ...prev,
+      [selectedProject.path]: newId
+    }));
+    setLastProviderByProject(prev => ({
+      ...prev,
+      [selectedProject.path]: newTerminalProviderId
+    }));
+    setCreateTerminalModalOpen(false);
+    setNewTerminalProviderId(undefined);
+  };
 
 
   const handleCloseTerminal = async () => {
@@ -508,6 +576,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     }
   };
 
+
   const loadConfig = async () => {
     if (!tauriAvailable) {
       return;
@@ -519,12 +588,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       appConfigRef.current = config;
     } catch (error) {
       messageApi.error(`加载配置失败: ${error} `);
-    }
-    try {
-      const sysSettings = await invoke<string>('get_system_claude_settings');
-      setSystemClaudeSettings(sysSettings);
-    } catch (e) {
-      console.log('No system claude settings loaded:', e);
     }
   };
 
@@ -655,6 +718,17 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     } catch (e) {
       messageApi.error(`设置默认失败: ${e} `);
     }
+  };
+
+  const buildClaudeCmd = async (terminalId: string, extraArgs: string = ''): Promise<string> => {
+    let settingsFlag = '';
+    try {
+      const settingsPath = await invoke<string>('get_terminal_settings_path', { terminal_id: terminalId });
+      if (settingsPath) settingsFlag = ` --settings "${settingsPath}"`;
+    } catch {
+      console.warn('No settings path for terminal, launching claude without --settings');
+    }
+    return `claude${settingsFlag}${extraArgs ? ' ' + extraArgs : ''}\n`;
   };
 
   const handleSave = async (values: any) => {
@@ -1502,13 +1576,15 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                       <Button
                                         size="small"
                                         type="primary"
-                                        onClick={() => {
+                                        onClick={async () => {
                                           const tid = activeTerminalId[selectedProject.path];
+                                          if (!tid) return;
                                           const isFullAuth = fullAuth[selectedProject.path] || false;
-                                          const cmd = isFullAuth
-                                            ? `claude --dangerously-skip-permissions --resume ${record.session_id}\n`
-                                            : `claude --resume ${record.session_id}\n`;
-                                          if (tid) invoke('pty_write', { terminal_id: tid, data: cmd });
+                                          const args = isFullAuth
+                                            ? `--dangerously-skip-permissions --resume ${record.session_id}`
+                                            : `--resume ${record.session_id}`;
+                                          const cmd = await buildClaudeCmd(tid, args);
+                                          invoke('pty_write', { terminal_id: tid, data: cmd });
                                           setSessionModalOpen(false);
                                         }}
                                       >
@@ -1654,9 +1730,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
                                               if (existingSession) {
                                                 // Resume existing testing session
-                                                cmd = isFullAuth
-                                                  ? `claude --dangerously-skip-permissions --resume ${existingSession}\n`
-                                                  : `claude --resume ${existingSession}\n`;
+                                                cmd = await buildClaudeCmd(targetTerminalId, isFullAuth
+                                                  ? `--dangerously-skip-permissions --resume ${existingSession}`
+                                                  : `--resume ${existingSession}`);
                                                 messageApi.info(`恢复测试会话: ${existingSession.slice(0, 12)}...`);
                                               } else {
                                                 // Start new claude session - capture current sessions first to avoid saving old session
@@ -1665,9 +1741,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                                 }).catch(() => [] as SessionInfo[]);
                                                 const topId = currentSessions.length > 0 ? currentSessions[0].id : 0;
 
-                                                cmd = isFullAuth
-                                                  ? 'claude --dangerously-skip-permissions\n'
-                                                  : 'claude\n';
+                                                cmd = await buildClaudeCmd(targetTerminalId, isFullAuth
+                                                  ? '--dangerously-skip-permissions'
+                                                  : '');
                                                 messageApi.info('启动新的 MCP 测试会话，正在连接...');
 
                                                 // Poll for up to 15 seconds to find the newly created session
@@ -1788,6 +1864,43 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           />
                         </Modal>
 
+                        <Modal
+                          title="新建终端"
+                          open={createTerminalModalOpen}
+                          onCancel={() => {
+                            setCreateTerminalModalOpen(false);
+                            setNewTerminalProviderId(undefined);
+                          }}
+                          onOk={handleConfirmCreateTerminal}
+                          okText="创建"
+                          cancelText="取消"
+                          okButtonProps={{ disabled: !newTerminalProviderId }}
+                          destroyOnHidden
+                        >
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                            <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
+                              请选择这个终端要使用的 AI Provider。
+                            </div>
+                            <Select
+                              placeholder="选择 AI Provider"
+                              value={newTerminalProviderId}
+                              onChange={setNewTerminalProviderId}
+                              style={{ width: '100%' }}
+                              options={providers.map(provider => ({
+                                label: (
+                                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                                    <span>{provider.name}</span>
+                                    {selectedProject && lastProviderByProject[selectedProject.path] === `${provider.app_type}::${provider.id}` && (
+                                      <Tag color="blue" style={{ marginInlineStart: 8 }}>上次选择</Tag>
+                                    )}
+                                  </div>
+                                ),
+                                value: `${provider.app_type}::${provider.id}`,
+                              }))}
+                            />
+                          </div>
+                        </Modal>
+
                         <div className={`terminal-wrapper ${terminalFullscreen ? 'fullscreen' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
                           <Tabs
                             type="editable-card"
@@ -1805,11 +1918,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   />
                                 </Tooltip>
                                 <Tooltip title="新建会话">
-                                  <Button size="small" type="text" icon={<PlayCircleOutlined />} onClick={() => {
+                                  <Button size="small" type="text" icon={<PlayCircleOutlined />} onClick={async () => {
                                     const tid = activeTerminalId[selectedProject.path];
+                                    if (!tid) return;
                                     const isFullAuth = fullAuth[selectedProject.path] || false;
-                                    const cmd = isFullAuth ? 'claude --dangerously-skip-permissions\n' : 'claude\n';
-                                    if (tid) invoke('pty_write', { terminal_id: tid, data: cmd });
+                                    const cmd = await buildClaudeCmd(tid, isFullAuth ? '--dangerously-skip-permissions' : '');
+                                    invoke('pty_write', { terminal_id: tid, data: cmd });
                                   }} />
                                 </Tooltip>
                                 <Tooltip title="继续会话">
@@ -1933,16 +2047,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                             onChange={(key) => setActiveTerminalId(prev => ({ ...prev, [selectedProject.path]: key }))}
                             onEdit={(targetKey, action) => {
                               if (action === 'add') {
-                                const newId = crypto.randomUUID();
-                                const current = projectTerminals[selectedProject!.path] || [];
-                                setProjectTerminals(prev => ({
-                                  ...prev,
-                                  [selectedProject!.path]: [...current, { id: newId, title: `Claude-${current.length + 1}` }]
-                                }));
-                                setActiveTerminalId(prev => ({
-                                  ...prev,
-                                  [selectedProject!.path]: newId
-                                }));
+                                openCreateTerminalModal();
                               } else if (action === 'remove' && typeof targetKey === 'string') {
                                 if (targetKey === 'detail') {
                                   setShowDetailTab(prev => ({ ...prev, [selectedProject!.path]: false }));
@@ -1991,6 +2096,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                                       <img src={isActive ? claudeIcon : claudeDeactiveIcon} width={18} height={18} alt="Claude" />
                                       <span>{term.title}</span>
+                                      {terminalStatus[term.id] === 'claude' && (
+                                        <Badge status="processing" text={<span style={{ color: 'var(--primary-color)', fontSize: '12px' }}>Claude 运行中</span>} />
+                                      )}
                                     </div>
                                   ),
                                   closable: true,
@@ -2017,17 +2125,32 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                             placeholder="选择 AI Provider"
                                             variant="filled"
                                             style={{ width: '100%', background: 'rgba(0, 0, 0, 0.2)', borderRadius: '4px' }}
-                                            value={term.providerId || appConfig?.default_provider_id}
-                                            options={[
-                                              { label: '系统设置 (~/.claude/settings.json)', value: 'system::claude' },
-                                              ...providers.map(p => ({ label: p.name, value: `${p.app_type}::${p.id}` }))
-                                            ]}
-                                            onChange={(val) => {
+                                            value={term.providerId}
+                                            options={providers.map(p => ({ label: p.name, value: `${p.app_type}::${p.id}` }))}
+                                            onChange={async (val) => {
                                               setProjectTerminals(prev => {
                                                 const current = prev[selectedProject!.path] || [];
                                                 const next = current.map(t => t.id === term.id ? { ...t, providerId: val } : t);
                                                 return { ...prev, [selectedProject!.path]: next };
                                               });
+                                              setLastProviderByProject(prev => ({
+                                                ...prev,
+                                                [selectedProject!.path]: val,
+                                              }));
+
+                                              if (val.includes('::')) {
+                                                const [_, providerId] = val.split('::');
+                                                invoke('set_terminal_provider', { terminal_id: term.id, provider_id: providerId });
+                                              }
+
+                                              if (terminalStatus[term.id] === 'claude') {
+                                                messageApi.warning({
+                                                  content: '模型已设为下次启动生效 (Claude 正在运行)',
+                                                  duration: 4
+                                                });
+                                              } else {
+                                                messageApi.success('已应用当前终端模型');
+                                              }
                                             }}
                                           />
                                         </div>
@@ -2053,51 +2176,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                       {/* To maintain alignment we just replaced the overlay buttons */}
                                       <div style={{ flex: 1, display: (viewModes[term.id] || 'terminal') === 'terminal' ? 'block' : 'none' }}>
                                         {(() => {
-                                          const providerIdStr = term.providerId || appConfig?.default_provider_id;
-                                          const envs: Record<string, string> = {};
-
-                                          if (providerIdStr === 'system::claude') {
-                                            if (systemClaudeSettings) {
-                                              try {
-                                                const settings = JSON.parse(systemClaudeSettings);
-                                                if (settings.env) {
-                                                  Object.entries(settings.env).forEach(([k, v]) => {
-                                                    envs[k] = String(v);
-                                                  });
-                                                }
-                                                // Some flat settings in root level might also be useful
-                                                if (settings.ANTHROPIC_AUTH_TOKEN) envs["ANTHROPIC_AUTH_TOKEN"] = settings.ANTHROPIC_AUTH_TOKEN;
-                                                if (settings.ANTHROPIC_BASE_URL) envs["ANTHROPIC_BASE_URL"] = settings.ANTHROPIC_BASE_URL;
-                                                if (settings.CLAUDE_CODE_MODEL_ID) envs["CLAUDE_CODE_MODEL_ID"] = settings.CLAUDE_CODE_MODEL_ID;
-                                                if (settings.API_TIMEOUT_MS) envs["API_TIMEOUT_MS"] = String(settings.API_TIMEOUT_MS);
-                                                if (settings.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC !== undefined) envs["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = String(settings.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC);
-                                              } catch (e) {
-                                                console.error("Failed to parse system claude settings:", e);
-                                              }
-                                            }
-                                          } else {
-                                            const provider = providers.find(p => `${p.app_type}::${p.id}` === providerIdStr);
-                                            if (provider) {
-                                              try {
-                                                const settings = JSON.parse(provider.settings_config || '{}');
-                                                envs["ANTHROPIC_AUTH_TOKEN"] = settings.api_key || '';
-                                                const baseUrl = provider.endpoints && provider.endpoints.length > 0 ? provider.endpoints[0].url : settings.base_url;
-                                                if (baseUrl) envs["ANTHROPIC_BASE_URL"] = baseUrl;
-                                                if (settings.model_id) envs["CLAUDE_CODE_MODEL_ID"] = settings.model_id;
-                                                if (settings.api_timeout) envs["API_TIMEOUT_MS"] = settings.api_timeout;
-                                                if (settings.disable_traffic !== undefined) {
-                                                  envs["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = settings.disable_traffic.toString();
-                                                }
-                                              } catch (e) {
-                                                console.error("Failed to parse settings_config for provider:", provider.name, e);
-                                              }
-                                            }
-                                          }
+                                          const providerIdStr = term.providerId || selectedProject?.default_provider_id || appConfig?.default_provider_id;
+                                          const providerIdForSpawn = providerIdStr && providerIdStr.includes('::') ? providerIdStr.split('::')[1] : undefined;
                                           return (
                                             <TerminalComponent
                                               projectPath={selectedProject!.path}
                                               terminalId={term.id}
                                               title={term.title as string}
+                                              defaultProviderId={providerIdForSpawn}
                                               onData={handleTerminalInput}
                                               onLinkClick={async (path) => {
                                                 // Validate file exists before opening
@@ -2147,7 +2233,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                                 foreground: appConfig?.terminal_fg_color,
                                                 fontSize: appConfig?.terminal_font_size,
                                               }}
-                                              envs={envs}
                                             />
                                           );
                                         })()}

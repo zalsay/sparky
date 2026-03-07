@@ -22,6 +22,7 @@ interface TerminalProps {
     fontSize?: number;
   };
   envs?: Record<string, string>;
+  defaultProviderId?: string;
 }
 
 export interface TerminalRef {
@@ -100,7 +101,7 @@ function getOrCreateTerminal(terminalId: string, title?: string, themeVals?: { b
   return created;
 }
 
-export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent({ projectPath, terminalId, title, onData, onLinkClick, mergeTop, historyLines, fullscreen, theme, envs }: TerminalProps, ref) {
+export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent({ projectPath, terminalId, title, onData, onLinkClick, mergeTop, historyLines, fullscreen, theme, envs, defaultProviderId }: TerminalProps, ref) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -108,7 +109,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
   const onLinkClickRef = useRef(onLinkClick);
 
 
-  const { startPty, write, clearPty } = usePty(terminalId, projectPath, envs);
+  const { startPty, write, clearPty } = usePty(terminalId, projectPath, envs, undefined, defaultProviderId);
 
   useImperativeHandle(ref, () => ({
     scrollToBottom: () => {

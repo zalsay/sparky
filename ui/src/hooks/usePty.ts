@@ -7,9 +7,10 @@ interface PtyInfo {
   terminalId: string;
   cols: number;
   rows: number;
+  defaultProviderId?: string;
 }
 
-export function usePty(terminalId: string, projectPath: string, customEnvs?: Record<string, string>, onData?: (data: string, projectPath: string, terminalId: string) => void) {
+export function usePty(terminalId: string, projectPath: string, customEnvs?: Record<string, string>, onData?: (data: string, projectPath: string, terminalId: string) => void, defaultProviderId?: string) {
   const [isRunning, setIsRunning] = useState(false);
   const ptyRef = useRef<PtyInfo | null>(null);
   const currentTerminalRef = useRef<string | null>(terminalId);
@@ -68,6 +69,21 @@ export function usePty(terminalId: string, projectPath: string, customEnvs?: Rec
     unlistenRef.current = unlisten;
   }, [cleanupListener, tauriAvailable]);
 
+  const ensureTerminalProvider = useCallback(async (tid: string) => {
+    if (!tauriAvailable || !defaultProviderId) {
+      return;
+    }
+    try {
+      await invoke('set_terminal_provider', {
+        terminal_id: tid,
+        provider_id: defaultProviderId,
+      });
+      console.log('Synced terminal provider for terminal:', tid, defaultProviderId);
+    } catch (error) {
+      console.warn('Failed to sync terminal provider for existing PTY:', error);
+    }
+  }, [tauriAvailable, defaultProviderId]);
+
   const startPty = useCallback(async () => {
     if (!tauriAvailable) {
       return null;
@@ -84,14 +100,18 @@ export function usePty(terminalId: string, projectPath: string, customEnvs?: Rec
       console.log('PTY exists:', exists);
 
       if (isRunning && exists) {
+        console.warn('Reusing existing PTY. Proxy env vars are not re-injected; recreate terminal if proxy logs are missing.');
+        await ensureTerminalProvider(terminalId);
         console.log('Same terminal, setting up listener');
         await setupListener(terminalId);
         return ptyRef.current;
       }
 
       if (exists) {
+        console.warn('Reconnecting existing PTY. Proxy env vars may be stale; recreate terminal if Claude bypasses proxy.');
+        await ensureTerminalProvider(terminalId);
         console.log('Reconnecting to existing PTY for terminal:', terminalId);
-        ptyRef.current = { projectPath, terminalId, cols: 100, rows: 30 };
+        ptyRef.current = { projectPath, terminalId, cols: 100, rows: 30, defaultProviderId };
         setIsRunning(true);
         await setupListener(terminalId);
         return ptyRef.current;
@@ -120,17 +140,18 @@ export function usePty(terminalId: string, projectPath: string, customEnvs?: Rec
         rows: 30,
         project_path: projectPath,
         terminal_id: terminalId,
+        default_provider_id: defaultProviderId,
       });
 
       console.log('PTY spawned for terminal:', result);
-      ptyRef.current = { projectPath, terminalId: result, cols: 100, rows: 30 };
+      ptyRef.current = { projectPath, terminalId: result, cols: 100, rows: 30, defaultProviderId };
       // Do not setIsRunning(true) here; wait for actual pty-data from setupListener
       return ptyRef.current;
     } catch (error) {
       console.error('Failed to start PTY:', error);
       return null;
     }
-  }, [isRunning, setupListener, projectPath, terminalId, customEnvs, tauriAvailable]);
+  }, [isRunning, setupListener, ensureTerminalProvider, projectPath, terminalId, customEnvs, tauriAvailable, defaultProviderId]);
 
   const write = useCallback(async (data: string) => {
     if (!tauriAvailable) {

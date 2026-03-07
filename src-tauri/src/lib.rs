@@ -18,7 +18,14 @@ use websocket::FeishuWsClient;
 mod feishu_client;
 
 mod pty;
-use pty::{PtyManager, pty_spawn, pty_write, pty_kill, pty_resize, pty_exists};
+use pty::{PtyManager, pty_spawn, pty_write, pty_kill, pty_resize, pty_exists, get_terminal_active_process};
+
+mod proxy;
+use proxy::{ProxyState, start_proxy_server};
+
+pub struct ProxyConfig {
+    pub port: u16,
+}
 
 pub struct WsConnectionState(pub Arc<AtomicBool>);
 
@@ -98,6 +105,27 @@ impl Default for AppConfig {
             default_provider_id: None,
         }
     }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn set_terminal_provider(
+    app: tauri::AppHandle,
+    terminal_id: String,
+    provider_id: String,
+) -> Result<(), String> {
+    let pty_manager = app.state::<Arc<PtyManager>>();
+    pty_manager.set_terminal_provider(terminal_id, provider_id);
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn get_terminal_settings_path(
+    app: tauri::AppHandle,
+    terminal_id: String,
+) -> Result<String, String> {
+    let pty_manager = app.state::<Arc<PtyManager>>();
+    pty_manager.get_settings_path(&terminal_id)
+        .ok_or_else(|| format!("No settings file found for terminal: {}", terminal_id))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,6 +231,7 @@ pub struct Project {
     pub agent_teams_enabled: bool,
     pub created_at: i64,
     pub updated_at: i64,
+    pub default_provider_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,10 +269,25 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
             path TEXT NOT NULL,
             hooks_installed INTEGER DEFAULT 0,
             created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
+            updated_at INTEGER NOT NULL,
+            default_provider_id TEXT
         )",
         [],
     )?;
+
+    // Migration for existing projects table
+    let columns: Vec<String> = conn.prepare("PRAGMA table_info(projects)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    
+    if !columns.contains(&"default_provider_id".to_string()) {
+        let m_res = conn.execute("ALTER TABLE projects ADD COLUMN default_provider_id TEXT", []);
+        log::info!("DB Migration: Add default_provider_id to projects result: {:?}", m_res);
+    }
+
+    if !columns.contains(&"hooks_installed".to_string()) {
+        let _ = conn.execute("ALTER TABLE projects ADD COLUMN hooks_installed INTEGER DEFAULT 0", []);
+    }
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS pty_commands (
@@ -258,7 +302,13 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     
     // migration: add message_id column to existing table
-    let _ = conn.execute("ALTER TABLE pty_commands ADD COLUMN message_id TEXT", []);
+    let cmd_columns: Vec<String> = conn.prepare("PRAGMA table_info(pty_commands)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    
+    if !cmd_columns.contains(&"message_id".to_string()) {
+        let _ = conn.execute("ALTER TABLE pty_commands ADD COLUMN message_id TEXT", []);
+    }
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS permission_requests (
@@ -651,8 +701,8 @@ fn upsert_config(conn: &Connection, config: &AppConfig) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .as_secs() as i64;
     conn.execute(
-        "INSERT INTO app_config_feishu (id, app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name, terminal_bg_color, terminal_fg_color, terminal_font_size, default_provider_id, updated_at)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+        "INSERT INTO app_config_feishu (id, app_id, app_secret, encrypt_key, verification_token, chat_id, project_path, open_id, hook_events_filter, app_name, anthropic_logo_img_key, terminal_bg_color, terminal_fg_color, terminal_font_size, default_provider_id, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(id) DO UPDATE SET
            app_id = excluded.app_id,
            app_secret = excluded.app_secret,
@@ -679,6 +729,7 @@ fn upsert_config(conn: &Connection, config: &AppConfig) -> Result<(), String> {
             config.open_id,
             config.hook_events_filter,
             config.app_name,
+            config.anthropic_logo_img_key,
             config.terminal_bg_color,
             config.terminal_fg_color,
             config.terminal_font_size,
@@ -750,7 +801,7 @@ pub fn handle_permission_decision(code: &str, choice: &str, message_id: &str) ->
 /// 将非权限确认的普通消息转发到终端
 pub fn forward_message_to_pty(app: tauri::AppHandle, message: &str, message_id: &str, open_id: &str) -> Result<(), String> {
     let state = app.state::<Arc<AppState>>();
-    let pty_manager = app.state::<PtyManager>();
+    let pty_manager = app.state::<Arc<PtyManager>>();
 
     let active_project = {
         let guard = state.active_project.lock().unwrap();
@@ -2207,10 +2258,8 @@ fn get_latest_claude_jsonl(project_path: String) -> Result<String, String> {
         .join("projects")
         .join(&escaped_path);
     
-    eprintln!("[get_latest_claude_jsonl] project_path={}, escaped={}, claude_dir={}", project_path, escaped_path, claude_dir.display());
     
     if !claude_dir.exists() {
-        eprintln!("[get_latest_claude_jsonl] Directory does not exist: {}", claude_dir.display());
         return Ok("".to_string());
     }
     
@@ -2471,7 +2520,7 @@ fn get_projects() -> Result<Vec<Project>, String> {
     let conn = open_db()?;
 
     let mut stmt = conn
-        .prepare("SELECT id, name, path, hooks_installed, created_at, updated_at FROM projects ORDER BY created_at DESC")
+        .prepare("SELECT id, name, path, hooks_installed, created_at, updated_at, default_provider_id FROM projects ORDER BY created_at DESC")
         .map_err(|e| e.to_string())?;
 
     let rows = stmt
@@ -2484,6 +2533,7 @@ fn get_projects() -> Result<Vec<Project>, String> {
                 agent_teams_enabled: false,
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
+                default_provider_id: row.get(6)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -2513,6 +2563,10 @@ fn get_projects() -> Result<Vec<Project>, String> {
         projects.push(item);
     }
 
+    log::info!("get_projects: found {} projects", projects.len());
+    for p in &projects {
+        log::info!("  - project {}: default_provider={:?}", p.name, p.default_provider_id);
+    }
     Ok(projects)
 }
 
@@ -2531,6 +2585,8 @@ fn add_project(name: String, path: String) -> Result<Project, String> {
     )
     .map_err(|e| e.to_string())?;
 
+    log::info!("add_project: name={}, path={}", name, path);
+
     let id = conn.last_insert_rowid();
     let agent_teams_enabled = check_agent_teams_enabled_for_path(&path).unwrap_or(false);
 
@@ -2542,22 +2598,27 @@ fn add_project(name: String, path: String) -> Result<Project, String> {
         agent_teams_enabled,
         created_at: now,
         updated_at: now,
+        default_provider_id: None,
     })
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn update_project(id: i64, name: String, path: String) -> Result<(), String> {
+fn update_project(id: i64, name: String, path: String, default_provider_id: Option<String>) -> Result<(), String> {
     let conn = open_db()?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_secs() as i64;
 
-    conn.execute(
-        "UPDATE projects SET name = ?1, path = ?2, updated_at = ?3 WHERE id = ?4",
-        params![name, path, now, id],
-    )
-    .map_err(|e| e.to_string())?;
+    log::info!("update_project: id={}, name={}, path={}, provider={:?}", id, name, path, default_provider_id);
+
+    let res = conn.execute(
+        "UPDATE projects SET name = ?1, path = ?2, updated_at = ?3, default_provider_id = ?4 WHERE id = ?5",
+        params![name, path, now, default_provider_id, id],
+    );
+    
+    log::info!("update_project: DB result: {:?}", res);
+    res.map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -2725,10 +2786,12 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(state)
-        .manage(PtyManager::new())
+        .manage(Arc::new(PtyManager::new()))
         .manage(WsConnectionState(ws_connected.clone()))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            let pty_manager = app.state::<Arc<PtyManager>>();
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -2736,6 +2799,17 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
+            let proxy_state = ProxyState {
+                pty_manager: pty_manager.inner().clone(),
+                http_client: reqwest::Client::new(),
+            };
+
+            let proxy_port = tauri::async_runtime::block_on(async {
+                start_proxy_server(proxy_state).await
+            }).expect("Failed to start proxy server");
+
+            app.manage(ProxyConfig { port: proxy_port });
             
             // 将 sparky 二进制复制到 ~/sparky/ 供 hooks 使用
             if let Ok(exe_path) = std::env::current_exe() {
@@ -2928,7 +3002,7 @@ pub fn run() {
                                 let terminal_id = state.active_terminal_id.lock().unwrap().clone();
 
                                 if let Some(tid) = terminal_id {
-                                    let manager = app.state::<PtyManager>();
+                                    let manager = app.state::<Arc<PtyManager>>();
                                     let safe_data = req.code.replace('\r', " ").replace('\n', " ");
                                     match manager.write(&tid, &safe_data) {
                                         Ok(_) => {
@@ -3070,7 +3144,10 @@ pub fn run() {
             get_installed_code_server_extensions,
             get_latest_claude_jsonl,
             set_active_terminal_id,
-            import_from_ccswitch
+            import_from_ccswitch,
+            get_terminal_active_process,
+            set_terminal_provider,
+            get_terminal_settings_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
