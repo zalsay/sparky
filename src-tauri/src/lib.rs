@@ -252,6 +252,14 @@ pub struct SessionInfo {
     pub project_name: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IDEPlugin {
+    pub id: String,
+    pub name: String,
+    pub desc: String,
+    pub created_at: Option<i64>,
+}
+
 fn get_db_path() -> PathBuf {
     let base_dir = dirs::home_dir()
         .expect("Failed to get home directory")
@@ -498,14 +506,49 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     )?;
 
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS testing_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_path TEXT NOT NULL UNIQUE,
-            session_id TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
+        "CREATE TABLE IF NOT EXISTS ide_plugins (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            desc TEXT NOT NULL DEFAULT '',
+            created_at INTEGER
         )",
         [],
+    )?;
+
+    let ide_plugins_count: i64 = conn.query_row("SELECT COUNT(*) FROM ide_plugins", [], |row| row.get(0))?;
+    if ide_plugins_count == 0 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let defaults = [
+            ("saoudrizwan.claude-dev", "Cline", "Autonomous coding agent right in your IDE"),
+            ("rooveterinaryinc.roo-cline", "Roo Code", "AI coding assistant that lives in your editor"),
+            ("charliermarsh.ruff", "Ruff", "An extremely fast Python linter and code formatter"),
+            ("dbaeumer.vscode-eslint", "ESLint", "Integrates ESLint JavaScript into VS Code"),
+            ("detachhead.basedpyright", "Basedpyright", "A better, faster Pyright language server for Python"),
+        ];
+        for (id, name, desc) in defaults {
+            conn.execute(
+                "INSERT INTO ide_plugins (id, name, desc, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params![id, name, desc, now],
+            )?;
+        }
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    conn.execute(
+        "INSERT INTO ide_plugins (id, name, desc, created_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO NOTHING",
+        params![
+            "detachhead.basedpyright",
+            "Basedpyright",
+            "A better, faster Pyright language server for Python",
+            now,
+        ],
     )?;
 
     Ok(())
@@ -2713,41 +2756,127 @@ async fn install_code_server() -> Result<String, String> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+fn get_ide_plugins() -> Result<Vec<IDEPlugin>, String> {
+    let conn = open_db()?;
+    let mut stmt = conn
+        .prepare("SELECT id, name, desc, created_at FROM ide_plugins ORDER BY created_at ASC, id ASC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(IDEPlugin {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                desc: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(result)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn add_ide_plugin(extension_id: String) -> Result<String, String> {
+    let trimmed = extension_id.trim();
+    if trimmed.is_empty() {
+        return Err("插件 ID 不能为空".to_string());
+    }
+
+    let name = trimmed
+        .rsplit('.')
+        .next()
+        .unwrap_or(trimmed)
+        .replace('-', " ")
+        .split_whitespace()
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+
+    let conn = open_db()?;
+    conn.execute(
+        "INSERT INTO ide_plugins (id, name, desc, created_at) VALUES (?1, ?2, '', ?3)
+         ON CONFLICT(id) DO NOTHING",
+        params![trimmed, name, now],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(trimmed.to_string())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn delete_ide_plugin(id: String) -> Result<(), String> {
+    let conn = open_db()?;
+    conn.execute("DELETE FROM ide_plugins WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
 async fn install_code_server_extension(extension_id: String) -> Result<String, String> {
     log::info!("Attempting to install code-server extension: {}", extension_id);
-    let output = std::process::Command::new("sh")
-        .arg("-lc")
-        .arg(format!("code-server --install-extension {}", extension_id))
+    let output = std::process::Command::new("code-server")
+        .arg("--install-extension")
+        .arg(&extension_id)
         .output()
         .map_err(|e| format!("Failed to execute command: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    log::info!(
+        "code-server install result: extension={} status={:?} stdout={} stderr={}",
+        extension_id,
+        output.status.code(),
+        stdout,
+        stderr
+    );
 
     if output.status.success() {
         Ok(format!("Extension {} installed successfully", extension_id))
     } else {
-        let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
-        Err(format!("Install failed: {}", err_msg))
+        Err(format!("Install failed: {}", stderr))
     }
 }
 
 #[tauri::command(rename_all = "snake_case")]
 async fn get_installed_code_server_extensions() -> Result<Vec<String>, String> {
-    let output = std::process::Command::new("sh")
-        .arg("-lc")
-        .arg("code-server --list-extensions")
+    let output = std::process::Command::new("code-server")
+        .arg("--list-extensions")
         .output()
         .map_err(|e| format!("Failed to execute command: {}", e))?;
 
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    log::info!(
+        "code-server list-extensions result: status={:?} stderr={}",
+        output.status.code(),
+        stderr
+    );
+
     if output.status.success() {
-        let output_str = String::from_utf8_lossy(&output.stdout);
-        let extensions: Vec<String> = output_str
+        let extensions: Vec<String> = stdout
             .lines()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
+        log::info!("code-server list-extensions count={}", extensions.len());
         Ok(extensions)
     } else {
-        let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
-        Err(format!("Failed to list extensions: {}", err_msg))
+        Err(format!("Failed to list extensions: {}", stderr))
     }
 }
 
@@ -3142,6 +3271,9 @@ pub fn run() {
             install_code_server,
             install_code_server_extension,
             get_installed_code_server_extensions,
+            get_ide_plugins,
+            add_ide_plugin,
+            delete_ide_plugin,
             get_latest_claude_jsonl,
             set_active_terminal_id,
             import_from_ccswitch,

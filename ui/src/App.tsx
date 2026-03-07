@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select, Badge } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, HomeOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -13,6 +13,13 @@ import codeIcon from './assets/Code.svg';
 import claudeIcon from './assets/Claude.svg';
 import claudeDeactiveIcon from './assets/claude-deactive.svg';
 import './App.css';
+
+interface IDEPlugin {
+  id: string;
+  name: string;
+  desc: string;
+  created_at?: number | null;
+}
 
 interface AppConfig {
   app_id: string;
@@ -166,10 +173,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [activeProjects, setActiveProjects] = useState<string[]>([]);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const appConfigRef = useRef<AppConfig | null>(null);
-  const [sidebarCollapsed] = useState(() => {
-    const saved = localStorage.getItem('sparky-sidebar-collapsed');
-    return saved === 'true';
-  });
+  const sidebarCollapsed = false;
   const [splitterSizes, setSplitterSizes] = useState<number[] | string[]>(() => {
     try {
       const saved = localStorage.getItem('sparkySplitterSizes');
@@ -237,6 +241,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
   // IDE Plugins state
   const [idePlugins, setIdePlugins] = useState<string[]>([]);
+  const [idePluginList, setIdePluginList] = useState<IDEPlugin[]>([]);
   const [installingPlugin, setInstallingPlugin] = useState<string | null>(null);
   const [customPluginId, setCustomPluginId] = useState('');
 
@@ -279,10 +284,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
     return () => clearInterval(interval);
   }, [tauriAvailable, projectTerminals]);
-
-  useEffect(() => {
-    localStorage.setItem('sparky-sidebar-collapsed', String(sidebarCollapsed));
-  }, [sidebarCollapsed]);
 
   useEffect(() => {
     localStorage.setItem(LAST_PROVIDER_BY_PROJECT_STORAGE_KEY, JSON.stringify(lastProviderByProject));
@@ -445,6 +446,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     invoke<string[]>('get_installed_code_server_extensions')
       .then(setIdePlugins)
       .catch(err => console.error('Failed to get installed code-server extensions:', err));
+    invoke<IDEPlugin[]>('get_ide_plugins')
+      .then(setIdePluginList)
+      .catch(err => console.error('Failed to get IDE plugins:', err));
   }, [activeMenu, tauriAvailable]);
 
   // Check code-server connection when entering project detail
@@ -945,19 +949,16 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
           <div className="header-content" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
               <div className="logo">
-                <img src={logo} alt="logo" className="logo-img" />
-                <h1>Sparky</h1>
+                <button
+                  type="button"
+                  className="logo-home-button"
+                  onClick={() => setActiveMenu('project')}
+                >
+                  <img src={logo} alt="logo" className="logo-img" />
+                  <h1>Sparky</h1>
+                </button>
                 {activeProjects.length > 0 && (
                   <div className="header-active-projects-inline">
-                    <Tooltip title="返回主页">
-                      <Button
-                        type="text"
-                        size="small"
-                        icon={<HomeOutlined />}
-                        onClick={() => setActiveMenu('project')}
-                        style={{ marginRight: 8, color: 'var(--text-secondary)' }}
-                      />
-                    </Tooltip>
                     <span style={{ fontSize: 13, color: 'var(--text-secondary)', marginRight: 6, fontWeight: 500 }}>运行中:</span>
                     {activeProjects.map(path => {
                       const name = path.split('/').pop() || path;
@@ -1005,7 +1006,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                 style={{ height: '100%', borderRight: 0 }}
                 items={[
                   { key: 'project', icon: <ProjectOutlined />, label: '项目' },
-                  { key: 'ai-models', icon: <ApiOutlined />, label: 'AI模型' },
+                  { key: 'ai-models', icon: <ThunderboltOutlined />, label: 'AI模型' },
                   { key: 'ide-plugins', icon: <AppstoreAddOutlined />, label: 'IDE 插件' },
                   { key: 'settings', icon: <SettingOutlined />, label: '设置' },
                   { key: 'help', icon: <EyeOutlined />, label: '帮助' },
@@ -1309,30 +1310,35 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                         />
                         <Button
                           type="primary"
-                          loading={installingPlugin === customPluginId}
+                          loading={installingPlugin === `add:${customPluginId}`}
                           onClick={async () => {
-                            if (!customPluginId) return;
-                            setInstallingPlugin(customPluginId);
+                            const pluginId = customPluginId.trim();
+                            if (!pluginId) return;
+                            setInstallingPlugin(`add:${pluginId}`);
                             try {
-                              await invoke('install_code_server_extension', { extension_id: customPluginId });
-                              messageApi.success(`插件 ${customPluginId} 安装成功`);
+                              await invoke('add_ide_plugin', { extension_id: pluginId });
+                              messageApi.success(`已加入插件列表: ${pluginId}`);
                               setCustomPluginId('');
-                              const list = await invoke<string[]>('get_installed_code_server_extensions');
-                              setIdePlugins(list);
+                              const list = await invoke<IDEPlugin[]>('get_ide_plugins');
+                              setIdePluginList(list);
                             } catch (e) {
-                              messageApi.error(`安装失败: ${e}`);
+                              messageApi.error(`保存失败: ${e}`);
                             } finally {
                               setInstallingPlugin(null);
                             }
                           }}
                         >
-                          安装
+                          加入列表
                         </Button>
                         <Button
                           icon={<ReloadOutlined />}
                           onClick={async () => {
-                            const list = await invoke<string[]>('get_installed_code_server_extensions');
-                            setIdePlugins(list);
+                            const [installedList, pluginList] = await Promise.all([
+                              invoke<string[]>('get_installed_code_server_extensions'),
+                              invoke<IDEPlugin[]>('get_ide_plugins')
+                            ]);
+                            setIdePlugins(installedList);
+                            setIdePluginList(pluginList);
                             messageApi.success('插件列表已刷新');
                           }}
                         />
@@ -1340,12 +1346,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                     </div>
                     <Divider />
                     <Table
-                      dataSource={[
-                        { id: 'saoudrizwan.claude-dev', name: 'Cline', desc: 'Autonomous coding agent right in your IDE' },
-                        { id: 'rooveterinaryinc.roo-cline', name: 'Roo Code', desc: 'AI coding assistant that lives in your editor' },
-                        { id: 'charliermarsh.ruff', name: 'Ruff', desc: 'An extremely fast Python linter and code formatter' },
-                        { id: 'dbaeumer.vscode-eslint', name: 'ESLint', desc: 'Integrates ESLint JavaScript into VS Code' },
-                      ]}
+                      dataSource={idePluginList}
                       rowKey="id"
                       pagination={false}
                       columns={[
@@ -1380,31 +1381,49 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                         {
                           title: '操作',
                           key: 'action',
-                          width: 150,
+                          width: 220,
                           render: (_, record) => {
                             const installed = idePlugins.some(p => p.toLowerCase() === record.id.toLowerCase());
                             return (
-                              <Button
-                                size="small"
-                                type={installed ? 'default' : 'primary'}
-                                disabled={installed}
-                                loading={installingPlugin === record.id}
-                                onClick={async () => {
-                                  setInstallingPlugin(record.id);
-                                  try {
-                                    await invoke('install_code_server_extension', { extension_id: record.id });
-                                    messageApi.success(`插件 ${record.name} 安装成功`);
-                                    const list = await invoke<string[]>('get_installed_code_server_extensions');
-                                    setIdePlugins(list);
-                                  } catch (e) {
-                                    messageApi.error(`安装失败: ${e}`);
-                                  } finally {
-                                    setInstallingPlugin(null);
-                                  }
-                                }}
-                              >
-                                {installed ? '已安装' : '安装'}
-                              </Button>
+                              <Space>
+                                <Button
+                                  size="small"
+                                  type={installed ? 'default' : 'primary'}
+                                  disabled={installed}
+                                  loading={installingPlugin === record.id}
+                                  onClick={async () => {
+                                    setInstallingPlugin(record.id);
+                                    try {
+                                      await invoke('install_code_server_extension', { extension_id: record.id });
+                                      messageApi.success(`插件 ${record.name} 安装成功`);
+                                      const list = await invoke<string[]>('get_installed_code_server_extensions');
+                                      setIdePlugins(list);
+                                    } catch (e) {
+                                      messageApi.error(`安装失败: ${e}`);
+                                    } finally {
+                                      setInstallingPlugin(null);
+                                    }
+                                  }}
+                                >
+                                  {installed ? '已安装' : '安装'}
+                                </Button>
+                                <Popconfirm
+                                  title="删除这个插件项？"
+                                  okText="删除"
+                                  cancelText="取消"
+                                  onConfirm={async () => {
+                                    try {
+                                      await invoke('delete_ide_plugin', { id: record.id });
+                                      setIdePluginList(prev => prev.filter(item => item.id !== record.id));
+                                      messageApi.success(`已删除 ${record.name}`);
+                                    } catch (e) {
+                                      messageApi.error(`删除失败: ${e}`);
+                                    }
+                                  }}
+                                >
+                                  <Button size="small" danger type="text" icon={<DeleteOutlined />} />
+                                </Popconfirm>
+                              </Space>
                             );
                           }
                         }
@@ -1891,7 +1910,16 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                                     <span>{provider.name}</span>
                                     {selectedProject && lastProviderByProject[selectedProject.path] === `${provider.app_type}::${provider.id}` && (
-                                      <Tag color="blue" style={{ marginInlineStart: 8 }}>上次选择</Tag>
+                                      <Tag
+                                        style={{
+                                          marginInlineStart: 8,
+                                          backgroundColor: 'var(--active-text)',
+                                          borderColor: 'var(--active-text)',
+                                          color: 'var(--active-bg)',
+                                        }}
+                                      >
+                                        上次选择
+                                      </Tag>
                                     )}
                                   </div>
                                 ),

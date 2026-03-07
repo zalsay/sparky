@@ -105,6 +105,28 @@ body {
   margin-bottom: 4px;
 }
 
+.logo-home-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  transform-origin: left center;
+}
+
+.logo-home-button:hover {
+  opacity: 0.82;
+  transform: scale(1.02);
+}
+
+.logo-home-button:hover h1 {
+  color: var(--text-secondary);
+}
+
 .logo-img {
   width: 26px;
   height: 26px;
