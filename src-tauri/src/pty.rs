@@ -413,30 +413,66 @@ pub async fn pty_spawn(
     let proxy_root_url = format!("http://127.0.0.1:{}", proxy_config.port);
 
     // Generate temp settings file for `claude --settings` with REAL provider config
+    // Same approach as cc-switch: write { "env": { ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL, ANTHROPIC_MODEL, ... } }
     if has_direct_provider {
         let provider_id = default_provider_id.as_ref().unwrap();
         if let Some(provider) = manager.get_provider_details(provider_id) {
             let config: serde_json::Value = serde_json::from_str(&provider.settings_config)
                 .unwrap_or(serde_json::json!({}));
 
-            // API URL: endpoints first, then settings_config.base_url
-            let base_url = if !provider.endpoints.is_empty() {
-                Some(provider.endpoints[0].url.clone())
+            // If settings_config already has cc-switch format { "env": { ... } }, use it as base
+            let mut env_vars = if let Some(env_obj) = config.get("env").and_then(|v| v.as_object()) {
+                env_obj.clone()
             } else {
-                config.get("base_url").and_then(|v| v.as_str()).map(|s| s.to_string())
+                serde_json::Map::new()
             };
 
-            // API key
-            let api_key = config.get("api_key")
-                .or_else(|| config.get("env").and_then(|v| v.get("ANTHROPIC_API_KEY")))
-                .and_then(|v| v.as_str());
+            // API URL: settings_config.base_url 是用户在 cc-switch 配置的正确 URL
+            // provider_endpoints 可能是过时的测速数据，仅作 fallback
+            if !env_vars.contains_key("ANTHROPIC_BASE_URL") {
+                let base_url = config
+                    .get("base_url")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        provider.endpoints.first().map(|e| e.url.clone())
+                    });
+                if let Some(ref url) = base_url {
+                    env_vars.insert("ANTHROPIC_BASE_URL".to_string(), serde_json::Value::String(url.clone()));
 
-            let mut env_vars = serde_json::Map::new();
-            if let Some(ref url) = base_url {
-                env_vars.insert("ANTHROPIC_BASE_URL".to_string(), serde_json::Value::String(url.clone()));
+                    // 自动修复: 如果 config.base_url 与 endpoint 不一致，更新 endpoint
+                    let endpoint_mismatch = provider.endpoints.first().map_or(true, |e| e.url != *url);
+                    if endpoint_mismatch {
+                        if let Ok(conn) = crate::open_db() {
+                            let _ = conn.execute("DELETE FROM provider_endpoints WHERE provider_id = ?1", rusqlite::params![provider.id]);
+                            let _ = conn.execute(
+                                "INSERT INTO provider_endpoints (provider_id, app_type, url, added_at) VALUES (?1, ?2, ?3, ?4)",
+                                rusqlite::params![provider.id, provider.app_type, url, chrono::Utc::now().timestamp()],
+                            );
+                            log::info!("[PTY_SPAWN] Auto-fixed endpoint for provider {}: url={}", provider.id, url);
+                        }
+                    }
+                }
             }
-            if let Some(key) = api_key {
-                env_vars.insert("ANTHROPIC_API_KEY".to_string(), serde_json::Value::String(key.to_string()));
+
+            // API key: use ANTHROPIC_AUTH_TOKEN (same as cc-switch, sends Authorization: Bearer)
+            // sparky flat format has "api_key" at root level
+            if !env_vars.contains_key("ANTHROPIC_AUTH_TOKEN") && !env_vars.contains_key("ANTHROPIC_API_KEY") {
+                if let Some(key) = config.get("api_key").and_then(|v| v.as_str()) {
+                    env_vars.insert("ANTHROPIC_AUTH_TOKEN".to_string(), serde_json::Value::String(key.to_string()));
+                }
+            }
+
+            // Model ID: sparky flat format "model_id" → ANTHROPIC_MODEL + tier models
+            if !env_vars.contains_key("ANTHROPIC_MODEL") {
+                if let Some(model_id) = config.get("model_id").and_then(|v| v.as_str()) {
+                    let model_val = serde_json::Value::String(model_id.to_string());
+                    env_vars.insert("ANTHROPIC_MODEL".to_string(), model_val.clone());
+                    env_vars.entry("ANTHROPIC_DEFAULT_HAIKU_MODEL".to_string()).or_insert(model_val.clone());
+                    env_vars.entry("ANTHROPIC_DEFAULT_SONNET_MODEL".to_string()).or_insert(model_val.clone());
+                    env_vars.entry("ANTHROPIC_DEFAULT_OPUS_MODEL".to_string()).or_insert(model_val.clone());
+                }
             }
 
             let temp_dir = std::env::temp_dir();
@@ -448,8 +484,13 @@ pub async fn pty_spawn(
                 .map_err(|e| format!("Failed to write settings file: {}", e))?;
 
             log::info!(
-                "[PTY_SPAWN] Direct provider settings: provider={}({}) base_url={:?} file={:?}",
-                provider.name, provider.id, base_url, settings_file
+                "[PTY_SPAWN] Direct provider settings: provider={}({}) base_url={:?} (config.base_url={:?}, endpoints={:?}) model={:?} file={:?}",
+                provider.name, provider.id,
+                env_vars.get("ANTHROPIC_BASE_URL"),
+                config.get("base_url").and_then(|v| v.as_str()),
+                provider.endpoints.iter().map(|e| &e.url).collect::<Vec<_>>(),
+                env_vars.get("ANTHROPIC_MODEL"),
+                settings_file
             );
             manager.store_settings_path(terminal_id.clone(), settings_file);
         } else {
@@ -477,9 +518,20 @@ pub async fn pty_spawn(
     let mut cmd = CommandBuilder::new(&actual_program);
     cmd.args(&args);
     cmd.cwd(&cwd);
-    // 继承父进程环境变量，再覆盖指定的
-    for (key, value) in std::env::vars() {
-        cmd.env(&key, &value);
+
+    // When injecting provider settings via --settings, remove inherited Anthropic env vars
+    // to avoid conflicts (e.g., "Auth conflict: Both AUTH_TOKEN and API_KEY are set")
+    // CommandBuilder::new() inherits ALL parent env vars via get_base_env(),
+    // so cmd.env_remove() is required — merely skipping cmd.env() does NOT work.
+    if has_direct_provider {
+        cmd.env_remove("ANTHROPIC_API_KEY");
+        cmd.env_remove("ANTHROPIC_AUTH_TOKEN");
+        cmd.env_remove("ANTHROPIC_BASE_URL");
+        cmd.env_remove("ANTHROPIC_MODEL");
+        cmd.env_remove("ANTHROPIC_SMALL_FAST_MODEL");
+        cmd.env_remove("ANTHROPIC_DEFAULT_HAIKU_MODEL");
+        cmd.env_remove("ANTHROPIC_DEFAULT_SONNET_MODEL");
+        cmd.env_remove("ANTHROPIC_DEFAULT_OPUS_MODEL");
     }
 
     // Inject utility env vars (no proxy routing — provider config is in --settings file)

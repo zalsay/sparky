@@ -91,7 +91,7 @@ async fn main() -> Result<()> {
 
                 if event_name == "SessionStart" {
                     let source = hook_input.source.as_deref().unwrap_or("");
-                    
+
                     if source == "resume" {
                         // This is a resumed session — don't create a new record.
                         // Just re-open the existing session by clearing ended_at.
@@ -101,8 +101,11 @@ async fn main() -> Result<()> {
                         } else {
                             append_hook_log(&format!("♻️ Session reopened (resume): {}", hook_input.session_id));
                         }
-                        // Also delete the wrapper startup session that claude --resume
-                        // creates moments before the resume event (new session_id, same project).
+                        // Delete wrapper sessions: claude --resume fires a "startup" event
+                        // with a NEW session_id right before/after this "resume" event.
+                        // Wait briefly so the concurrent startup handler can save first,
+                        // then delete the wrapper.
+                        std::thread::sleep(std::time::Duration::from_millis(500));
                         if let Err(e) = delete_recent_wrapper_sessions(&hook_input.cwd, &hook_input.session_id) {
                             tracing::error!("[main] Failed to clean wrapper sessions: {:?}", e);
                             append_hook_log(&format!("⚠️ Wrapper session cleanup failed: {}", e));
@@ -110,16 +113,26 @@ async fn main() -> Result<()> {
                             append_hook_log("🗑️ Cleaned up wrapper startup sessions");
                         }
                     } else {
-                        // Normal startup — save a new session record
-                        let project_name = std::path::Path::new(&hook_input.cwd)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("Unknown");
-                        if let Err(e) = save_session(&hook_input.cwd, &hook_input.session_id, project_name) {
-                            tracing::error!("[main] Failed to save session: {:?}", e);
-                            append_hook_log(&format!("❌ Session save failed: {}", e));
+                        // Possible new session or wrapper from --resume.
+                        // Wait briefly for any concurrent resume handler to reopen the old session.
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+
+                        // Check if there's already an active session for this project
+                        // (means a resume just reopened one — this startup is a wrapper, skip it)
+                        if has_active_session_for_project(&hook_input.cwd, &hook_input.session_id) {
+                            append_hook_log(&format!("⏭️ Skipping wrapper session (active session exists): {}", hook_input.session_id));
                         } else {
-                            append_hook_log(&format!("✅ Session saved: {} ({})", hook_input.session_id, project_name));
+                            // Normal startup — save a new session record
+                            let project_name = std::path::Path::new(&hook_input.cwd)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("Unknown");
+                            if let Err(e) = save_session(&hook_input.cwd, &hook_input.session_id, project_name) {
+                                tracing::error!("[main] Failed to save session: {:?}", e);
+                                append_hook_log(&format!("❌ Session save failed: {}", e));
+                            } else {
+                                append_hook_log(&format!("✅ Session saved: {} ({})", hook_input.session_id, project_name));
+                            }
                         }
                     }
                 } else {
@@ -921,6 +934,22 @@ fn reopen_session(project_path: &str, session_id: &str) -> Result<()> {
     append_hook_log(&format!("♻️ Session reopen updated, affected rows: {}", affected));
     tracing::info!("[db:session] reopened session_id={}, affected={}", session_id, affected);
     Ok(())
+}
+
+/// Check if there's already an active (ended_at IS NULL) session for this project,
+/// excluding the given session_id. Used to detect wrapper sessions from --resume.
+fn has_active_session_for_project(project_path: &str, exclude_session_id: &str) -> bool {
+    let db_path = get_db_path();
+    let conn = match Connection::open(&db_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE project_path = ?1 AND session_id != ?2 AND ended_at IS NULL",
+        params![project_path, exclude_session_id],
+        |r| r.get(0),
+    ).unwrap_or(0);
+    count > 0
 }
 
 /// Delete wrapper startup sessions created within the last 10 seconds

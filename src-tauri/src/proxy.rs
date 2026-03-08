@@ -275,22 +275,25 @@ async fn proxy_core(
         )
     })?;
 
-    let upstream_url_base = if !provider.endpoints.is_empty() {
-        provider.endpoints[0].url.clone()
-    } else if let Some(base) = settings.get("base_url").and_then(|v| v.as_str()) {
-        base.to_string()
-    } else {
-        log::error!(
-            "[PROXY] No endpoint/base_url terminal={} provider_id={} provider_name={}",
-            terminal_id,
-            provider.id,
-            provider.name
-        );
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "No upstream URL configured".to_string(),
-        ));
-    };
+    // settings_config.base_url 是用户配置的正确 URL，endpoints 可能过时，仅作 fallback
+    let upstream_url_base = settings
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| provider.endpoints.first().map(|e| e.url.clone()))
+        .ok_or_else(|| {
+            log::error!(
+                "[PROXY] No base_url/endpoint terminal={} provider_id={} provider_name={}",
+                terminal_id,
+                provider.id,
+                provider.name
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "No upstream URL configured".to_string(),
+            )
+        })?;
 
     let upstream_url = format!(
         "{}/{}",
@@ -320,6 +323,7 @@ async fn proxy_core(
     let api_key = settings
         .get("api_key")
         .or_else(|| settings.get("env").and_then(|v| v.get("ANTHROPIC_API_KEY")))
+        .or_else(|| settings.get("env").and_then(|v| v.get("ANTHROPIC_AUTH_TOKEN")))
         .or_else(|| settings.get("auth").and_then(|v| v.get("OPENAI_API_KEY")))
         .and_then(|v| v.as_str())
         .ok_or_else(|| {

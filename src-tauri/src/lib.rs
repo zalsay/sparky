@@ -1382,6 +1382,12 @@ fn import_from_ccswitch() -> Result<Vec<AIProvider>, String> {
 
     for row_res in rows {
         if let Ok(provider) = row_res {
+            // 从 cc-switch settings_config.env.ANTHROPIC_BASE_URL 提取正确的 base_url
+            // 这是用户在 cc-switch 里配置的真实 API 端点
+            let correct_base_url: Option<String> = serde_json::from_str::<serde_json::Value>(&provider.settings_config)
+                .ok()
+                .and_then(|cfg| cfg.get("base_url").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string()));
+
             // 简单去重（通过 id 和 app_type）
             let count: i64 = our_conn.query_row(
                 "SELECT COUNT(*) FROM ai_providers WHERE id = ?1 AND app_type = ?2",
@@ -1393,30 +1399,69 @@ fn import_from_ccswitch() -> Result<Vec<AIProvider>, String> {
                 our_conn.execute(
                     "INSERT INTO ai_providers (id, app_type, name, settings_config, website_url, category, created_at, sort_index, notes, icon, icon_color, meta, is_current, in_failover_queue, cost_multiplier, limit_daily_usd, limit_monthly_usd, provider_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                     params![
-                        provider.id, provider.app_type, provider.name, provider.settings_config, 
-                        provider.website_url, provider.category, provider.created_at, provider.sort_index, 
-                        provider.notes, provider.icon, provider.icon_color, provider.meta, 
-                        provider.is_current, provider.in_failover_queue, provider.cost_multiplier, 
+                        provider.id, provider.app_type, provider.name, provider.settings_config,
+                        provider.website_url, provider.category, provider.created_at, provider.sort_index,
+                        provider.notes, provider.icon, provider.icon_color, provider.meta,
+                        provider.is_current, provider.in_failover_queue, provider.cost_multiplier,
                         provider.limit_daily_usd, provider.limit_monthly_usd, provider.provider_type
                     ],
                 ).map_err(|e| e.to_string())?;
-                
-                // 导入 endpoints
-                let mut estmt = cc_conn.prepare("SELECT id, provider_id, app_type, url, added_at FROM provider_endpoints WHERE provider_id = ?1 AND app_type = ?2")
-                    .map_err(|e| e.to_string())?;
-                let erows = estmt.query_map(params![provider.id, provider.app_type], |erow| {
-                    Ok((erow.get::<_, String>(3)?, erow.get::<_, Option<i64>>(4)?))
-                }).map_err(|e| e.to_string())?;
-                
-                for erow in erows {
-                    if let Ok((url, added_at)) = erow {
-                        our_conn.execute(
-                            "INSERT INTO provider_endpoints (provider_id, app_type, url, added_at) VALUES (?1, ?2, ?3, ?4)",
-                            params![provider.id, provider.app_type, url, added_at],
-                        ).map_err(|e| e.to_string())?;
-                    }
+
+                // 写入 provider_endpoints，使用 config.base_url（正确 URL）而非 cc-switch 的过时 endpoint
+                if let Some(ref url) = correct_base_url {
+                    our_conn.execute(
+                        "INSERT INTO provider_endpoints (provider_id, app_type, url, added_at) VALUES (?1, ?2, ?3, ?4)",
+                        params![provider.id, provider.app_type, url, chrono::Utc::now().timestamp()],
+                    ).map_err(|e| e.to_string())?;
                 }
                 imported.push(provider);
+            } else {
+                // 已存在的 provider: 用 cc-switch config 的正确 URL 修复 sparky 的 settings_config 和 endpoints
+                if let Some(ref correct_url) = correct_base_url {
+                    // 更新 settings_config.base_url
+                    let existing_config: String = our_conn.query_row(
+                        "SELECT settings_config FROM ai_providers WHERE id = ?1 AND app_type = ?2",
+                        params![provider.id, provider.app_type],
+                        |r| r.get(0),
+                    ).unwrap_or_default();
+
+                    if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&existing_config) {
+                        let old_url = cfg.get("base_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        if old_url != *correct_url {
+                            cfg["base_url"] = serde_json::Value::String(correct_url.clone());
+                            let new_config = cfg.to_string();
+                            our_conn.execute(
+                                "UPDATE ai_providers SET settings_config = ?1 WHERE id = ?2 AND app_type = ?3",
+                                params![new_config, provider.id, provider.app_type],
+                            ).map_err(|e| e.to_string())?;
+                            log::info!(
+                                "[import_from_ccswitch] Updated settings base_url for provider {}: {} -> {}",
+                                provider.id, old_url, correct_url
+                            );
+                        }
+                    }
+
+                    // 修复 provider_endpoints: 删除旧的过时 endpoint，写入正确的 URL
+                    our_conn.execute(
+                        "DELETE FROM provider_endpoints WHERE provider_id = ?1",
+                        params![provider.id],
+                    ).map_err(|e| e.to_string())?;
+                    our_conn.execute(
+                        "INSERT INTO provider_endpoints (provider_id, app_type, url, added_at) VALUES (?1, ?2, ?3, ?4)",
+                        params![provider.id, provider.app_type, correct_url, chrono::Utc::now().timestamp()],
+                    ).map_err(|e| e.to_string())?;
+                    log::info!(
+                        "[import_from_ccswitch] Fixed endpoint for provider {}: url={}",
+                        provider.id, correct_url
+                    );
+
+                    let mut updated = provider.clone();
+                    updated.settings_config = serde_json::from_str::<serde_json::Value>(&existing_config)
+                        .ok()
+                        .map(|mut c| { c["base_url"] = serde_json::Value::String(correct_url.clone()); c.to_string() })
+                        .unwrap_or(provider.settings_config.clone());
+                    imported.push(updated);
+                }
             }
         }
     }

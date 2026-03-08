@@ -1946,7 +1946,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   />
                                 </Tooltip>
                                 <Tooltip title="新建会话">
-                                  <Button size="small" type="text" icon={<PlayCircleOutlined />} onClick={async () => {
+                                  <Button size="small" type="text" icon={<PlayCircleOutlined />}
+                                    disabled={!activeTerminalId[selectedProject.path] || activeTerminalId[selectedProject.path] === 'detail'}
+                                    onClick={async () => {
                                     const tid = activeTerminalId[selectedProject.path];
                                     if (!tid) return;
                                     const isFullAuth = fullAuth[selectedProject.path] || false;
@@ -1955,13 +1957,17 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   }} />
                                 </Tooltip>
                                 <Tooltip title="继续会话">
-                                  <Button size="small" type="text" onClick={async () => {
+                                  <Button size="small" type="text"
+                                    disabled={!activeTerminalId[selectedProject.path] || activeTerminalId[selectedProject.path] === 'detail'}
+                                    onClick={async () => {
                                     await fetchSessions(selectedProject.path);
                                     setSessionModalOpen(true);
                                   }} icon={<HistoryOutlined />} />
                                 </Tooltip>
                                 <Tooltip title="测试会话">
-                                  <Button size="small" type="text" onClick={() => {
+                                  <Button size="small" type="text"
+                                    disabled={!activeTerminalId[selectedProject.path] || activeTerminalId[selectedProject.path] === 'detail'}
+                                    onClick={() => {
                                     setTestModalOpen(true);
                                     if (tauriAvailable) {
                                       invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status').then(setMcpStatus).catch(() => { });
