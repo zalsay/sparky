@@ -128,7 +128,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   }
   const [projectTerminals, setProjectTerminals] = useState<Record<string, TerminalTab[]>>({});
   const [providers, setProviders] = useState<AIProvider[]>([]);
-  
+
   const [selectedProviderKeys, setSelectedProviderKeys] = useState<React.Key[]>([]);
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [refreshingProviders, setRefreshingProviders] = useState(false);
@@ -1953,30 +1953,30 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   <Button size="small" type="text" icon={<PlayCircleOutlined />}
                                     disabled={!activeTerminalId[selectedProject.path] || activeTerminalId[selectedProject.path] === 'detail'}
                                     onClick={async () => {
-                                    const tid = activeTerminalId[selectedProject.path];
-                                    if (!tid) return;
-                                    const isFullAuth = fullAuth[selectedProject.path] || false;
-                                    const cmd = await buildClaudeCmd(tid, isFullAuth ? '--dangerously-skip-permissions' : '');
-                                    invoke('pty_write', { terminal_id: tid, data: cmd });
-                                  }} />
+                                      const tid = activeTerminalId[selectedProject.path];
+                                      if (!tid) return;
+                                      const isFullAuth = fullAuth[selectedProject.path] || false;
+                                      const cmd = await buildClaudeCmd(tid, isFullAuth ? '--dangerously-skip-permissions' : '');
+                                      invoke('pty_write', { terminal_id: tid, data: cmd });
+                                    }} />
                                 </Tooltip>
                                 <Tooltip title="继续会话">
                                   <Button size="small" type="text"
                                     disabled={!activeTerminalId[selectedProject.path] || activeTerminalId[selectedProject.path] === 'detail'}
                                     onClick={async () => {
-                                    await fetchSessions(selectedProject.path);
-                                    setSessionModalOpen(true);
-                                  }} icon={<HistoryOutlined />} />
+                                      await fetchSessions(selectedProject.path);
+                                      setSessionModalOpen(true);
+                                    }} icon={<HistoryOutlined />} />
                                 </Tooltip>
                                 <Tooltip title="测试会话">
                                   <Button size="small" type="text"
                                     disabled={!activeTerminalId[selectedProject.path] || activeTerminalId[selectedProject.path] === 'detail'}
                                     onClick={() => {
-                                    setTestModalOpen(true);
-                                    if (tauriAvailable) {
-                                      invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status').then(setMcpStatus).catch(() => { });
-                                    }
-                                  }} icon={<ExperimentOutlined />} />
+                                      setTestModalOpen(true);
+                                      if (tauriAvailable) {
+                                        invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status').then(setMcpStatus).catch(() => { });
+                                      }
+                                    }} icon={<ExperimentOutlined />} />
                                 </Tooltip>
                                 <Tooltip title="清空当前输入">
                                   <Button size="small" type="text" onClick={() => {
@@ -2157,40 +2157,20 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         zIndex: 100,
                                         alignItems: 'center'
                                       }}>
-                                        <div style={{ marginRight: '8px', minWidth: '120px' }}>
-                                          <Select
-                                            size="small"
-                                            placeholder="选择 AI Provider"
-                                            variant="filled"
-                                            style={{ width: '100%', background: 'rgba(0, 0, 0, 0.2)', borderRadius: '4px' }}
-                                            value={term.providerId}
-                                            options={providers.map(p => ({ label: p.name, value: `${p.app_type}::${p.id}` }))}
-                                            onChange={async (val) => {
-                                              setProjectTerminals(prev => {
-                                                const current = prev[selectedProject!.path] || [];
-                                                const next = current.map(t => t.id === term.id ? { ...t, providerId: val } : t);
-                                                return { ...prev, [selectedProject!.path]: next };
-                                              });
-                                              setLastProviderByProject(prev => ({
-                                                ...prev,
-                                                [selectedProject!.path]: val,
-                                              }));
-
-                                              if (val.includes('::')) {
-                                                const [_, providerId] = val.split('::');
-                                                invoke('set_terminal_provider', { terminal_id: term.id, provider_id: providerId });
-                                              }
-
-                                              if (terminalStatus[term.id] === 'claude') {
-                                                messageApi.warning({
-                                                  content: '模型已设为下次启动生效 (Claude 正在运行)',
-                                                  duration: 4
-                                                });
-                                              } else {
-                                                messageApi.success('已应用当前终端模型');
-                                              }
+                                        <div style={{ marginRight: '8px' }}>
+                                          <Tag
+                                            className="active-project-tag"
+                                            style={{
+                                              cursor: 'default',
+                                              margin: 0,
+                                              fontSize: '12px',
+                                              height: '24px',
+                                              lineHeight: '22px',
+                                              padding: '0 10px'
                                             }}
-                                          />
+                                          >
+                                            {providers.find(p => `${p.app_type}::${p.id}` === term.providerId)?.name || '未知模型'}
+                                          </Tag>
                                         </div>
                                         <ContextDonut
                                           projectPath={selectedProject!.path}
