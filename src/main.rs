@@ -933,17 +933,68 @@ fn reopen_session(project_path: &str, session_id: &str) -> Result<()> {
     )?;
     append_hook_log(&format!("♻️ Session reopen updated, affected rows: {}", affected));
     tracing::info!("[db:session] reopened session_id={}, affected={}", session_id, affected);
+
+    // Record the resume timestamp so the concurrent startup handler knows
+    // this is a --resume scenario (not a user-initiated new session).
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS resume_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_path TEXT NOT NULL,
+            resumed_at INTEGER NOT NULL
+        )",
+        [],
+    );
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let _ = conn.execute(
+        "INSERT INTO resume_events (project_path, resumed_at) VALUES (?1, ?2)",
+        params![project_path, now],
+    );
+    append_hook_log("📝 Resume event recorded for wrapper detection");
     Ok(())
 }
 
-/// Check if there's already an active (ended_at IS NULL) session for this project,
-/// excluding the given session_id. Used to detect wrapper sessions from --resume.
+/// Check if this startup is a wrapper from `claude --resume`:
+/// only true when there was a resume event for this project in the last 2 seconds
+/// AND there's already an active session (excluding the current one).
 fn has_active_session_for_project(project_path: &str, exclude_session_id: &str) -> bool {
     let db_path = get_db_path();
     let conn = match Connection::open(&db_path) {
         Ok(c) => c,
         Err(_) => return false,
     };
+
+    // Ensure the resume_events table exists (resume handler may not have run yet)
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS resume_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_path TEXT NOT NULL,
+            resumed_at INTEGER NOT NULL
+        )",
+        [],
+    );
+
+    // Only treat as wrapper if a resume happened within the last 2 seconds
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let threshold = now - 2_000;
+
+    let recent_resume: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM resume_events WHERE project_path = ?1 AND resumed_at > ?2",
+        params![project_path, threshold],
+        |r| r.get(0),
+    ).unwrap_or(0);
+
+    if recent_resume == 0 {
+        // No recent resume — this is a genuine new session, never skip it
+        append_hook_log("ℹ️ No recent resume event found — treating startup as new session");
+        return false;
+    }
+
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sessions WHERE project_path = ?1 AND session_id != ?2 AND ended_at IS NULL",
         params![project_path, exclude_session_id],

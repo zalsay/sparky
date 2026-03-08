@@ -523,6 +523,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const handleEnterProject = (project: Project) => {
     setSelectedProject(project);
     setActiveMenu('project-detail');
+    // Immediately show project as "running" without waiting for the next poll
+    setActiveProjects(prev =>
+      prev.includes(project.path) ? prev : [...prev, project.path]
+    );
   };
 
   const openCreateTerminalModal = () => {
