@@ -2883,7 +2883,7 @@ async fn install_code_server_extension(extension_id: String) -> Result<String, S
     let ext_dir = get_extensions_dir();
     let output = std::process::Command::new("code-server")
         .arg("--extensions-dir")
-        .arg(&ext_dir.to_string_lossy())
+        .arg(&*ext_dir.to_string_lossy())
         .arg("--install-extension")
         .arg(&extension_id)
         .output()
@@ -2911,7 +2911,7 @@ async fn get_installed_code_server_extensions() -> Result<Vec<String>, String> {
     let ext_dir = get_extensions_dir();
     let output = std::process::Command::new("code-server")
         .arg("--extensions-dir")
-        .arg(&ext_dir.to_string_lossy())
+        .arg(&*ext_dir.to_string_lossy())
         .arg("--list-extensions")
         .output()
         .map_err(|e| format!("Failed to execute command: {}", e))?;
