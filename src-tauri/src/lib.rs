@@ -20,8 +20,8 @@ mod feishu_client;
 mod pty;
 use pty::{PtyManager, pty_spawn, pty_write, pty_kill, pty_resize, pty_exists, get_terminal_active_process};
 
-mod proxy;
-use proxy::{ProxyState, start_proxy_server};
+// mod proxy;
+// use proxy::{ProxyState, start_proxy_server};
 
 pub struct ProxyConfig {
     pub port: u16,
@@ -522,10 +522,6 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
             .unwrap_or_default()
             .as_secs() as i64;
         let defaults = [
-            ("saoudrizwan.claude-dev", "Cline", "Autonomous coding agent right in your IDE"),
-            ("rooveterinaryinc.roo-cline", "Roo Code", "AI coding assistant that lives in your editor"),
-            ("charliermarsh.ruff", "Ruff", "An extremely fast Python linter and code formatter"),
-            ("dbaeumer.vscode-eslint", "ESLint", "Integrates ESLint JavaScript into VS Code"),
             ("detachhead.basedpyright", "Basedpyright", "A better, faster Pyright language server for Python"),
         ];
         for (id, name, desc) in defaults {
@@ -2986,16 +2982,16 @@ pub fn run() {
                 )?;
             }
 
-            let proxy_state = ProxyState {
-                pty_manager: pty_manager.inner().clone(),
-                http_client: reqwest::Client::new(),
-            };
+            // let proxy_state = ProxyState {
+            //     pty_manager: pty_manager.inner().clone(),
+            //     http_client: reqwest::Client::new(),
+            // };
 
-            let proxy_port = tauri::async_runtime::block_on(async {
-                start_proxy_server(proxy_state).await
-            }).expect("Failed to start proxy server");
+            // let proxy_port = tauri::async_runtime::block_on(async {
+            //     start_proxy_server(proxy_state).await
+            // }).expect("Failed to start proxy server");
 
-            app.manage(ProxyConfig { port: proxy_port });
+            app.manage(ProxyConfig { port: 0 });
             
             // 将 sparky 二进制复制到 ~/sparky/ 供 hooks 使用
             if let Ok(exe_path) = std::env::current_exe() {

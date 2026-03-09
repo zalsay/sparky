@@ -1090,6 +1090,57 @@ body {
   border-color: var(--border-light);
 }
 
+/* ==================== IDE Status Capsule ==================== */
+
+.ide-status-capsule {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--card-bg);
+  transition: background 0.2s, border-color 0.2s, opacity 0.2s;
+  cursor: default;
+  user-select: none;
+}
+
+.ide-status-capsule.connected {
+  border-color: var(--border-color);
+}
+
+.ide-status-capsule.loading {
+  opacity: 0.75;
+}
+
+.ide-status-capsule .ide-capsule-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.ide-status-capsule .ide-capsule-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.ide-status-capsule .ide-capsule-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+
+.ide-status-capsule.connected .ide-capsule-dot {
+  background: #52c41a;
+  box-shadow: 0 0 0 2px rgba(82, 196, 26, 0.2);
+}
+
 /* ==================== Footer ==================== */
 
 .app-footer {

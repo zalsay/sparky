@@ -12,6 +12,7 @@ import logo from '../../logo.png';
 import codeIcon from './assets/Code.svg';
 import claudeIcon from './assets/Claude.svg';
 import claudeDeactiveIcon from './assets/claude-deactive.svg';
+import feishuIcon from './assets/飞书.svg';
 import './App.css';
 
 interface IDEPlugin {
@@ -1020,16 +1021,30 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
               {activeMenu === 'project-detail' && (
-                <Tooltip title={codeServerConnected ? "IDE 已就绪" : "IDE 启动中..."}>
-                  <div className={`ide-status-indicator ${!codeServerConnected ? 'loading' : ''}`} style={{ display: 'flex', alignItems: 'center' }}>
-                    {!codeServerConnected ? (
-                      <LoadingOutlined style={{ fontSize: 18, color: 'var(--text-primary)', marginRight: 8 }} />
-                    ) : (
-                      <CheckCircleOutlined style={{ fontSize: 18, color: '#52c41a', marginRight: 8 }} />
-                    )}
-                    <img src={codeIcon} alt="IDE" style={{ width: 22, height: 22, opacity: codeServerConnected ? 1 : 0.6 }} />
-                  </div>
-                </Tooltip>
+                <>
+                  <Tooltip title={codeServerConnected ? "IDE 已就绪" : "IDE 启动中..."}>
+                    <div className={`ide-status-capsule ${codeServerConnected ? 'connected' : 'loading'}`}>
+                      <img src={codeIcon} alt="IDE" className="ide-capsule-icon" style={{ opacity: codeServerConnected ? 1 : 0.5 }} />
+                      <span className="ide-capsule-label">
+                        {codeServerConnected ? "IDE 已就绪" : "IDE 启动中"}
+                      </span>
+                      {!codeServerConnected ? (
+                        <LoadingOutlined style={{ fontSize: 11, color: 'var(--text-tertiary)' }} />
+                      ) : (
+                        <span className="ide-capsule-dot" />
+                      )}
+                    </div>
+                  </Tooltip>
+                  <Tooltip title={wsConnected ? "已连接" : "未连接"}>
+                    <div className={`ide-status-capsule ${wsConnected ? 'connected' : ''}`}>
+                      <img src={feishuIcon} alt="飞书" className="ide-capsule-icon" style={{ opacity: wsConnected ? 1 : 0.45 }} />
+                      <span className="ide-capsule-label">
+                        {wsConnected ? "已连接" : "未连接"}
+                      </span>
+                      <span className="ide-capsule-dot" style={!wsConnected ? { background: 'var(--text-tertiary)', boxShadow: 'none' } : undefined} />
+                    </div>
+                  </Tooltip>
+                </>
               )}
               <Switch
                 className="theme-switch"
@@ -2030,11 +2045,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                     }
                                   }} icon={<ClearOutlined />} />
                                 </Tooltip>
-                                <Divider type="vertical" style={{ margin: '0 4px' }} />
-                                <span className={`ws-status-badge ${wsConnected ? 'connected' : 'disconnected'}`} style={{ border: 'none', background: 'transparent', padding: '0 4px', margin: 0 }}>
-                                  <span className="ws-status-dot" />
-                                  {wsConnected ? '已连接' : '未连接'}
-                                </span>
                                 <Dropdown
                                   menu={{
                                     items: [
