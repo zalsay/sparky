@@ -133,13 +133,13 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [selectedProviderKeys, setSelectedProviderKeys] = useState<React.Key[]>([]);
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [refreshingProviders, setRefreshingProviders] = useState(false);
+  const [duplicatingProviderKey, setDuplicatingProviderKey] = useState<string | null>(null);
   const [providerModalOpen, setProviderModalOpen] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Partial<AIProvider> | null>(null);
   const [testingProvider, setTestingProvider] = useState(false);
   const [activeTerminalId, setActiveTerminalId] = useState<Record<string, string>>({});
   const [createTerminalModalOpen, setCreateTerminalModalOpen] = useState(false);
   const [newTerminalProviderId, setNewTerminalProviderId] = useState<string>();
-  const [externalFileTabs, setExternalFileTabs] = useState<{ path: string, folderPath: string }[]>([]);
   const [showDetailTab, setShowDetailTab] = useState<Record<string, boolean>>({});
   const [lastProviderByProject, setLastProviderByProject] = useState<Record<string, string>>(() => {
     try {
@@ -808,6 +808,23 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     }
   };
 
+  const handleDuplicateProvider = async (record: AIProvider) => {
+    const duplicateKey = `${record.app_type}::${record.id}`;
+    setDuplicatingProviderKey(duplicateKey);
+    try {
+      const duplicatedProvider = await invoke<AIProvider>('duplicate_ai_provider', {
+        id: record.id,
+        app_type: record.app_type,
+      });
+      setProviders(prev => [...prev, duplicatedProvider]);
+      messageApi.success(`已复制模型：${duplicatedProvider.name}`);
+    } catch (e) {
+      messageApi.error(`复制失败: ${e}`);
+    } finally {
+      setDuplicatingProviderKey(null);
+    }
+  };
+
   const handleImportFromCCSwitch = async () => {
     setImporting(true);
     try {
@@ -1295,7 +1312,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                         {
                           title: '操作',
                           key: 'action',
-                          width: 200,
+                          width: 260,
                           render: (_, record) => (
                             <Space>
                               {appConfig?.default_provider_id !== `${record.app_type}::${record.id}` && (
@@ -1306,6 +1323,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   设为默认
                                 </Button>
                               )}
+                              <Button
+                                size="small"
+                                type="text"
+                                icon={<CopyOutlined />}
+                                loading={duplicatingProviderKey === `${record.app_type}::${record.id}`}
+                                onClick={() => handleDuplicateProvider(record)}
+                                title="复制一份"
+                              />
                               <Button
                                 size="small"
                                 type="text"
@@ -2147,14 +2172,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   }
                                   return;
                                 }
-                                if (targetKey.startsWith('vscode-external-')) {
-                                  const pathToRemove = targetKey.replace('vscode-external-', '');
-                                  setExternalFileTabs(prev => prev.filter(tab => tab.path !== pathToRemove));
-                                  if (activeTerminalId[selectedProject!.path] === targetKey) {
-                                    setActiveTerminalId(prev => ({ ...prev, [selectedProject!.path]: 'detail' }));
-                                  }
-                                  return;
-                                }
                                 invoke('pty_kill', { terminal_id: targetKey });
                                 setProjectTerminals(prev => {
                                   const next = prev[selectedProject!.path].filter(t => t.id !== targetKey);
@@ -2257,9 +2274,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                               defaultProviderId={providerIdForSpawn}
                                               onData={handleTerminalInput}
                                               onLinkClick={async (path) => {
-                                                // Validate file exists before opening
                                                 try {
-                                                  const exists = await invoke<boolean>('check_file_exists', { path });
+                                                  const exists = await invoke<boolean>('check_file_exists', { filePath: path });
                                                   if (!exists) {
                                                     messageApi.warning(`文件路径不存在: ${path}，Claude 可能省略了上级目录，请使用准确路径`);
                                                     return;
@@ -2268,30 +2284,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                                   console.error('Failed to check file existence:', e);
                                                 }
 
-                                                if (path.startsWith(selectedProject!.path)) {
-                                                  console.log('Invoking open_in_coder with path:', path);
-                                                  invoke('open_in_coder', { path, projectPath: selectedProject!.path }).catch((err) => {
-                                                    console.error('Failed to open file in Coder IDE:', err);
-                                                  });
-                                                } else {
-                                                  console.log('Path is outside project, opening in new tab:', path);
-                                                  const folderPath = path.substring(0, path.lastIndexOf('/'));
-                                                  setExternalFileTabs(prev => {
-                                                    if (!prev.some(tab => tab.path === path)) {
-                                                      return [...prev, { path, folderPath }];
-                                                    }
-                                                    return prev;
-                                                  });
-                                                  setActiveTerminalId(prev => ({
-                                                    ...prev,
-                                                    [selectedProject!.path]: `vscode-external-${path}`
-                                                  }));
-                                                  setTimeout(() => {
-                                                    invoke('open_in_coder', { path, projectPath: selectedProject!.path }).catch((err) => {
-                                                      console.error('Failed to open external file in Coder IDE:', err);
-                                                    });
-                                                  }, 500);
-                                                }
+                                                console.log('Invoking open_in_coder with path:', path);
+                                                invoke('open_in_coder', { filePath: path }).catch((err) => {
+                                                  console.error('Failed to open file in Coder IDE:', err);
+                                                });
                                               }}
                                               ref={(el) => {
                                                 if (el) terminalRefs.current[term.id] = el;
@@ -2314,45 +2310,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                     </div>
                                   ),
                                 };
-                              }).concat(externalFileTabs.map(tab => ({
-                                key: `vscode-external-${tab.path}`,
-                                label: (
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                    <img src={codeIcon} width={18} height={18} alt="Coder IDE" />
-                                    <span title={tab.path}>{tab.path.split('/').pop()}</span>
-                                  </div>
-                                ),
-                                closable: true,
-                                children: (
-                                  <div style={{ width: '100%', height: '100%', background: 'var(--bg-primary)' }}>
-                                    {codeServerConnected === false ? (
-                                      <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', padding: 24, textAlign: 'center', gap: 16 }}>
-                                        <WarningOutlined style={{ fontSize: 32, color: '#faad14' }} />
-                                        <div>
-                                          <div style={{ fontSize: 16, fontWeight: 500, color: 'var(--text-primary)', marginBottom: 4 }}>IDE 连接失败</div>
-                                          <div style={{ fontSize: 13 }}>无法连接到 127.0.0.1:18080</div>
-                                        </div>
-                                        <Button onClick={async () => {
-                                          const connected = await invoke<boolean>('check_code_server_connection');
-                                          setCodeServerConnected(connected);
-                                          if (!connected) {
-                                            messageApi.error('连接失败，请确保 code-server 已启动');
-                                          } else {
-                                            messageApi.success('连接成功');
-                                          }
-                                        }}>重试连接</Button>
-                                      </div>
-                                    ) : (
-                                      <iframe
-                                        title={`Coder IDE - ${tab.path}`}
-                                        src={`http://127.0.0.1:18080/?folder=${encodeURIComponent(tab.folderPath)}`}
-                                        style={{ width: '100%', height: '100%', border: 'none' }}
-                                        allow="clipboard-read *; clipboard-write *; display-capture *"
-                                      />
-                                    )}
-                                  </div>
-                                )
-                              }))),
+                              }),
                               ...(showDetailTab[selectedProject.path] ? [{
                                 key: 'detail',
                                 label: (

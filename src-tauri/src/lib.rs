@@ -1315,6 +1315,78 @@ async fn test_ai_provider_connection(provider: AIProvider) -> Result<String, Str
     }
 }
 
+
+#[tauri::command(rename_all = "snake_case")]
+fn duplicate_ai_provider(id: String, app_type: String) -> Result<AIProvider, String> {
+    let conn = open_db()?;
+
+    let mut provider = conn.query_row(
+        "SELECT id, app_type, name, settings_config, website_url, category, created_at, sort_index, notes, icon, icon_color, meta, is_current, in_failover_queue, cost_multiplier, limit_daily_usd, limit_monthly_usd, provider_type FROM ai_providers WHERE id = ?1 AND app_type = ?2",
+        params![id, app_type],
+        |row| {
+            Ok(AIProvider {
+                id: row.get(0)?,
+                app_type: row.get(1)?,
+                name: row.get(2)?,
+                settings_config: row.get(3)?,
+                website_url: row.get(4)?,
+                category: row.get(5)?,
+                created_at: row.get(6)?,
+                sort_index: row.get(7)?,
+                notes: row.get(8)?,
+                icon: row.get(9)?,
+                icon_color: row.get(10)?,
+                meta: row.get(11)?,
+                is_current: false,
+                in_failover_queue: row.get(13)?,
+                cost_multiplier: row.get(14)?,
+                limit_daily_usd: row.get(15)?,
+                limit_monthly_usd: row.get(16)?,
+                provider_type: row.get(17)?,
+                endpoints: Vec::new(),
+            })
+        },
+    ).map_err(|e| e.to_string())?;
+
+    let mut estmt = conn.prepare(
+        "SELECT id, provider_id, app_type, url, added_at FROM provider_endpoints WHERE provider_id = ?1 AND app_type = ?2"
+    ).map_err(|e| e.to_string())?;
+    let erows = estmt.query_map(params![provider.id.clone(), provider.app_type.clone()], |erow| {
+        Ok(AIProviderEndpoint {
+            id: Some(erow.get(0)?),
+            provider_id: erow.get(1)?,
+            app_type: erow.get(2)?,
+            url: erow.get(3)?,
+            added_at: erow.get(4)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    for erow in erows {
+        if let Ok(endpoint) = erow {
+            provider.endpoints.push(endpoint);
+        }
+    }
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let new_id = uuid::Uuid::new_v4().to_string();
+    provider.id = new_id.clone();
+    provider.name = format!("{}-2", provider.name);
+    provider.created_at = Some(now);
+    provider.is_current = false;
+    provider.endpoints = provider.endpoints.into_iter().map(|endpoint| AIProviderEndpoint {
+        id: None,
+        provider_id: new_id.clone(),
+        app_type: endpoint.app_type,
+        url: endpoint.url,
+        added_at: Some(now),
+    }).collect();
+
+    let duplicated = provider.clone();
+    upsert_ai_provider(provider)?;
+    Ok(duplicated)
+}
+
+
 #[tauri::command(rename_all = "snake_case")]
 fn delete_ai_provider(id: String, app_type: String) -> Result<(), String> {
     let conn = open_db()?;
@@ -3322,6 +3394,7 @@ pub fn run() {
             get_system_claude_settings,
             get_ai_providers,
             upsert_ai_provider,
+            duplicate_ai_provider,
             delete_ai_provider,
             test_ai_provider_connection,
             get_hook_status,
