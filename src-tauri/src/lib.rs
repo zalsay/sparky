@@ -2800,6 +2800,12 @@ async fn install_code_server() -> Result<String, String> {
     }
 }
 
+fn get_extensions_dir() -> std::path::PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join("sparky").join("extensions"))
+        .unwrap_or_else(|| std::path::PathBuf::from("extensions"))
+}
+
 #[tauri::command(rename_all = "snake_case")]
 fn get_ide_plugins() -> Result<Vec<IDEPlugin>, String> {
     let conn = open_db()?;
@@ -2874,7 +2880,10 @@ fn delete_ide_plugin(id: String) -> Result<(), String> {
 #[tauri::command(rename_all = "snake_case")]
 async fn install_code_server_extension(extension_id: String) -> Result<String, String> {
     log::info!("Attempting to install code-server extension: {}", extension_id);
+    let ext_dir = get_extensions_dir();
     let output = std::process::Command::new("code-server")
+        .arg("--extensions-dir")
+        .arg(&ext_dir.to_string_lossy())
         .arg("--install-extension")
         .arg(&extension_id)
         .output()
@@ -2899,7 +2908,10 @@ async fn install_code_server_extension(extension_id: String) -> Result<String, S
 
 #[tauri::command(rename_all = "snake_case")]
 async fn get_installed_code_server_extensions() -> Result<Vec<String>, String> {
+    let ext_dir = get_extensions_dir();
     let output = std::process::Command::new("code-server")
+        .arg("--extensions-dir")
+        .arg(&ext_dir.to_string_lossy())
         .arg("--list-extensions")
         .output()
         .map_err(|e| format!("Failed to execute command: {}", e))?;
@@ -3035,15 +3047,17 @@ pub fn run() {
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
                 log::info!("Starting code-server on 127.0.0.1:18080...");
+
+                // Ensure port 18080 is free by killing any existing code-server process
+                let _ = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg("lsof -ti:18080 | xargs kill -9")
+                    .status();
+
                 let cmd_path = find_executable("code-server").unwrap_or_else(|| "code-server".to_string());
                 
                 use tauri::Manager;
-                // Get the path to our bundled extensions using Tauri's path resolver
-                // and copy them to ~/sparky/extensions on every startup to ensure we have the latest version.
-                // This ensures we have a writable, unified extensions directory and prevents old cached versions from persisting.
-                let ext_dir = dirs::home_dir()
-                    .map(|h| h.join("sparky").join("extensions"))
-                    .unwrap_or_else(|| std::path::PathBuf::from("extensions"));
+                let ext_dir = get_extensions_dir();
                 
                 if let Ok(resource_ext_dir) = app_handle.path().resource_dir().map(|p| p.join("extensions")) {
                     if resource_ext_dir.exists() {
@@ -3055,6 +3069,45 @@ pub fn run() {
                         let _ = std::process::Command::new("cp")
                             .args(["-Rf", &format!("{}/.", resource_ext_dir.to_string_lossy()), &ext_dir.to_string_lossy()])
                             .status();
+
+                        // CRITICAL: Remove the stale extensions.json from the destination directory
+                        // This ensures code-server rescans the directory and doesn't use old cached paths.
+                        let registry_path = ext_dir.join("extensions.json");
+                        if registry_path.exists() {
+                            let _ = std::fs::remove_file(registry_path);
+                        }
+
+                        // Auto-install custom plugins from DB
+                        if let Ok(conn) = open_db() {
+                            if let Ok(mut stmt) = conn.prepare("SELECT id FROM ide_plugins") {
+                                if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+                                    for plugin_id in rows.flatten() {
+                                        let plugin_id_trimmed = plugin_id.trim();
+                                        if plugin_id_trimmed.is_empty() { continue; }
+                                        
+                                        // Check if any directory starting with plugin_id exists (e.g. publisher.ext-version)
+                                        let mut found = false;
+                                        if let Ok(entries) = std::fs::read_dir(&ext_dir) {
+                                            for entry in entries.flatten() {
+                                                if let Some(name) = entry.file_name().to_str() {
+                                                    if name.starts_with(plugin_id_trimmed) {
+                                                        found = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if !found {
+                                            log::info!("Auto-installing missing custom plugin: {}", plugin_id_trimmed);
+                                            let _ = std::process::Command::new(&cmd_path)
+                                                .args(["--extensions-dir", &ext_dir.to_string_lossy(), "--install-extension", plugin_id_trimmed])
+                                                .status();
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                     
