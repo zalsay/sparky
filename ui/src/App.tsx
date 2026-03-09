@@ -109,7 +109,7 @@ interface SessionInfo {
 const LAST_PROVIDER_BY_PROJECT_STORAGE_KEY = 'sparky-last-provider-by-project';
 
 function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsDarkMode: (v: boolean) => void }) {
-  const { message: messageApi, modal: modalApi } = AntApp.useApp();
+  const { message: messageApi, modal: modalApi, notification: notificationApi } = AntApp.useApp();
   const [form] = Form.useForm();
   const [providerForm] = Form.useForm();
   const [loading, setLoading] = useState(false);
@@ -451,24 +451,32 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       .catch(err => console.error('Failed to get IDE plugins:', err));
   }, [activeMenu, tauriAvailable]);
 
-  // Check code-server connection when entering project detail
+  // Check code-server connection when entering project detail or when marked as disconnected
   useEffect(() => {
-    if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject) {
-      setCodeServerConnected(null);
+    if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject || codeServerConnected === true) {
       return;
     }
+
+    let intervalId: NodeJS.Timeout;
 
     const checkConnection = async () => {
       try {
         const connected = await invoke<boolean>('check_code_server_connection');
-        setCodeServerConnected(connected);
+        if (connected) {
+          setCodeServerConnected(true);
+        }
       } catch (err) {
         console.error('Failed to check code-server connection:', err);
       }
     };
 
     checkConnection();
-  }, [activeMenu, selectedProject, tauriAvailable]);
+    intervalId = setInterval(checkConnection, 2000);
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [activeMenu, selectedProject, tauriAvailable, codeServerConnected]);
 
   const handleTerminalInput = (data: string) => {
     if (!tauriAvailable || !selectedProject) {
@@ -523,6 +531,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const handleEnterProject = (project: Project) => {
     setSelectedProject(project);
     setActiveMenu('project-detail');
+    setCodeServerConnected(false); // Reset connection status to trigger polling and loading UI
     // Immediately show project as "running" without waiting for the next poll
     setActiveProjects(prev =>
       prev.includes(project.path) ? prev : [...prev, project.path]
@@ -722,9 +731,19 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       await invoke('save_config', { config: newConfig });
       setAppConfig(newConfig);
       form.setFieldsValue(newConfig);
-      messageApi.success('已设为默认');
+      notificationApi.success({
+        message: '设置成功',
+        description: '已更新默认 AI Provider',
+        placement: 'topRight',
+        duration: 2,
+      });
     } catch (e) {
-      messageApi.error(`设置默认失败: ${e} `);
+      notificationApi.error({
+        message: '操作失败',
+        description: `无法设置默认 Provider: ${e}`,
+        placement: 'topRight',
+        duration: 4,
+      });
     }
   };
 
@@ -754,9 +773,19 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       };
       await invoke('save_config', { config: configToSave });
       setAppConfig(configToSave);
-      messageApi.success('配置已保存');
+      notificationApi.success({
+        message: '保存成功',
+        description: '您的配置已成功同步到系统',
+        placement: 'topRight',
+        duration: 2,
+      });
     } catch (error) {
-      messageApi.error(`保存配置失败: ${error} `);
+      notificationApi.error({
+        message: '保存失败',
+        description: `错误原因: ${error}`,
+        placement: 'topRight',
+        duration: 4,
+      });
     } finally {
       setLoading(false);
     }
@@ -989,13 +1018,27 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
               </div>
               {/* <p className="subtitle">多渠道集成 · 随时随地链接 Claude Code</p> */}
             </div>
-            <Switch
-              className="theme-switch"
-              checked={isDarkMode}
-              onChange={(checked) => setIsDarkMode(checked)}
-              checkedChildren={<MoonOutlined />}
-              unCheckedChildren={<SunOutlined />}
-            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+              {activeMenu === 'project-detail' && (
+                <Tooltip title={codeServerConnected ? "IDE 已就绪" : "IDE 启动中..."}>
+                  <div className={`ide-status-indicator ${!codeServerConnected ? 'loading' : ''}`} style={{ display: 'flex', alignItems: 'center' }}>
+                    {!codeServerConnected ? (
+                      <LoadingOutlined style={{ fontSize: 18, color: 'var(--text-primary)', marginRight: 8 }} />
+                    ) : (
+                      <CheckCircleOutlined style={{ fontSize: 18, color: '#52c41a', marginRight: 8 }} />
+                    )}
+                    <img src={codeIcon} alt="IDE" style={{ width: 22, height: 22, opacity: codeServerConnected ? 1 : 0.6 }} />
+                  </div>
+                </Tooltip>
+              )}
+              <Switch
+                className="theme-switch"
+                checked={isDarkMode}
+                onChange={(checked) => setIsDarkMode(checked)}
+                checkedChildren={<MoonOutlined />}
+                unCheckedChildren={<SunOutlined />}
+              />
+            </div>
           </div>
         </header>
 
@@ -2586,7 +2629,21 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                   <div className="settings-page">
                     <div className="main-grid">
                       <div className="left-column">
-                        <Form form={form} layout="vertical" onFinish={handleSave} className="config-form" style={{ marginTop: 0, display: 'flex', flexDirection: 'column', flex: 1 }}>
+                        <Form
+                          form={form}
+                          layout="vertical"
+                          onFinish={handleSave}
+                          onFinishFailed={() => {
+                            notificationApi.error({
+                              message: '保存失败',
+                              description: '请检查必填项是否正确填写',
+                              placement: 'topRight',
+                              duration: 4,
+                            });
+                          }}
+                          className="config-form"
+                          style={{ marginTop: 0, display: 'flex', flexDirection: 'column', flex: 1 }}
+                        >
                           <Tabs
                             defaultActiveKey="general"
                             className="settings-tabs"
@@ -2597,9 +2654,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 label: '通用配置',
                                 children: (
                                   <Card className="projects-card general-card" variant="borderless" style={{ height: 'auto', flex: 1 }}>
-                                    <div className="card-header">
-                                      <SettingOutlined className="card-icon" />
-                                      <h2>通用配置</h2>
+                                    <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                        <SettingOutlined className="card-icon" />
+                                        <h2>通用配置</h2>
+                                      </div>
+                                      <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={loading}>
+                                        保存配置
+                                      </Button>
                                     </div>
                                     <p className="card-description">应用相关的基础与功能配置</p>
                                     <Divider />
@@ -2696,25 +2758,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                       </div>
                                     </Form.Item>
 
-                                    <Divider style={{ margin: '24px 0 16px 0' }} />
-                                    <Form.Item
-                                      label={
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <span style={{ fontSize: '15px', fontWeight: 500 }}>默认 AI Provider</span>
-                                          </div>
-                                          <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 'normal' }}>新终端将默认使用此 Provider 的配置</span>
-                                        </div>
-                                      }
-                                      name="default_provider_id"
-                                    >
-                                      <Select
-                                        placeholder="选择默认 Provider"
-                                        allowClear
-                                        style={{ width: '100%', maxWidth: '400px' }}
-                                        options={providers.map(p => ({ label: p.name, value: p.id }))}
-                                      />
-                                    </Form.Item>
                                   </Card>
                                 ),
                               },
@@ -2723,9 +2766,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 label: '通知渠道配置',
                                 children: (
                                   <Card className="projects-card channel-card" variant="borderless" style={{ flex: 1, height: 'auto' }}>
-                                    <div className="card-header">
-                                      <ApiOutlined className="card-icon" />
-                                      <h2>通知渠道配置</h2>
+                                    <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                        <ApiOutlined className="card-icon" />
+                                        <h2>通知渠道配置</h2>
+                                      </div>
+                                      <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={loading}>
+                                        保存配置
+                                      </Button>
                                     </div>
                                     <p className="card-description">管理飞书、钉钉与企业微信的应用配置</p>
                                     <Divider />
@@ -2767,9 +2815,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                                 </Form.Item>
 
                                                 <div className="action-buttons">
-                                                  <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={loading} size="large">保存设置</Button>
-                                                  <Button type="default" icon={<ApiOutlined />} onClick={handleTestConnection} loading={testingConnection} size="large">测试连接</Button>
-                                                  <Button type="default" onClick={handleUploadAnthropicLogo} loading={uploadingLogo} size="large">使用 Anthropic Logo</Button>
+                                                  <Button type="default" icon={<ApiOutlined />} onClick={handleTestConnection} loading={testingConnection}>测试连接</Button>
+                                                  <Button type="default" onClick={handleUploadAnthropicLogo} loading={uploadingLogo}>使用 Anthropic Logo</Button>
                                                 </div>
                                               </div>
                                             ),
@@ -2954,6 +3001,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
             form={providerForm}
             layout="vertical"
             key={editingProvider?.id || 'new'}
+            onFinishFailed={() => {
+              notificationApi.error({
+                message: '提交失败',
+                description: '请检查表单必填项',
+                placement: 'topRight',
+                duration: 4,
+              });
+            }}
             initialValues={editingProvider ? {
               ...editingProvider,
               ... (editingProvider.settings_config ? JSON.parse(editingProvider.settings_config) : {})
@@ -2997,9 +3052,19 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                   });
                 }
                 setProviderModalOpen(false);
-                messageApi.success('保存成功');
+                notificationApi.success({
+                  message: '保存成功',
+                  description: 'AI 模型配置已更新',
+                  placement: 'topRight',
+                  duration: 2,
+                });
               } catch (e) {
-                messageApi.error(`保存失败: ${e} `);
+                notificationApi.error({
+                  message: '保存失败',
+                  description: `错误原因: ${e}`,
+                  placement: 'topRight',
+                  duration: 4,
+                });
               }
             }}
           >
