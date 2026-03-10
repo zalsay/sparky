@@ -8,9 +8,10 @@ interface PtyInfo {
   cols: number;
   rows: number;
   defaultProviderId?: string;
+  selectedModelId?: string;
 }
 
-export function usePty(terminalId: string, projectPath: string, customEnvs?: Record<string, string>, onData?: (data: string, projectPath: string, terminalId: string) => void, defaultProviderId?: string) {
+export function usePty(terminalId: string, projectPath: string, customEnvs?: Record<string, string>, onData?: (data: string, projectPath: string, terminalId: string) => void, defaultProviderId?: string, selectedModelId?: string) {
   const [isRunning, setIsRunning] = useState(false);
   const ptyRef = useRef<PtyInfo | null>(null);
   const currentTerminalRef = useRef<string | null>(terminalId);
@@ -141,10 +142,11 @@ export function usePty(terminalId: string, projectPath: string, customEnvs?: Rec
         project_path: projectPath,
         terminal_id: terminalId,
         default_provider_id: defaultProviderId,
+        selected_model_id: selectedModelId,
       });
 
       console.log('PTY spawned for terminal:', result);
-      ptyRef.current = { projectPath, terminalId: result, cols: 100, rows: 30, defaultProviderId };
+      ptyRef.current = { projectPath, terminalId: result, cols: 100, rows: 30, defaultProviderId, selectedModelId };
       // Do not setIsRunning(true) here; wait for actual pty-data from setupListener
       return ptyRef.current;
     } catch (error) {

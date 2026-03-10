@@ -109,6 +109,45 @@ interface SessionInfo {
 
 const LAST_PROVIDER_BY_PROJECT_STORAGE_KEY = 'sparky-last-provider-by-project';
 
+const ModelListInput = ({ value = [], onChange }: { value?: string[], onChange?: (val: string[]) => void }) => {
+  const [inputValue, setInputValue] = useState('');
+
+  const handleAdd = () => {
+    if (inputValue.trim() && !value.includes(inputValue.trim())) {
+      onChange?.([...value, inputValue.trim()]);
+      setInputValue('');
+    }
+  };
+
+  const handleRemove = (v: string) => {
+    onChange?.(value.filter(item => item !== v));
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <div style={{ display: 'flex', gap: '8px' }}>
+        <Input
+          placeholder="例如: claude-3-5-sonnet-20241022"
+          value={inputValue}
+          onChange={(e) => setInputValue(e.target.value)}
+          onPressEnter={(e) => {
+            e.preventDefault();
+            handleAdd();
+          }}
+        />
+        <Button icon={<PlusOutlined />} onClick={handleAdd}>添加</Button>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+        {value.map(v => (
+          <Tag key={v} closable onClose={() => handleRemove(v)} style={{ margin: 0 }}>
+            {v}
+          </Tag>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsDarkMode: (v: boolean) => void }) {
   const { message: messageApi, modal: modalApi, notification: notificationApi } = AntApp.useApp();
   const [form] = Form.useForm();
@@ -126,6 +165,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     id: string;
     title: string | React.ReactNode;
     providerId?: string;
+    selectedModelId?: string;
   }
   const [projectTerminals, setProjectTerminals] = useState<Record<string, TerminalTab[]>>({});
   const [providers, setProviders] = useState<AIProvider[]>([]);
@@ -140,6 +180,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [activeTerminalId, setActiveTerminalId] = useState<Record<string, string>>({});
   const [createTerminalModalOpen, setCreateTerminalModalOpen] = useState(false);
   const [newTerminalProviderId, setNewTerminalProviderId] = useState<string>();
+  const [newTerminalModelId, setNewTerminalModelId] = useState<string>();
+  const [testModelId, setTestModelId] = useState<string>();
   const [showDetailTab, setShowDetailTab] = useState<Record<string, boolean>>({});
   const [lastProviderByProject, setLastProviderByProject] = useState<Record<string, string>>(() => {
     try {
@@ -165,6 +207,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const watchedBgColor = Form.useWatch('terminal_bg_color', form);
   const watchedFgColor = Form.useWatch('terminal_fg_color', form);
   const watchedFontSize = Form.useWatch('terminal_font_size', form);
+  const watchedModelIds = Form.useWatch('model_ids', providerForm);
 
   const tauriAvailable = isTauri();
   const terminalRefs = useRef<Record<string, { scrollToBottom: () => void }>>({});
@@ -456,7 +499,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   useEffect(() => {
     if (providerModalOpen) {
       if (editingProvider) {
-        let settings = {};
+        let settings: any = {};
         try {
           if (editingProvider.settings_config) {
             settings = JSON.parse(editingProvider.settings_config);
@@ -464,9 +507,18 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
         } catch (e) {
           console.error('Failed to parse settings_config:', e);
         }
+
+        // Handle migration from model_id to model_ids
+        let modelIds = settings.model_ids;
+        if (!modelIds || modelIds.length === 0) {
+          const legacyModelId = settings.model_id || settings.env?.ANTHROPIC_MODEL;
+          modelIds = legacyModelId ? [legacyModelId] : [];
+        }
+
         providerForm.setFieldsValue({
           ...editingProvider,
-          ...settings
+          ...settings,
+          model_ids: modelIds
         });
       } else {
         providerForm.resetFields();
@@ -571,7 +623,22 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
     const lastProvider = lastProviderByProject[selectedProject.path];
     const lastProviderExists = !!lastProvider && providers.some(p => `${p.app_type}::${p.id}` === lastProvider);
-    setNewTerminalProviderId(lastProviderExists ? lastProvider : undefined);
+    const providerId = lastProviderExists ? lastProvider : undefined;
+    setNewTerminalProviderId(providerId);
+
+    if (providerId) {
+      const provider = providers.find(p => `${p.app_type}::${p.id}` === providerId);
+      if (provider) {
+        try {
+          const settings = JSON.parse(provider.settings_config);
+          const models = (settings.model_ids && settings.model_ids.length > 0) ? settings.model_ids : (settings.model_id ? [settings.model_id] : []);
+          setNewTerminalModelId(models[0]);
+        } catch (e) {
+          setNewTerminalModelId(undefined);
+        }
+      }
+    }
+
     setCreateTerminalModalOpen(true);
   };
 
@@ -582,18 +649,25 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     const newId = crypto.randomUUID();
     setProjectTerminals(prev => ({
       ...prev,
-      [selectedProject.path]: [...current, { id: newId, title: `Claude-${current.length + 1}`, providerId: newTerminalProviderId }]
+      [selectedProject.path]: [...current, {
+        id: newId,
+        title: `Claude-${current.length + 1}`,
+        providerId: newTerminalProviderId,
+        selectedModelId: newTerminalModelId
+      }]
     }));
     setActiveTerminalId(prev => ({
       ...prev,
       [selectedProject.path]: newId
     }));
-    setLastProviderByProject(prev => ({
-      ...prev,
-      [selectedProject.path]: newTerminalProviderId
-    }));
     setCreateTerminalModalOpen(false);
     setNewTerminalProviderId(undefined);
+    setNewTerminalModelId(undefined);
+    setLastProviderByProject(prev => {
+      const next = { ...prev, [selectedProject.path]: newTerminalProviderId };
+      localStorage.setItem('lastProviderByProject', JSON.stringify(next));
+      return next;
+    });
   };
 
 
@@ -2004,6 +2078,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           cancelText="取消"
                           okButtonProps={{ disabled: !newTerminalProviderId }}
                           destroyOnHidden
+                          width={600}
                         >
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                             <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
@@ -2012,7 +2087,22 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                             <Select
                               placeholder="选择 AI Provider"
                               value={newTerminalProviderId}
-                              onChange={setNewTerminalProviderId}
+                              onChange={(val) => {
+                                setNewTerminalProviderId(val);
+                                // Auto-select first model of new provider
+                                const provider = providers.find(p => `${p.app_type}::${p.id}` === val);
+                                if (provider) {
+                                  try {
+                                    const settings = JSON.parse(provider.settings_config);
+                                    const models = (settings.model_ids && settings.model_ids.length > 0) ? settings.model_ids : (settings.model_id ? [settings.model_id] : []);
+                                    setNewTerminalModelId(models[0]);
+                                  } catch (e) {
+                                    setNewTerminalModelId(undefined);
+                                  }
+                                } else {
+                                  setNewTerminalModelId(undefined);
+                                }
+                              }}
                               style={{ width: '100%' }}
                               options={providers.map(provider => ({
                                 label: (
@@ -2035,6 +2125,31 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 value: `${provider.app_type}::${provider.id}`,
                               }))}
                             />
+
+                            {newTerminalProviderId && (
+                              <>
+                                <div style={{ color: 'var(--text-secondary)', fontSize: 13, marginTop: 4 }}>
+                                  选择专属于此终端的 Model ID (可选):
+                                </div>
+                                <Select
+                                  placeholder="选择 Model ID"
+                                  value={newTerminalModelId}
+                                  onChange={setNewTerminalModelId}
+                                  style={{ width: '100%' }}
+                                  options={(() => {
+                                    const provider = providers.find(p => `${p.app_type}::${p.id}` === newTerminalProviderId);
+                                    if (!provider) return [];
+                                    try {
+                                      const settings = JSON.parse(provider.settings_config);
+                                      const models = (settings.model_ids && settings.model_ids.length > 0) ? settings.model_ids : (settings.model_id ? [settings.model_id] : []);
+                                      return models.map((m: string) => ({ label: m, value: m }));
+                                    } catch (e) {
+                                      return [];
+                                    }
+                                  })()}
+                                />
+                              </>
+                            )}
                           </div>
                         </Modal>
 
@@ -2294,6 +2409,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                               terminalId={term.id}
                                               title={term.title as string}
                                               defaultProviderId={providerIdForSpawn}
+                                              selectedModelId={term.selectedModelId}
                                               onData={handleTerminalInput}
                                               onLinkClick={async (path) => {
                                                 try {
@@ -2951,41 +3067,55 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
           open={providerModalOpen}
           onCancel={() => setProviderModalOpen(false)}
           footer={[
-            <Button key="test" loading={testingProvider} icon={<ThunderboltOutlined />} onClick={async () => {
-              const values = providerForm.getFieldsValue();
-              setTestingProvider(true);
-              try {
-                // 转换为 AIProvider 结构
-                const settings = {
-                  api_key: values.api_key,
-                  base_url: values.base_url,
-                  model_id: values.model_id,
-                  api_timeout: values.api_timeout,
-                  disable_traffic: values.disable_traffic ? 1 : 0
-                };
-                const provider = {
-                  ...values,
-                  id: editingProvider?.id || (window as any).crypto.randomUUID(),
-                  app_type: 'ClaudeCode', // 我们的默认类型
-                  settings_config: JSON.stringify(settings),
-                  meta: JSON.stringify({}),
-                  cost_multiplier: '1.0',
-                  is_current: false,
-                  in_failover_queue: false,
-                  endpoints: [{ url: values.base_url, provider_id: '', app_type: 'ClaudeCode', added_at: Date.now() }]
-                };
-                const res = await invoke<string>('test_ai_provider_connection', { provider });
-                messageApi.success(res);
-              } catch (e) {
-                messageApi.error(String(e));
-              } finally {
-                setTestingProvider(false);
-              }
-            }}>测试连接</Button>,
-            <Button key="cancel" onClick={() => setProviderModalOpen(false)}>取消</Button>,
-            <Button key="ok" type="primary" onClick={() => providerForm.submit()}>确定</Button>
+            <div key="test-area" style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'flex-start' }}>
+              <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>测试模型:</span>
+              <Select
+                style={{ width: 180, textAlign: 'center' }}
+                placeholder="请选择测试模型"
+                value={testModelId || (watchedModelIds && watchedModelIds.length > 0 ? watchedModelIds[0] : undefined)}
+                onChange={setTestModelId}
+                options={(watchedModelIds || []).map((m: string) => ({ label: m, value: m }))}
+              />
+              <Button key="test" loading={testingProvider} icon={<ThunderboltOutlined />} onClick={async () => {
+                const values = providerForm.getFieldsValue();
+                setTestingProvider(true);
+                try {
+                  const currentTestModel = testModelId || (values.model_ids && values.model_ids.length > 0 ? values.model_ids[0] : undefined);
+                  // 转换为 AIProvider 结构
+                  const settings = {
+                    api_key: values.api_key,
+                    base_url: values.base_url,
+                    model_ids: values.model_ids,
+                    model_id: currentTestModel, // User-selected model for testing, or fallback
+                    api_timeout: values.api_timeout,
+                    disable_traffic: values.disable_traffic ? 1 : 0
+                  };
+                  const provider = {
+                    ...values,
+                    id: editingProvider?.id || (window as any).crypto.randomUUID(),
+                    app_type: 'ClaudeCode', // 我们的默认类型
+                    settings_config: JSON.stringify(settings),
+                    meta: JSON.stringify({}),
+                    cost_multiplier: '1.0',
+                    is_current: false,
+                    in_failover_queue: false,
+                    endpoints: [{ url: values.base_url, provider_id: '', app_type: 'ClaudeCode', added_at: Date.now() }]
+                  };
+                  const res = await invoke<string>('test_ai_provider_connection', { provider });
+                  messageApi.success(res);
+                } catch (e) {
+                  messageApi.error(String(e));
+                } finally {
+                  setTestingProvider(false);
+                }
+              }}>测试连接</Button>
+              <div style={{ flex: 1 }} />
+              <Button key="cancel" onClick={() => { setProviderModalOpen(false); setTestModelId(undefined); }}>取消</Button>
+              <Button key="ok" type="primary" onClick={() => { providerForm.submit(); setTestModelId(undefined); }}>确定</Button>
+            </div>
           ]}
           destroyOnHidden
+          width={800}
         >
           <Form
             form={providerForm}
@@ -3004,7 +3134,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                 const settings = {
                   api_key: values.api_key,
                   base_url: values.base_url,
-                  model_id: values.model_id,
+                  model_ids: values.model_ids,
+                  model_id: values.model_ids?.[0], // legacy fallback
                   api_timeout: values.api_timeout,
                   disable_traffic: values.disable_traffic ? 1 : 0
                 };
@@ -3063,8 +3194,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
             <Form.Item name="base_url" label="Base URL">
               <Input placeholder="ANTHROPIC_BASE_URL (可选)" />
             </Form.Item>
-            <Form.Item name="model_id" label="Model ID">
-              <Input placeholder="例如: claude-3-5-sonnet-20241022 (可选)" />
+            <Form.Item name="model_ids" label="Model IDs (可添加多个)">
+              <ModelListInput />
             </Form.Item>
             <Form.Item name="website_url" label="官网">
               <Input placeholder="Provider 官网链接 (可选)" />

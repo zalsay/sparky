@@ -383,6 +383,7 @@ pub async fn pty_spawn(
     project_path: String,
     terminal_id: String,
     default_provider_id: Option<String>,
+    selected_model_id: Option<String>,
 ) -> Result<String, String> {
     // Atomic spawn lock: prevent concurrent duplicate spawns for same terminal
     {
@@ -398,7 +399,7 @@ pub async fn pty_spawn(
         spawning.insert(terminal_id.clone());
     }
 
-    log::info!("Spawning PTY: program={}, args={:?}, cwd={}, project={}, terminal={}", program, args, cwd, project_path, terminal_id);
+    log::info!("Spawning PTY: program={}, args={:?}, cwd={}, project={}, terminal={}, selected_model={:?}", program, args, cwd, project_path, terminal_id, selected_model_id);
 
     let manager = app.state::<Arc<PtyManager>>();
     let has_direct_provider = if let Some(ref provider_id) = default_provider_id {
@@ -427,8 +428,7 @@ pub async fn pty_spawn(
                 serde_json::Map::new()
             };
 
-            // API URL: settings_config.base_url 是用户在 cc-switch 配置的正确 URL
-            // provider_endpoints 可能是过时的测速数据，仅作 fallback
+            // API URL
             if !env_vars.contains_key("ANTHROPIC_BASE_URL") {
                 let base_url = config
                     .get("base_url")
@@ -440,34 +440,34 @@ pub async fn pty_spawn(
                     });
                 if let Some(ref url) = base_url {
                     env_vars.insert("ANTHROPIC_BASE_URL".to_string(), serde_json::Value::String(url.clone()));
-
-                    // 自动修复: 如果 config.base_url 与 endpoint 不一致，更新 endpoint
-                    let endpoint_mismatch = provider.endpoints.first().map_or(true, |e| e.url != *url);
-                    if endpoint_mismatch {
-                        if let Ok(conn) = crate::open_db() {
-                            let _ = conn.execute("DELETE FROM provider_endpoints WHERE provider_id = ?1", rusqlite::params![provider.id]);
-                            let _ = conn.execute(
-                                "INSERT INTO provider_endpoints (provider_id, app_type, url, added_at) VALUES (?1, ?2, ?3, ?4)",
-                                rusqlite::params![provider.id, provider.app_type, url, chrono::Utc::now().timestamp()],
-                            );
-                            log::info!("[PTY_SPAWN] Auto-fixed endpoint for provider {}: url={}", provider.id, url);
-                        }
-                    }
                 }
             }
 
-            // API key: use ANTHROPIC_AUTH_TOKEN (same as cc-switch, sends Authorization: Bearer)
-            // sparky flat format has "api_key" at root level
+            // API key
             if !env_vars.contains_key("ANTHROPIC_AUTH_TOKEN") && !env_vars.contains_key("ANTHROPIC_API_KEY") {
                 if let Some(key) = config.get("api_key").and_then(|v| v.as_str()) {
                     env_vars.insert("ANTHROPIC_AUTH_TOKEN".to_string(), serde_json::Value::String(key.to_string()));
                 }
             }
 
-            // Model ID: sparky flat format "model_id" → ANTHROPIC_MODEL + tier models
+            // Model ID: use selected_model_id if provided, else fallback to model_ids[0] or model_id
             if !env_vars.contains_key("ANTHROPIC_MODEL") {
-                if let Some(model_id) = config.get("model_id").and_then(|v| v.as_str()) {
-                    let model_val = serde_json::Value::String(model_id.to_string());
+                let chosen_model = selected_model_id.clone()
+                    .or_else(|| {
+                        config.get("model_ids")
+                            .and_then(|v| v.as_array())
+                            .and_then(|arr| arr.first())
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .or_else(|| {
+                        config.get("model_id")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    });
+
+                if let Some(model_id) = chosen_model {
+                    let model_val = serde_json::Value::String(model_id);
                     env_vars.insert("ANTHROPIC_MODEL".to_string(), model_val.clone());
                     env_vars.entry("ANTHROPIC_DEFAULT_HAIKU_MODEL".to_string()).or_insert(model_val.clone());
                     env_vars.entry("ANTHROPIC_DEFAULT_SONNET_MODEL".to_string()).or_insert(model_val.clone());
@@ -484,17 +484,13 @@ pub async fn pty_spawn(
                 .map_err(|e| format!("Failed to write settings file: {}", e))?;
 
             log::info!(
-                "[PTY_SPAWN] Direct provider settings: provider={}({}) base_url={:?} (config.base_url={:?}, endpoints={:?}) model={:?} file={:?}",
+                "[PTY_SPAWN] Direct provider settings: provider={}({}) base_url={:?} model={:?} file={:?}",
                 provider.name, provider.id,
                 env_vars.get("ANTHROPIC_BASE_URL"),
-                config.get("base_url").and_then(|v| v.as_str()),
-                provider.endpoints.iter().map(|e| &e.url).collect::<Vec<_>>(),
                 env_vars.get("ANTHROPIC_MODEL"),
                 settings_file
             );
             manager.store_settings_path(terminal_id.clone(), settings_file);
-        } else {
-            log::warn!("[PTY_SPAWN] Provider {} not found in DB, no settings file generated", provider_id);
         }
     }
 
