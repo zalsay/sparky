@@ -206,6 +206,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       return {};
     }
   });
+  const [lastModelByProject, setLastModelByProject] = useState<Record<string, string>>(() => {
+    try {
+      const saved = localStorage.getItem('sparky-last-model-by-project');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
 
   const [hookRecords, setHookRecords] = useState<HookRecord[]>([]);
   const [hookRecordsTotal, setHookRecordsTotal] = useState(0);
@@ -661,7 +669,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
         try {
           const settings = JSON.parse(provider.settings_config);
           const models = (settings.model_ids && settings.model_ids.length > 0) ? settings.model_ids : (settings.model_id ? [settings.model_id] : []);
-          setNewTerminalModelId(models[0]);
+          // 优先使用上次选择的 model,如果不存在则使用第一个
+          const lastModel = lastModelByProject[selectedProject.path];
+          const lastModelExists = lastModel && models.includes(lastModel);
+          setNewTerminalModelId(lastModelExists ? lastModel : models[0]);
         } catch (e) {
           setNewTerminalModelId(undefined);
         }
@@ -697,6 +708,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       localStorage.setItem('lastProviderByProject', JSON.stringify(next));
       return next;
     });
+    // 保存上次选择的 model
+    if (newTerminalModelId) {
+      setLastModelByProject(prev => {
+        const next = { ...prev, [selectedProject.path]: newTerminalModelId };
+        localStorage.setItem('sparky-last-model-by-project', JSON.stringify(next));
+        return next;
+      });
+    }
   };
 
 
@@ -2198,13 +2217,15 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                               value={newTerminalProviderId}
                               onChange={(val) => {
                                 setNewTerminalProviderId(val);
-                                // Auto-select first model of new provider
+                                // Auto-select model (prefer last used, fallback to first)
                                 const provider = providers.find(p => `${p.app_type}::${p.id}` === val);
                                 if (provider) {
                                   try {
                                     const settings = JSON.parse(provider.settings_config);
                                     const models = (settings.model_ids && settings.model_ids.length > 0) ? settings.model_ids : (settings.model_id ? [settings.model_id] : []);
-                                    setNewTerminalModelId(models[0]);
+                                    const lastModel = lastModelByProject[selectedProject?.path || ''];
+                                    const lastModelExists = lastModel && models.includes(lastModel);
+                                    setNewTerminalModelId(lastModelExists ? lastModel : models[0]);
                                   } catch (e) {
                                     setNewTerminalModelId(undefined);
                                   }
