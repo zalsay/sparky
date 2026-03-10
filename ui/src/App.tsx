@@ -2280,7 +2280,26 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                     try {
                                       const settings = JSON.parse(provider.settings_config);
                                       const models = (settings.model_ids && settings.model_ids.length > 0) ? settings.model_ids : (settings.model_id ? [settings.model_id] : []);
-                                      return models.map((m: string) => ({ label: m, value: m }));
+                                      return models.map((m: string) => ({
+                                        label: (
+                                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                                            <span>{m}</span>
+                                            {selectedProject && lastModelByProject[selectedProject.path] === m && (
+                                              <Tag
+                                                style={{
+                                                  marginInlineStart: 8,
+                                                  backgroundColor: 'var(--active-text)',
+                                                  borderColor: 'var(--active-text)',
+                                                  color: 'var(--active-bg)',
+                                                }}
+                                              >
+                                                上次选择
+                                              </Tag>
+                                            )}
+                                          </div>
+                                        ),
+                                        value: m
+                                      }));
                                     } catch (e) {
                                       return [];
                                     }
