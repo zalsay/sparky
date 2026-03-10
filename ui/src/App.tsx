@@ -452,6 +452,28 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       .catch(err => console.error('Failed to get IDE plugins:', err));
   }, [activeMenu, tauriAvailable]);
 
+  // Sync providerForm with editingProvider when the modal opens or the provider changes
+  useEffect(() => {
+    if (providerModalOpen) {
+      if (editingProvider) {
+        let settings = {};
+        try {
+          if (editingProvider.settings_config) {
+            settings = JSON.parse(editingProvider.settings_config);
+          }
+        } catch (e) {
+          console.error('Failed to parse settings_config:', e);
+        }
+        providerForm.setFieldsValue({
+          ...editingProvider,
+          ...settings
+        });
+      } else {
+        providerForm.resetFields();
+      }
+    }
+  }, [providerModalOpen, editingProvider, providerForm]);
+
   // Check code-server connection when entering project detail or when marked as disconnected
   useEffect(() => {
     if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject || codeServerConnected === true) {
@@ -2977,10 +2999,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                 duration: 4,
               });
             }}
-            initialValues={editingProvider ? {
-              ...editingProvider,
-              ... (editingProvider.settings_config ? JSON.parse(editingProvider.settings_config) : {})
-            } : { name: '', api_key: '', base_url: '', model_id: '', website_url: '', api_timeout: '3000000', disable_traffic: 1 }}
             onFinish={async (values) => {
               try {
                 const settings = {
