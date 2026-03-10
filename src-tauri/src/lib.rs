@@ -3013,16 +3013,31 @@ fn check_dependencies() -> Result<DependencyStatus, String> {
     })
 }
 
+/// Get code-server port based on build mode
+fn get_code_server_port() -> u16 {
+    if cfg!(debug_assertions) {
+        19000 // Dev mode
+    } else {
+        18080 // Release mode
+    }
+}
+
 #[tauri::command(rename_all = "snake_case")]
 fn check_code_server_connection() -> bool {
-    // Check if code-server is responding on port 18080
+    let port = get_code_server_port();
+    let addr = format!("127.0.0.1:{}", port);
     match TcpStream::connect_timeout(
-        &"127.0.0.1:18080".parse().expect("Invalid address"),
+        &addr.parse().expect("Invalid address"),
         Duration::from_millis(500),
     ) {
         Ok(_) => true,
         Err(_) => false,
     }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn code_server_port() -> u16 {
+    get_code_server_port()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -3113,13 +3128,14 @@ pub fn run() {
             }
 
             let app_handle = app.handle().clone();
+            let code_server_port = get_code_server_port();
             std::thread::spawn(move || {
-                log::info!("Starting code-server on 127.0.0.1:18080...");
+                log::info!("Starting code-server on 127.0.0.1:{}...", code_server_port);
 
-                // Ensure port 18080 is free by killing any existing code-server process
+                // Ensure port is free by killing any existing code-server process
                 let _ = std::process::Command::new("sh")
                     .arg("-c")
-                    .arg("lsof -ti:18080 | xargs kill -9")
+                    .arg(&format!("lsof -ti:{} | xargs kill -9", code_server_port))
                     .status();
 
                 let cmd_path = find_executable("code-server").unwrap_or_else(|| "code-server".to_string());
@@ -3179,10 +3195,11 @@ pub fn run() {
                     }
                 }
                     
+                let bind_addr = format!("127.0.0.1:{}", code_server_port);
                 match std::process::Command::new(cmd_path)
                     .args([
                         "--auth", "none", 
-                        "--bind-addr", "127.0.0.1:18080",
+                        "--bind-addr", &bind_addr,
                         "--extensions-dir", &ext_dir.to_string_lossy(),
                         "--locale", "zh-cn"
                     ])
@@ -3435,6 +3452,7 @@ pub fn run() {
             delete_session,
             check_dependencies,
             check_code_server_connection,
+            code_server_port,
             install_code_server,
             install_code_server_extension,
             get_installed_code_server_extensions,

@@ -305,6 +305,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [mcpLoading, setMcpLoading] = useState(false);
   const [mcpStarting, setMcpStarting] = useState(false);
   const [codeServerConnected, setCodeServerConnected] = useState<boolean | null>(null);
+  const [codeServerPort, setCodeServerPort] = useState<number>(18080);
 
   // IDE Plugins state
   const [idePlugins, setIdePlugins] = useState<string[]>([]);
@@ -362,6 +363,13 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   useEffect(() => {
     localStorage.setItem('sparky-full-auth', JSON.stringify(fullAuth));
   }, [fullAuth]);
+
+  // Get code server port on mount
+  useEffect(() => {
+    if (tauriAvailable) {
+      invoke<number>('code_server_port').then(setCodeServerPort).catch(() => {});
+    }
+  }, [tauriAvailable]);
 
   // Check dependencies once on mount
   const isCheckingDependenciesRef = useRef(false);
@@ -1681,7 +1689,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                             <WarningOutlined style={{ fontSize: 48, color: '#faad14' }} />
                             <div>
                               <h3 style={{ color: 'var(--text-primary)', margin: 0, marginBottom: 8 }}>IDE 连接失败</h3>
-                              <p style={{ margin: 0 }}>无法连接到 127.0.0.1:18080</p>
+                              <p style={{ margin: 0 }}>无法连接到 IDE 服务</p>
                             </div>
                             <div style={{ display: 'flex', gap: 12 }}>
                               <Button
@@ -1707,7 +1715,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                         </div>
                       ) : (
                         <iframe
-                          src={`http://127.0.0.1:18080/?folder=${encodeURIComponent(selectedProject.path)}`}
+                          src={`http://127.0.0.1:${codeServerPort}/?folder=${encodeURIComponent(selectedProject.path)}`}
                           title="Coder IDE"
                           style={{
                             flex: 1,
