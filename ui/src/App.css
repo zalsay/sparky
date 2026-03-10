@@ -559,6 +559,67 @@ body {
   color: var(--text-primary) !important;
 }
 
+/* ==================== IDE Tabs（已注释） ==================== */
+/*
+.ide-tabs-inner .ant-tabs-content-holder {
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  background: transparent !important;
+  flex: 1;
+  height: 100%;
+}
+
+.ide-tabs-inner .ant-tabs-content {
+  height: 100%;
+}
+
+.ide-tabs-inner .ant-tabs-nav {
+  background: var(--header-bg) !important;
+  border-bottom: 1px solid var(--border-color) !important;
+  margin-bottom: 0 !important;
+}
+
+.ide-tabs-inner .ant-tabs-tab {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+  padding: 8px 16px !important;
+  color: var(--text-secondary) !important;
+  transition: all 0.2s ease;
+}
+
+.ide-tabs-inner .ant-tabs-tab:hover {
+  color: var(--text-primary) !important;
+  background: var(--bg-secondary) !important;
+}
+
+.ide-tabs-inner .ant-tabs-tab-active {
+  background: var(--card-bg) !important;
+  color: var(--text-primary) !important;
+  border-bottom: 2px solid var(--primary-color) !important;
+}
+
+.ide-tabs-inner .ant-tabs-tab-remove {
+  color: var(--text-tertiary) !important;
+  margin-left: 8px;
+}
+
+.ide-tabs-inner .ant-tabs-tab-remove:hover {
+  color: var(--text-primary) !important;
+}
+
+.ide-tabs-inner .ant-tabs-add-btn {
+  color: var(--text-secondary) !important;
+  padding: 0 12px !important;
+}
+
+.ide-tabs-inner .ant-tabs-add-btn:hover {
+  color: var(--primary-color) !important;
+}
+*/
+
 
 /* ==================== Settings Tabs ==================== */
 

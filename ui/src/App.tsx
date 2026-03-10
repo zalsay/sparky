@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select, Badge } from 'antd';
+import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select, Badge, Alert } from 'antd';
 import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -167,7 +167,22 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     providerId?: string;
     selectedModelId?: string;
   }
+
+  // ========== IDE 新建标签页功能（已注释） ==========
+  // interface IDETab {
+  //   id: string;
+  //   title: string;
+  //   url: string;
+  //   type: 'code-server' | 'webview';
+  //   closable?: boolean;
+  // }
+
   const [projectTerminals, setProjectTerminals] = useState<Record<string, TerminalTab[]>>({});
+  // const [ideTabs, setIdeTabs] = useState<Record<string, IDETab[]>>({});
+  // const [activeIdeTabId, setActiveIdeTabId] = useState<Record<string, string>>({});
+  // const [newTabModalOpen, setNewTabModalOpen] = useState(false);
+  // const [newTabUrl, setNewTabUrl] = useState('');
+  // const [tabLoadErrors, setTabLoadErrors] = useState<Record<string, boolean>>({});
   const [providers, setProviders] = useState<AIProvider[]>([]);
 
   const [selectedProviderKeys, setSelectedProviderKeys] = useState<React.Key[]>([]);
@@ -611,6 +626,20 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     setActiveProjects(prev =>
       prev.includes(project.path) ? prev : [...prev, project.path]
     );
+
+    // ========== IDE 标签页初始化（已注释） ==========
+    // Initialize IDE tabs if not exists
+    // if (!ideTabs[project.path]) {
+    //   const defaultTab: IDETab = {
+    //     id: 'code-server',
+    //     title: 'Code IDE',
+    //     url: `http://127.0.0.1:18080/?folder=${encodeURIComponent(project.path)}`,
+    //     type: 'code-server',
+    //     closable: false
+    //   };
+    //   setIdeTabs(prev => ({ ...prev, [project.path]: [defaultTab] }));
+    //   setActiveIdeTabId(prev => ({ ...prev, [project.path]: 'code-server' }));
+    // }
   };
 
   const openCreateTerminalModal = () => {
@@ -1626,31 +1655,33 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                     }}
                   >
                     <Splitter.Panel size={splitterSizes[0]} collapsible min="30%" max="80%">
-                      {codeServerConnected === false ? (
-                        <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)', color: 'var(--text-secondary)', padding: 24, textAlign: 'center', gap: 16 }}>
-                          <WarningOutlined style={{ fontSize: 48, color: '#faad14' }} />
-                          <div>
-                            <h3 style={{ color: 'var(--text-primary)', margin: 0, marginBottom: 8 }}>IDE 连接失败</h3>
-                            <p style={{ margin: 0 }}>无法连接到 127.0.0.1:18080</p>
-                          </div>
-                          <div style={{ display: 'flex', gap: 12 }}>
-                            <Button
-                              type="primary"
-                              icon={<ReloadOutlined />}
-                              onClick={async () => {
-                                const connected = await invoke<boolean>('check_code_server_connection');
-                                setCodeServerConnected(connected);
-                              }}
-                            >
-                              重试连接
-                            </Button>
-                            <Button
-                              icon={<MenuOutlined />}
-                              onClick={() => {
-                                setSplitterSizes(['0%', '100%']);
-                                localStorage.setItem('sparkySplitterSizes', JSON.stringify(['0%', '100%']));
-                              }}
-                            >
+                      <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)' }}>
+                        {/* IDE 标签页 */}
+                        {codeServerConnected === false ? (
+                          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', padding: 24, textAlign: 'center', gap: 16 }}>
+                            <WarningOutlined style={{ fontSize: 48, color: '#faad14' }} />
+                            <div>
+                              <h3 style={{ color: 'var(--text-primary)', margin: 0, marginBottom: 8 }}>IDE 连接失败</h3>
+                              <p style={{ margin: 0 }}>无法连接到 127.0.0.1:18080</p>
+                            </div>
+                            <div style={{ display: 'flex', gap: 12 }}>
+                              <Button
+                                type="primary"
+                                icon={<ReloadOutlined />}
+                                onClick={async () => {
+                                  const connected = await invoke<boolean>('check_code_server_connection');
+                                  setCodeServerConnected(connected);
+                                }}
+                              >
+                                重试连接
+                              </Button>
+                              <Button
+                                icon={<MenuOutlined />}
+                                onClick={() => {
+                                  setSplitterSizes(['0%', '100%']);
+                                  localStorage.setItem('sparkySplitterSizes', JSON.stringify(['0%', '100%']));
+                                }}
+                              >
                               收起 IDE
                             </Button>
                           </div>
@@ -1671,9 +1702,87 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           allow="clipboard-read *; clipboard-write *; display-capture *"
                         />
                       )}
+                      </div>
                     </Splitter.Panel >
                     <Splitter.Panel size={splitterSizes[1]} collapsible min="20%" max="80%">
                       <Card className="project-detail-card" variant="borderless" style={{ height: '100%', margin: 0, borderRadius: 0, padding: 0 }}>
+
+                        {/* ========== New IDE Tab Modal（已注释） ========== */}
+                        {/*
+                        <Modal
+                          title="新建标签页"
+                          open={newTabModalOpen}
+                          onCancel={() => {
+                            setNewTabModalOpen(false);
+                            setNewTabUrl('');
+                          }}
+                          onOk={() => {
+                            if (newTabUrl.trim()) {
+                              try {
+                                const url = newTabUrl.trim();
+                                new URL(url);
+                                const newTab: IDETab = {
+                                  id: `webview-${Date.now()}`,
+                                  title: new URL(url).hostname || 'New Tab',
+                                  url: url,
+                                  type: 'webview',
+                                  closable: true
+                                };
+                                setIdeTabs(prev => ({
+                                  ...prev,
+                                  [selectedProject.path]: [...(prev[selectedProject.path] || []), newTab]
+                                }));
+                                setActiveIdeTabId(prev => ({ ...prev, [selectedProject.path]: newTab.id }));
+                                setNewTabModalOpen(false);
+                                setNewTabUrl('');
+                              } catch (error) {
+                                messageApi.error('请输入有效的 URL（例如：https://github.com）');
+                              }
+                            }
+                          }}
+                          okText="创建"
+                          cancelText="取消"
+                        >
+                          <div style={{ marginBottom: 12 }}>
+                            <Alert
+                              message="注意"
+                              description="部分网站可能禁止在 iframe 中加载（如 Google、Bing 等）。如遇此问题，请尝试其他网站。"
+                              type="warning"
+                              showIcon
+                              style={{ marginBottom: 12 }}
+                            />
+                          </div>
+                          <Input
+                            placeholder="输入要打开的 URL（例如：https://github.com）"
+                            value={newTabUrl}
+                            onChange={(e) => setNewTabUrl(e.target.value)}
+                            onPressEnter={() => {
+                              if (newTabUrl.trim()) {
+                                try {
+                                  const url = newTabUrl.trim();
+                                  new URL(url);
+                                  const newTab: IDETab = {
+                                    id: `webview-${Date.now()}`,
+                                    title: new URL(url).hostname || 'New Tab',
+                                    url: url,
+                                    type: 'webview',
+                                    closable: true
+                                  };
+                                  setIdeTabs(prev => ({
+                                    ...prev,
+                                    [selectedProject.path]: [...(prev[selectedProject.path] || []), newTab]
+                                  }));
+                                  setActiveIdeTabId(prev => ({ ...prev, [selectedProject.path]: newTab.id }));
+                                  setNewTabModalOpen(false);
+                                  setNewTabUrl('');
+                                } catch (error) {
+                                  messageApi.error('请输入有效的 URL（例如：https://github.com）');
+                                }
+                              }
+                            }}
+                          />
+                        </Modal>
+                        */}
 
                         {/* Session Picker Modal */}
                         <Modal
