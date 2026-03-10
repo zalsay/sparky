@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select, Badge } from 'antd';
 import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -282,6 +282,48 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [mcpLoading, setMcpLoading] = useState(false);
   const [mcpStarting, setMcpStarting] = useState(false);
   const [codeServerConnected, setCodeServerConnected] = useState<boolean | null>(null);
+  const [chromeLaunchedForProject, setChromeLaunchedForProject] = useState<Record<string, boolean>>({});
+  const chromeHostRef = useRef<HTMLDivElement | null>(null);
+  const chromeLaunchRetryRef = useRef<Record<string, number>>({});
+
+  const updateChromeBounds = useCallback(async () => {
+    if (!tauriAvailable) return;
+    const rect = chromeHostRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      const appWindow = getCurrentWindow();
+      const scale = await appWindow.scaleFactor();
+      const innerPos = await appWindow.innerPosition();
+      invoke('embed_chrome_window', {
+        x: Math.round(innerPos.x + rect.left * scale),
+        y: Math.round(innerPos.y + rect.top * scale),
+        width: Math.round(rect.width * scale),
+        height: Math.round(rect.height * scale)
+      }).catch(err => {
+        console.error('Failed to embed Chrome window:', err);
+      });
+    } catch (err) {
+      console.error('Failed to get window position:', err);
+    }
+  }, [tauriAvailable]);
+
+  const scheduleChromeLaunchRetry = useCallback((projectPath: string, url: string) => {
+    if (chromeLaunchRetryRef.current[projectPath]) {
+      return;
+    }
+    chromeLaunchRetryRef.current[projectPath] = window.setTimeout(() => {
+      delete chromeLaunchRetryRef.current[projectPath];
+      invoke('launch_chrome_with_tabs', { urls: [url] })
+        .then(() => {
+          setChromeLaunchedForProject(prev => ({ ...prev, [projectPath]: true }));
+        })
+        .catch(err => {
+          console.error('Failed to launch Chrome:', err);
+          scheduleChromeLaunchRetry(projectPath, url);
+        });
+    }, 2000);
+  }, []);
 
   // IDE Plugins state
   const [idePlugins, setIdePlugins] = useState<string[]>([]);
@@ -326,7 +368,11 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     const interval = setInterval(poll, 3000);
     poll(); // Initial check
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      Object.values(chromeLaunchRetryRef.current).forEach(timeoutId => clearTimeout(timeoutId));
+      chromeLaunchRetryRef.current = {};
+    };
   }, [tauriAvailable, projectTerminals]);
 
   useEffect(() => {
@@ -552,6 +598,56 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       if (intervalId) clearInterval(intervalId);
     };
   }, [activeMenu, selectedProject, tauriAvailable, codeServerConnected]);
+
+  useEffect(() => {
+    if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject) {
+      return;
+    }
+    if (codeServerConnected === false) {
+      return;
+    }
+    if (chromeLaunchedForProject[selectedProject.path]) {
+      return;
+    }
+
+    const codeServerUrl = `http://127.0.0.1:18080/?folder=${encodeURIComponent(selectedProject.path)}`;
+
+    invoke('launch_chrome_with_tabs', { urls: [codeServerUrl] })
+      .then(() => {
+        setChromeLaunchedForProject(prev => ({ ...prev, [selectedProject.path]: true }));
+        // Chrome 窗口启动后需要延迟一下再设置位置
+        setTimeout(() => {
+          updateChromeBounds();
+        }, 500);
+      })
+      .catch(err => {
+        console.error('Failed to launch Chrome:', err);
+        scheduleChromeLaunchRetry(selectedProject.path, codeServerUrl);
+      });
+  }, [activeMenu, selectedProject, tauriAvailable, codeServerConnected, chromeLaunchedForProject, scheduleChromeLaunchRetry, updateChromeBounds]);
+
+  // Chrome 窗口位置对齐
+  useEffect(() => {
+    if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject) {
+      return;
+    }
+    if (codeServerConnected === false) {
+      return;
+    }
+    if (!chromeHostRef.current) {
+      return;
+    }
+    if (!chromeLaunchedForProject[selectedProject.path]) {
+      return;
+    }
+
+    updateChromeBounds();
+    window.addEventListener('resize', updateChromeBounds);
+
+    return () => {
+      window.removeEventListener('resize', updateChromeBounds);
+    };
+  }, [activeMenu, selectedProject, tauriAvailable, codeServerConnected, chromeLaunchedForProject, updateChromeBounds]);
 
   const handleTerminalInput = (data: string) => {
     if (!tauriAvailable || !selectedProject) {
@@ -1623,6 +1719,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                     onResize={(sizes) => {
                       setSplitterSizes(sizes);
                       localStorage.setItem('sparkySplitterSizes', JSON.stringify(sizes));
+                      if (tauriAvailable && codeServerConnected !== false) {
+                        updateChromeBounds();
+                      }
                     }}
                   >
                     <Splitter.Panel size={splitterSizes[0]} collapsible min="30%" max="80%">
@@ -1630,7 +1729,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                         <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)', color: 'var(--text-secondary)', padding: 24, textAlign: 'center', gap: 16 }}>
                           <WarningOutlined style={{ fontSize: 48, color: '#faad14' }} />
                           <div>
-                            <h3 style={{ color: 'var(--text-primary)', margin: 0, marginBottom: 8 }}>IDE 连接失败</h3>
+                            <h3 style={{ color: 'var(--text-primary)', margin: 0, marginBottom: 8 }}>Chrome 连接失败</h3>
                             <p style={{ margin: 0 }}>无法连接到 127.0.0.1:18080</p>
                           </div>
                           <div style={{ display: 'flex', gap: 12 }}>
@@ -1651,25 +1750,17 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 localStorage.setItem('sparkySplitterSizes', JSON.stringify(['0%', '100%']));
                               }}
                             >
-                              收起 IDE
+                              收起浏览器
                             </Button>
                           </div>
                         </div>
                       ) : (
-                        <iframe
-                          src={`http://127.0.0.1:18080/?folder=${encodeURIComponent(selectedProject.path)}`}
-                          title="Coder IDE"
-                          style={{
-                            flex: 1,
-                            width: '100%',
-                            height: '100%',
-                            border: 'none',
-                            borderRight: '1px solid var(--border-color)',
-                            display: 'block',
-                            background: 'var(--bg-primary)'
-                          }}
-                          allow="clipboard-read *; clipboard-write *; display-capture *"
-                        />
+                        <div
+                          ref={chromeHostRef}
+                          style={{ height: '100%', width: '100%', background: 'var(--bg-primary)', borderRight: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}
+                        >
+                          正在使用系统 Chrome 打开 code-server（此区域为原生嵌入占位）。
+                        </div>
                       )}
                     </Splitter.Panel >
                     <Splitter.Panel size={splitterSizes[1]} collapsible min="20%" max="80%">

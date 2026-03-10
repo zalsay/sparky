@@ -20,6 +20,9 @@ mod feishu_client;
 mod pty;
 use pty::{PtyManager, pty_spawn, pty_write, pty_kill, pty_resize, pty_exists, get_terminal_active_process};
 
+mod chrome_embed;
+use chrome_embed::{launch_chrome_with_tabs, set_chrome_bounds, embed_chrome_window, unembed_chrome_window};
+
 // mod proxy;
 // use proxy::{ProxyState, start_proxy_server};
 
@@ -3205,6 +3208,11 @@ pub fn run() {
                 use tokio::net::TcpListener;
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+                let _ = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg("lsof -ti:18081 | xargs kill -9")
+                    .status();
+
                 let listener = match TcpListener::bind("127.0.0.1:18081").await {
                     Ok(l) => {
                         log::info!("Extension HTTP endpoint listening on 127.0.0.1:18081");
@@ -3447,6 +3455,10 @@ pub fn run() {
             get_terminal_active_process,
             set_terminal_provider,
             get_terminal_settings_path,
+            launch_chrome_with_tabs,
+            set_chrome_bounds,
+            embed_chrome_window,
+            unembed_chrome_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
