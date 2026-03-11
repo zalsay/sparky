@@ -2154,15 +2154,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           okText="创建"
                           cancelText="取消"
                         >
-                          <div style={{ marginBottom: 12 }}>
-                            <Alert
-                              message="注意"
-                              description="部分网站可能禁止在 iframe 中加载（如 Google、Bing 等）。如遇此问题，请尝试其他网站。"
-                              type="warning"
-                              showIcon
-                              style={{ marginBottom: 12 }}
-                            />
-                          </div>
                           <Input
                             placeholder="输入要打开的 URL（例如：https://github.com）"
                             value={newTabUrl}
