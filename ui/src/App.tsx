@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Form, Input, Button, Card, Divider, Tag, Table, Empty, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select, Badge } from 'antd';
+import { Form, Input, Button, Card, Divider, Tag, Table, Empty, List, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select, Badge, Alert } from 'antd';
 import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -108,6 +108,10 @@ interface SessionInfo {
 }
 
 const LAST_PROVIDER_BY_PROJECT_STORAGE_KEY = 'sparky-last-provider-by-project';
+const LAST_ACTIVE_MENU_STORAGE_KEY = 'sparky-last-active-menu';
+const LAST_SELECTED_PROJECT_PATH_STORAGE_KEY = 'sparky-last-selected-project-path';
+const TERMINAL_TABS_STORAGE_KEY = 'sparky-terminal-tabs';
+const ACTIVE_TERMINAL_ID_STORAGE_KEY = 'sparky-active-terminal-id';
 
 const ModelListInput = ({ value = [], onChange }: { value?: string[], onChange?: (val: string[]) => void }) => {
   const [inputValue, setInputValue] = useState('');
@@ -160,6 +164,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [terminalHistory, setTerminalHistory] = useState<Record<string, string[]>>({});
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
+  const [terminalStateReady, setTerminalStateReady] = useState(false);
 
   interface TerminalTab {
     id: string;
@@ -168,21 +174,22 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     selectedModelId?: string;
   }
 
-  // ========== IDE 新建标签页功能（已注释） ==========
-  // interface IDETab {
-  //   id: string;
-  //   title: string;
-  //   url: string;
-  //   type: 'code-server' | 'webview';
-  //   closable?: boolean;
-  // }
+  interface IDETab {
+    id: string;
+    title: string;
+    url: string;
+    type: 'code-server' | 'webview';
+    closable?: boolean;
+  }
 
   const [projectTerminals, setProjectTerminals] = useState<Record<string, TerminalTab[]>>({});
-  // const [ideTabs, setIdeTabs] = useState<Record<string, IDETab[]>>({});
-  // const [activeIdeTabId, setActiveIdeTabId] = useState<Record<string, string>>({});
-  // const [newTabModalOpen, setNewTabModalOpen] = useState(false);
-  // const [newTabUrl, setNewTabUrl] = useState('');
-  // const [tabLoadErrors, setTabLoadErrors] = useState<Record<string, boolean>>({});
+  const [ideTabs, setIdeTabs] = useState<Record<string, IDETab[]>>({});
+  const [activeIdeTabId, setActiveIdeTabId] = useState<Record<string, string>>({});
+  const [newTabModalOpen, setNewTabModalOpen] = useState(false);
+  const [newTabUrl, setNewTabUrl] = useState('');
+  const [tabLoadErrors, setTabLoadErrors] = useState<Record<string, boolean>>({});
+  const [ideTabReloadKeys, setIdeTabReloadKeys] = useState<Record<string, number>>({});
+  const [recentProjectUrls, setRecentProjectUrls] = useState<Record<string, string[]>>({});
   const [providers, setProviders] = useState<AIProvider[]>([]);
 
   const [selectedProviderKeys, setSelectedProviderKeys] = useState<React.Key[]>([]);
@@ -240,6 +247,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [activeProjects, setActiveProjects] = useState<string[]>([]);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const appConfigRef = useRef<AppConfig | null>(null);
+  const hasRestoredSelectionRef = useRef(false);
+  const hasRestoredTerminalStateRef = useRef(false);
   const sidebarCollapsed = false;
   const [splitterSizes, setSplitterSizes] = useState<number[] | string[]>(() => {
     try {
@@ -248,6 +257,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     } catch { /* ignore */ }
     return ['50%', '50%'];
   });
+  const recentUrlsForProject = selectedProject ? (recentProjectUrls[selectedProject.path] || []) : [];
 
   useEffect(() => {
     if (tauriAvailable) {
@@ -306,6 +316,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [mcpStarting, setMcpStarting] = useState(false);
   const [codeServerConnected, setCodeServerConnected] = useState<boolean | null>(null);
   const [codeServerPort, setCodeServerPort] = useState<number>(18080);
+  const [ideRestarting, setIdeRestarting] = useState(false);
 
   // IDE Plugins state
   const [idePlugins, setIdePlugins] = useState<string[]>([]);
@@ -370,6 +381,38 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       invoke<number>('code_server_port').then(setCodeServerPort).catch(() => {});
     }
   }, [tauriAvailable]);
+
+  useEffect(() => {
+    console.info('[IDE] AppContent mounted');
+    return () => {
+      console.info('[IDE] AppContent unmounted');
+    };
+  }, []);
+
+  useEffect(() => {
+    console.info('[IDE] activeMenu changed:', activeMenu);
+    if (hasRestoredSelectionRef.current) {
+      localStorage.setItem(LAST_ACTIVE_MENU_STORAGE_KEY, activeMenu);
+    }
+  }, [activeMenu]);
+
+  useEffect(() => {
+    console.info('[IDE] selectedProject changed:', selectedProject?.path ?? null);
+    if (hasRestoredSelectionRef.current) {
+      localStorage.setItem(LAST_SELECTED_PROJECT_PATH_STORAGE_KEY, selectedProject?.path ?? '');
+    }
+  }, [selectedProject]);
+
+  useEffect(() => {
+    console.info('[IDE] activeProjects changed:', activeProjects);
+  }, [activeProjects]);
+
+  useEffect(() => {
+    console.info('[IDE] connection state:', {
+      codeServerConnected,
+      ideRestarting
+    });
+  }, [codeServerConnected, ideRestarting]);
 
   // Check dependencies once on mount
   const isCheckingDependenciesRef = useRef(false);
@@ -570,6 +613,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
         const connected = await invoke<boolean>('check_code_server_connection');
         if (connected) {
           setCodeServerConnected(true);
+          if (ideRestarting) {
+            setIdeRestarting(false);
+          }
         }
       } catch (err) {
         console.error('Failed to check code-server connection:', err);
@@ -582,7 +628,149 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     return () => {
       if (intervalId) clearInterval(intervalId);
     };
-  }, [activeMenu, selectedProject, tauriAvailable, codeServerConnected]);
+  }, [activeMenu, selectedProject, tauriAvailable, codeServerConnected, ideRestarting]);
+
+  const handleRestartIDE = async () => {
+    if (!tauriAvailable) {
+      messageApi.warning('请在桌面应用中使用此功能');
+      return;
+    }
+    if (ideRestarting) return;
+    console.info('[IDE] handleRestartIDE');
+    setIdeRestarting(true);
+    setCodeServerConnected(false);
+    try {
+      await invoke('restart_code_server');
+      messageApi.success('IDE 重启中...');
+    } catch (err) {
+      messageApi.error(`重启 IDE 失败: ${err}`);
+      setIdeRestarting(false);
+      setCodeServerConnected(false);
+    }
+  };
+
+  const handleOpenIdeInNewWindow = async () => {
+    if (!selectedProject) return;
+    const url = `http://localhost:${codeServerPort}/?folder=${encodeURIComponent(selectedProject.path)}`;
+    if (!tauriAvailable) {
+      window.open(url, '_blank', 'noopener');
+      return;
+    }
+    try {
+      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+      const label = `ide-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const webview = new WebviewWindow(label, {
+        url,
+        title: `IDE - ${selectedProject.name}`,
+        width: 1400,
+        height: 900
+      });
+      webview.once('tauri://error', (e) => {
+        console.error('Failed to open IDE window:', e);
+        messageApi.error('打开新窗口失败');
+      });
+    } catch (err) {
+      console.error('Failed to open IDE window:', err);
+      messageApi.error(`打开新窗口失败: ${err}`);
+      window.open(url, '_blank', 'noopener');
+    }
+  };
+
+  const handleOpenIdeInBrowser = async () => {
+    if (!selectedProject) return;
+    const url = `http://localhost:${codeServerPort}/?folder=${encodeURIComponent(selectedProject.path)}`;
+    if (!tauriAvailable) {
+      window.open(url, '_blank', 'noopener');
+      return;
+    }
+    try {
+      const { open: shellOpen } = await import('@tauri-apps/plugin-shell');
+      await shellOpen(url);
+    } catch (err) {
+      console.error('Failed to open IDE in browser:', err);
+      messageApi.error(`浏览器打开失败: ${err}`);
+      window.open(url, '_blank', 'noopener');
+    }
+  };
+
+  const fetchRecentProjectUrls = async (projectPath: string) => {
+    if (!tauriAvailable) {
+      setRecentProjectUrls(prev => ({
+        ...prev,
+        [projectPath]: prev[projectPath] || []
+      }));
+      return;
+    }
+    try {
+      const urls = await invoke<string[]>('get_recent_project_urls', { project_path: projectPath });
+      setRecentProjectUrls(prev => ({
+        ...prev,
+        [projectPath]: urls || []
+      }));
+    } catch (err) {
+      console.error('Failed to fetch recent project urls:', err);
+      setRecentProjectUrls(prev => ({
+        ...prev,
+        [projectPath]: []
+      }));
+    }
+  };
+
+  const recordRecentProjectUrl = async (projectPath: string, url: string) => {
+    if (!tauriAvailable) return;
+    try {
+      await invoke('record_recent_project_url', { project_path: projectPath, url });
+    } catch (err) {
+      console.error('Failed to record recent project url:', err);
+    }
+  };
+
+  const pushRecentProjectUrl = (projectPath: string, url: string) => {
+    setRecentProjectUrls(prev => {
+      const current = prev[projectPath] || [];
+      const next = [url, ...current.filter(item => item !== url)].slice(0, 10);
+      return { ...prev, [projectPath]: next };
+    });
+  };
+
+  const createIdeTabFromUrl = (rawUrl?: string) => {
+    if (!selectedProject) return;
+    const inputUrl = (rawUrl ?? newTabUrl).trim();
+    if (!inputUrl) {
+      messageApi.warning('请输入 URL');
+      return;
+    }
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(inputUrl);
+    } catch (error) {
+      messageApi.error('请输入有效的 URL（例如：https://github.com）');
+      return;
+    }
+    const normalizedUrl = parsedUrl.toString();
+    const newTab: IDETab = {
+      id: `webview-${Date.now()}`,
+      title: parsedUrl.hostname || 'New Tab',
+      url: normalizedUrl,
+      type: 'webview',
+      closable: true
+    };
+    setIdeTabs(prev => ({
+      ...prev,
+      [selectedProject.path]: [...(prev[selectedProject.path] || []), newTab]
+    }));
+    setActiveIdeTabId(prev => ({ ...prev, [selectedProject.path]: newTab.id }));
+    setNewTabModalOpen(false);
+    setNewTabUrl('');
+    setTabLoadErrors(prev => ({ ...prev, [newTab.id]: false }));
+    pushRecentProjectUrl(selectedProject.path, normalizedUrl);
+    recordRecentProjectUrl(selectedProject.path, normalizedUrl);
+  };
+
+  useEffect(() => {
+    if (!newTabModalOpen || !selectedProject) return;
+    fetchRecentProjectUrls(selectedProject.path);
+  }, [newTabModalOpen, selectedProject, tauriAvailable]);
 
   const handleTerminalInput = (data: string) => {
     if (!tauriAvailable || !selectedProject) {
@@ -635,6 +823,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const handleEnterProject = (project: Project) => {
+    console.info('[IDE] handleEnterProject:', project.path);
     setSelectedProject(project);
     setActiveMenu('project-detail');
     setCodeServerConnected(false); // Reset connection status to trigger polling and loading UI
@@ -643,20 +832,115 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       prev.includes(project.path) ? prev : [...prev, project.path]
     );
 
-    // ========== IDE 标签页初始化（已注释） ==========
-    // Initialize IDE tabs if not exists
-    // if (!ideTabs[project.path]) {
-    //   const defaultTab: IDETab = {
-    //     id: 'code-server',
-    //     title: 'Code IDE',
-    //     url: `http://127.0.0.1:18080/?folder=${encodeURIComponent(project.path)}`,
-    //     type: 'code-server',
-    //     closable: false
-    //   };
-    //   setIdeTabs(prev => ({ ...prev, [project.path]: [defaultTab] }));
-    //   setActiveIdeTabId(prev => ({ ...prev, [project.path]: 'code-server' }));
-    // }
+    // ========== IDE 标签页初始化 ==========
+    setIdeTabs(prev => {
+      if (prev[project.path]) return prev;
+      const defaultTab: IDETab = {
+        id: 'code-server',
+        title: 'Code IDE',
+        url: `http://localhost:${codeServerPort}/?folder=${encodeURIComponent(project.path)}`,
+        type: 'code-server',
+        closable: false
+      };
+      return { ...prev, [project.path]: [defaultTab] };
+    });
+    setActiveIdeTabId(prev => (prev[project.path] ? prev : { ...prev, [project.path]: 'code-server' }));
   };
+
+  useEffect(() => {
+    if (hasRestoredSelectionRef.current) return;
+
+    if (selectedProject || activeMenu === 'project-detail') {
+      hasRestoredSelectionRef.current = true;
+      return;
+    }
+
+    const lastMenu = localStorage.getItem(LAST_ACTIVE_MENU_STORAGE_KEY);
+    const lastProjectPath = localStorage.getItem(LAST_SELECTED_PROJECT_PATH_STORAGE_KEY);
+
+    if (lastMenu !== 'project-detail' || !lastProjectPath) {
+      hasRestoredSelectionRef.current = true;
+      return;
+    }
+
+    if (projects.length === 0) {
+      return;
+    }
+
+    const project = projects.find(p => p.path === lastProjectPath);
+    if (project) {
+      console.info('[IDE] restore project detail:', project.path);
+      handleEnterProject(project);
+    }
+
+    hasRestoredSelectionRef.current = true;
+  }, [projects, selectedProject, activeMenu]);
+
+  useEffect(() => {
+    if (hasRestoredTerminalStateRef.current) return;
+    if (!projectsLoaded) return;
+
+    if (projects.length === 0) {
+      hasRestoredTerminalStateRef.current = true;
+      setTerminalStateReady(true);
+      return;
+    }
+
+    const projectPaths = new Set(projects.map(p => p.path));
+    let restoredTabs: Record<string, TerminalTab[]> = {};
+    let restoredActiveIds: Record<string, string> = {};
+
+    try {
+      const rawTabs = localStorage.getItem(TERMINAL_TABS_STORAGE_KEY);
+      if (rawTabs) {
+        const parsedTabs = JSON.parse(rawTabs) as Record<string, TerminalTab[]>;
+        Object.entries(parsedTabs || {}).forEach(([path, tabs]) => {
+          if (!projectPaths.has(path) || !Array.isArray(tabs)) return;
+          restoredTabs[path] = tabs
+            .filter(tab => tab && typeof tab.id === 'string')
+            .map((tab, index) => ({
+              id: tab.id,
+              title: typeof tab.title === 'string' ? tab.title : `终端-${index + 1}`,
+              providerId: tab.providerId,
+              selectedModelId: tab.selectedModelId
+            }));
+        });
+      }
+    } catch (error) {
+      console.warn('Failed to restore terminal tabs:', error);
+    }
+
+    try {
+      const rawActiveIds = localStorage.getItem(ACTIVE_TERMINAL_ID_STORAGE_KEY);
+      if (rawActiveIds) {
+        restoredActiveIds = JSON.parse(rawActiveIds) as Record<string, string>;
+      }
+    } catch (error) {
+      console.warn('Failed to restore active terminal ids:', error);
+    }
+
+    if (Object.keys(projectTerminals).length === 0 && Object.keys(restoredTabs).length > 0) {
+      setProjectTerminals(restoredTabs);
+    }
+
+    if (Object.keys(activeTerminalId).length === 0 && Object.keys(restoredTabs).length > 0) {
+      const nextActiveIds: Record<string, string> = {};
+      Object.entries(restoredTabs).forEach(([path, tabs]) => {
+        const activeId = restoredActiveIds[path];
+        if (activeId && tabs.some(tab => tab.id === activeId)) {
+          nextActiveIds[path] = activeId;
+        } else if (tabs[0]) {
+          nextActiveIds[path] = tabs[0].id;
+        }
+      });
+      if (Object.keys(nextActiveIds).length > 0) {
+        setActiveTerminalId(nextActiveIds);
+      }
+    }
+
+    hasRestoredTerminalStateRef.current = true;
+    setTerminalStateReady(true);
+  }, [projectsLoaded, projects]);
 
   const openCreateTerminalModal = () => {
     if (!selectedProject) return;
@@ -729,6 +1013,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
   const handleCloseTerminal = async () => {
     if (!selectedProject || !tauriAvailable) return;
+    console.info('[IDE] handleCloseTerminal:', selectedProject.path);
     try {
       const pTerminals = projectTerminals[selectedProject.path] || [];
       for (const t of pTerminals) {
@@ -762,8 +1047,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const fetchProjects = async () => {
+    setProjectsLoaded(false);
     if (!tauriAvailable) {
       setProjects([]);
+      setProjectsLoaded(true);
       return;
     }
     try {
@@ -771,6 +1058,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       setProjects(projectsData);
     } catch (error) {
       console.error('Failed to fetch projects:', error);
+    } finally {
+      setProjectsLoaded(true);
     }
   };
 
@@ -1191,7 +1480,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
             <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
               {activeMenu === 'project-detail' && (
                 <>
-                  <Tooltip title={codeServerConnected ? "IDE 已就绪" : "IDE 启动中..."}>
+                  <div className={`ide-status-wrapper ${codeServerConnected ? 'connected' : 'loading'}`}>
                     <div className={`ide-status-capsule ${codeServerConnected ? 'connected' : 'loading'}`}>
                       <img src={codeIcon} alt="IDE" className="ide-capsule-icon" style={{ opacity: codeServerConnected ? 1 : 0.5 }} />
                       <span className="ide-capsule-label">
@@ -1203,7 +1492,42 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                         <span className="ide-capsule-dot" />
                       )}
                     </div>
-                  </Tooltip>
+                    {codeServerConnected && (
+                      <>
+                        <button
+                          type="button"
+                          className="ide-restart-button"
+                          onClick={handleRestartIDE}
+                          disabled={ideRestarting}
+                        >
+                          {ideRestarting ? (
+                            <LoadingOutlined style={{ fontSize: 11 }} />
+                          ) : (
+                            <ReloadOutlined style={{ fontSize: 11 }} />
+                          )}
+                          <span>重启 IDE</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="ide-restart-button"
+                          onClick={handleOpenIdeInNewWindow}
+                          disabled={ideRestarting}
+                        >
+                          <FullscreenOutlined style={{ fontSize: 11 }} />
+                          <span>新窗口打开</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="ide-restart-button"
+                          onClick={handleOpenIdeInBrowser}
+                          disabled={ideRestarting}
+                        >
+                          <EyeOutlined style={{ fontSize: 11 }} />
+                          <span>浏览器打开</span>
+                        </button>
+                      </>
+                    )}
+                  </div>
                   <Tooltip title={wsConnected ? "已连接" : "未连接"}>
                     <div className={`ide-status-capsule ${wsConnected ? 'connected' : ''}`}>
                       <img src={feishuIcon} alt="飞书" className="ide-capsule-icon" style={{ opacity: wsConnected ? 1 : 0.45 }} />
@@ -1684,7 +2008,15 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                     <Splitter.Panel size={splitterSizes[0]} collapsible min="30%" max="80%">
                       <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)' }}>
                         {/* IDE 标签页 */}
-                        {codeServerConnected === false ? (
+                        {ideRestarting ? (
+                          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', padding: 24, textAlign: 'center', gap: 16 }}>
+                            <LoadingOutlined style={{ fontSize: 48, color: 'var(--text-secondary)' }} spin />
+                            <div>
+                              <h3 style={{ color: 'var(--text-primary)', margin: 0, marginBottom: 8 }}>IDE 重启中</h3>
+                              <p style={{ margin: 0 }}>正在重新连接 IDE 服务</p>
+                            </div>
+                          </div>
+                        ) : codeServerConnected === false ? (
                           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', padding: 24, textAlign: 'center', gap: 16 }}>
                             <WarningOutlined style={{ fontSize: 48, color: '#faad14' }} />
                             <div>
@@ -1714,19 +2046,94 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           </div>
                         </div>
                       ) : (
-                        <iframe
-                          src={`http://127.0.0.1:${codeServerPort}/?folder=${encodeURIComponent(selectedProject.path)}`}
-                          title="Coder IDE"
-                          style={{
-                            flex: 1,
-                            width: '100%',
-                            height: '100%',
-                            border: 'none',
-                            borderRight: '1px solid var(--border-color)',
-                            display: 'block',
-                            background: 'var(--bg-primary)'
+                        <Tabs
+                          type="editable-card"
+                          size="small"
+                          activeKey={activeIdeTabId[selectedProject.path] || 'code-server'}
+                          onChange={(key) => setActiveIdeTabId(prev => ({ ...prev, [selectedProject.path]: key }))}
+                          onEdit={(targetKey, action) => {
+                            if (action === 'add') {
+                              setNewTabUrl('');
+                              setNewTabModalOpen(true);
+                            } else if (action === 'remove' && typeof targetKey === 'string') {
+                              setIdeTabs(prev => {
+                                const currentTabs = prev[selectedProject.path] || [];
+                                const nextTabs = currentTabs.filter(tab => tab.id !== targetKey);
+                                setActiveIdeTabId(prevActive => {
+                                  if (prevActive[selectedProject.path] !== targetKey) return prevActive;
+                                  const nextActive = nextTabs[nextTabs.length - 1]?.id || 'code-server';
+                                  return { ...prevActive, [selectedProject.path]: nextActive };
+                                });
+                                return { ...prev, [selectedProject.path]: nextTabs };
+                              });
+                              setTabLoadErrors(prev => {
+                                const next = { ...prev };
+                                delete next[targetKey];
+                                return next;
+                              });
+                              setIdeTabReloadKeys(prev => {
+                                if (!(targetKey in prev)) return prev;
+                                const next = { ...prev };
+                                delete next[targetKey];
+                                return next;
+                              });
+                            }
                           }}
-                          allow="clipboard-read *; clipboard-write *; display-capture *"
+                          style={{ flex: 1, display: 'flex', flexDirection: 'column', marginTop: 0 }}
+                          className="terminal-tabs-inner settings-tabs"
+                          items={(ideTabs[selectedProject.path] || []).map(tab => ({
+                            key: tab.id,
+                            label: (
+                              <span className="ide-tab-label">
+                                <span className="ide-tab-title">{tab.title}</span>
+                                <Tooltip title="刷新">
+                                  <ReloadOutlined
+                                    className="ide-tab-refresh"
+                                    onMouseDown={(event) => event.stopPropagation()}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setIdeTabReloadKeys(prev => ({
+                                        ...prev,
+                                        [tab.id]: (prev[tab.id] || 0) + 1
+                                      }));
+                                      setTabLoadErrors(prev => ({ ...prev, [tab.id]: false }));
+                                    }}
+                                  />
+                                </Tooltip>
+                              </span>
+                            ),
+                            closable: tab.closable !== false,
+                            children: (
+                              <div style={{ flex: 1, display: 'flex', minHeight: 0, position: 'relative' }}>
+                                <iframe
+                                  key={`${tab.id}-${ideTabReloadKeys[tab.id] || 0}`}
+                                  src={tab.url}
+                                  title={tab.title}
+                                  style={{
+                                    flex: 1,
+                                    width: '100%',
+                                    height: '100%',
+                                    border: 'none',
+                                    borderRight: '1px solid var(--border-color)',
+                                    display: 'block',
+                                    background: 'var(--bg-primary)'
+                                  }}
+                                  allow="clipboard-read *; clipboard-write *; display-capture *"
+                                  onLoad={() => {
+                                    setTabLoadErrors(prev => ({ ...prev, [tab.id]: false }));
+                                  }}
+                                  onError={() => {
+                                    setTabLoadErrors(prev => ({ ...prev, [tab.id]: true }));
+                                  }}
+                                />
+                                {tabLoadErrors[tab.id] && (
+                                  <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.45)', color: '#fff', padding: 16, textAlign: 'center' }}>
+                                    页面加载失败或被禁止嵌入，请尝试其他 URL。
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          }))}
                         />
                       )}
                       </div>
@@ -1734,8 +2141,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                     <Splitter.Panel size={splitterSizes[1]} collapsible min="20%" max="80%">
                       <Card className="project-detail-card" variant="borderless" style={{ height: '100%', margin: 0, borderRadius: 0, padding: 0 }}>
 
-                        {/* ========== New IDE Tab Modal（已注释） ========== */}
-                        {/*
                         <Modal
                           title="新建标签页"
                           open={newTabModalOpen}
@@ -1744,28 +2149,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                             setNewTabUrl('');
                           }}
                           onOk={() => {
-                            if (newTabUrl.trim()) {
-                              try {
-                                const url = newTabUrl.trim();
-                                new URL(url);
-                                const newTab: IDETab = {
-                                  id: `webview-${Date.now()}`,
-                                  title: new URL(url).hostname || 'New Tab',
-                                  url: url,
-                                  type: 'webview',
-                                  closable: true
-                                };
-                                setIdeTabs(prev => ({
-                                  ...prev,
-                                  [selectedProject.path]: [...(prev[selectedProject.path] || []), newTab]
-                                }));
-                                setActiveIdeTabId(prev => ({ ...prev, [selectedProject.path]: newTab.id }));
-                                setNewTabModalOpen(false);
-                                setNewTabUrl('');
-                              } catch (error) {
-                                messageApi.error('请输入有效的 URL（例如：https://github.com）');
-                              }
-                            }
+                            createIdeTabFromUrl();
                           }}
                           okText="创建"
                           cancelText="取消"
@@ -1784,32 +2168,41 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                             value={newTabUrl}
                             onChange={(e) => setNewTabUrl(e.target.value)}
                             onPressEnter={() => {
-                              if (newTabUrl.trim()) {
-                                try {
-                                  const url = newTabUrl.trim();
-                                  new URL(url);
-                                  const newTab: IDETab = {
-                                    id: `webview-${Date.now()}`,
-                                    title: new URL(url).hostname || 'New Tab',
-                                    url: url,
-                                    type: 'webview',
-                                    closable: true
-                                  };
-                                  setIdeTabs(prev => ({
-                                    ...prev,
-                                    [selectedProject.path]: [...(prev[selectedProject.path] || []), newTab]
-                                  }));
-                                  setActiveIdeTabId(prev => ({ ...prev, [selectedProject.path]: newTab.id }));
-                                  setNewTabModalOpen(false);
-                                  setNewTabUrl('');
-                                } catch (error) {
-                                  messageApi.error('请输入有效的 URL（例如：https://github.com）');
-                                }
-                              }
+                              createIdeTabFromUrl();
                             }}
                           />
+                          <div style={{ marginTop: 12 }}>
+                            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6 }}>
+                              最近打开
+                            </div>
+                            {recentUrlsForProject.length === 0 ? (
+                              <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>暂无最近 URL</div>
+                            ) : (
+                              <List
+                                size="small"
+                                dataSource={recentUrlsForProject}
+                                renderItem={(item) => (
+                                  <List.Item style={{ padding: '4px 0' }}>
+                                    <Tooltip title={item}>
+                                      <Button
+                                        type="link"
+                                        size="small"
+                                        style={{ padding: 0, height: 'auto' }}
+                                        onClick={() => {
+                                          createIdeTabFromUrl(item);
+                                        }}
+                                      >
+                                        <Typography.Text ellipsis style={{ maxWidth: 420, display: 'inline-block' }}>
+                                          {item}
+                                        </Typography.Text>
+                                      </Button>
+                                    </Tooltip>
+                                  </List.Item>
+                                )}
+                              />
+                            )}
+                          </div>
                         </Modal>
-                        */}
 
                         {/* Session Picker Modal */}
                         <Modal
@@ -2311,7 +2704,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                         </Modal>
 
                         <div className={`terminal-wrapper ${terminalFullscreen ? 'fullscreen' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
-                          <Tabs
+                          {terminalStateReady ? (
+                            <Tabs
                             type="editable-card"
                             size="small"
                             tabBarExtraContent={
@@ -2492,6 +2886,18 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                             items={[
                               ...(projectTerminals[selectedProject.path] || []).map(term => {
                                 const isActive = activeTerminalId[selectedProject.path] === term.id;
+                                const currentProvider = providers.find(p => `${p.app_type}::${p.id}` === term.providerId);
+                                let currentModelId = term.selectedModelId;
+                                if (!currentModelId && currentProvider?.settings_config) {
+                                  try {
+                                    const settings = JSON.parse(currentProvider.settings_config);
+                                    const models = (settings.model_ids && settings.model_ids.length > 0)
+                                      ? settings.model_ids
+                                      : (settings.model_id ? [settings.model_id] : []);
+                                    currentModelId = models[0];
+                                  } catch (e) {
+                                  }
+                                }
                                 return {
                                   key: term.id,
                                   label: (
@@ -2521,7 +2927,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         zIndex: 100,
                                         alignItems: 'center'
                                       }}>
-                                        <div style={{ marginRight: '8px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginRight: '8px' }}>
                                           <Tag
                                             className="active-project-tag"
                                             style={{
@@ -2533,7 +2939,20 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                               padding: '0 10px'
                                             }}
                                           >
-                                            {providers.find(p => `${p.app_type}::${p.id}` === term.providerId)?.name || '未知模型'}
+                                            {currentProvider?.name || '未知模型'}
+                                          </Tag>
+                                          <Tag
+                                            className="active-project-tag"
+                                            style={{
+                                              cursor: 'default',
+                                              margin: 0,
+                                              fontSize: '12px',
+                                              height: '24px',
+                                              lineHeight: '22px',
+                                              padding: '0 10px'
+                                            }}
+                                          >
+                                            {currentModelId || '未选择模型'}
                                           </Tag>
                                         </div>
                                         <ContextDonut
@@ -2588,7 +3007,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                                 if (el) terminalRefs.current[term.id] = el;
                                               }}
                                               mergeTop
-                                              historyLines={terminalHistory[term.id] || []}
+                                              historyLines={terminalHistory[selectedProject!.path] || []}
                                               fullscreen={terminalFullscreen}
                                               theme={{
                                                 background: appConfig?.terminal_bg_color,
@@ -2880,6 +3299,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                               }] : []),
                             ]}
                           />
+                          ) : (
+                            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', gap: 8 }}>
+                              <LoadingOutlined style={{ fontSize: 18 }} />
+                              <span>终端恢复中...</span>
+                            </div>
+                          )}
                         </div>
                       </Card>
                     </Splitter.Panel>

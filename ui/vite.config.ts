@@ -7,6 +7,9 @@ export default defineConfig({
   server: {
     port: 51760,
     strictPort: true,
+    headers: {
+      'Permissions-Policy': 'clipboard-read=*, clipboard-write=*, display-capture=*',
+    },
   },
   envPrefix: ['VITE_', 'TAURI_'],
   build: {

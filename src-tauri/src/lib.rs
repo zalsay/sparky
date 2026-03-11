@@ -360,6 +360,17 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     )?;
 
     conn.execute(
+        "CREATE TABLE IF NOT EXISTS project_recent_urls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_path TEXT NOT NULL,
+            url TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            UNIQUE(project_path, url)
+        )",
+        [],
+    )?;
+
+    conn.execute(
         "CREATE TABLE IF NOT EXISTS app_config_feishu (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             app_id TEXT NOT NULL,
@@ -1092,6 +1103,61 @@ fn record_terminal_output(project_path: String, output: String) -> Result<(), St
     .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn record_recent_project_url(project_path: String, url: String) -> Result<(), String> {
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return Ok(());
+    }
+    let conn = open_db()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+
+    conn.execute(
+        "INSERT INTO project_recent_urls (project_path, url, created_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(project_path, url) DO UPDATE SET created_at = excluded.created_at",
+        params![project_path, url, now],
+    )
+    .map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "DELETE FROM project_recent_urls
+         WHERE id NOT IN (
+           SELECT id FROM project_recent_urls
+           WHERE project_path = ?1
+           ORDER BY created_at DESC
+           LIMIT 10
+         ) AND project_path = ?1",
+        params![project_path],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn get_recent_project_urls(project_path: String) -> Result<Vec<String>, String> {
+    let conn = open_db()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT url FROM project_recent_urls
+             WHERE project_path = ?1
+             ORDER BY created_at DESC
+             LIMIT 10",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![project_path], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    let mut items = Vec::new();
+    for row in rows {
+        items.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(items)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -2874,6 +2940,12 @@ fn get_extensions_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("extensions"))
 }
 
+fn get_code_server_user_data_dir() -> std::path::PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join("sparky").join("code-server-data"))
+        .unwrap_or_else(|| std::path::PathBuf::from("code-server-data"))
+}
+
 #[tauri::command(rename_all = "snake_case")]
 fn get_ide_plugins() -> Result<Vec<IDEPlugin>, String> {
     let conn = open_db()?;
@@ -3022,6 +3094,108 @@ fn get_code_server_port() -> u16 {
     }
 }
 
+fn start_code_server(app_handle: tauri::AppHandle) {
+    let code_server_port = get_code_server_port();
+    std::thread::spawn(move || {
+        log::info!("Starting code-server on http://localhost:{}...", code_server_port);
+
+        // Ensure port is free by killing any existing code-server process
+        let _ = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&format!("lsof -ti:{} | xargs kill -9", code_server_port))
+            .status();
+
+        let cmd_path = find_executable("code-server").unwrap_or_else(|| "code-server".to_string());
+
+        use tauri::Manager;
+        let ext_dir = get_extensions_dir();
+        let user_data_dir = get_code_server_user_data_dir();
+        if let Err(e) = std::fs::create_dir_all(&user_data_dir) {
+            log::error!("Failed to create code-server user data dir: {}", e);
+        }
+
+        if let Ok(resource_ext_dir) = app_handle.path().resource_dir().map(|p| p.join("extensions")) {
+            if resource_ext_dir.exists() {
+                log::info!("Syncing bundled extensions from {:?} to {:?}", resource_ext_dir, ext_dir);
+                let _ = std::fs::create_dir_all(&ext_dir);
+
+                // Use cp -Rf to copy everything from resource_ext_dir into ext_dir
+                // We use the contents of resource_ext_dir (/*) to copy into ext_dir
+                let _ = std::process::Command::new("cp")
+                    .args(["-Rf", &format!("{}/.", resource_ext_dir.to_string_lossy()), &ext_dir.to_string_lossy()])
+                    .status();
+
+                // CRITICAL: Remove the stale extensions.json from the destination directory
+                // This ensures code-server rescans the directory and doesn't use old cached paths.
+                let registry_path = ext_dir.join("extensions.json");
+                if registry_path.exists() {
+                    let _ = std::fs::remove_file(registry_path);
+                }
+
+                // Auto-install custom plugins from DB
+                if let Ok(conn) = open_db() {
+                    if let Ok(mut stmt) = conn.prepare("SELECT id FROM ide_plugins") {
+                        if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+                            for plugin_id in rows.flatten() {
+                                let plugin_id_trimmed = plugin_id.trim();
+                                if plugin_id_trimmed.is_empty() { continue; }
+
+                                // Check if any directory starting with plugin_id exists (e.g. publisher.ext-version)
+                                let mut found = false;
+                                if let Ok(entries) = std::fs::read_dir(&ext_dir) {
+                                    for entry in entries.flatten() {
+                                        if let Some(name) = entry.file_name().to_str() {
+                                            if name.starts_with(plugin_id_trimmed) {
+                                                found = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if !found {
+                                    log::info!("Auto-installing missing custom plugin: {}", plugin_id_trimmed);
+                                    let _ = std::process::Command::new(&cmd_path)
+                                        .args(["--extensions-dir", &ext_dir.to_string_lossy(), "--install-extension", plugin_id_trimmed])
+                                        .status();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let bind_addr = format!("127.0.0.1:{}", code_server_port);
+        let mut args = vec![
+            "--auth".to_string(),
+            "none".to_string(),
+            "--bind-addr".to_string(),
+            bind_addr.clone(),
+            "--extensions-dir".to_string(),
+            ext_dir.to_string_lossy().to_string(),
+            "--user-data-dir".to_string(),
+            user_data_dir.to_string_lossy().to_string(),
+            "--locale".to_string(),
+            "zh-cn".to_string(),
+        ];
+
+        match std::process::Command::new(cmd_path)
+            .args(args)
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+        {
+            Ok(mut child) => {
+                log::info!("code-server started successfully with PID: {}", child.id());
+                let status = child.wait();
+                log::error!("code-server exited unexpectedly with status: {:?}", status);
+            },
+            Err(e) => log::error!("Failed to start code-server: {}", e),
+        }
+    });
+}
+
 #[tauri::command(rename_all = "snake_case")]
 fn check_code_server_connection() -> bool {
     let port = get_code_server_port();
@@ -3038,6 +3212,12 @@ fn check_code_server_connection() -> bool {
 #[tauri::command(rename_all = "snake_case")]
 fn code_server_port() -> u16 {
     get_code_server_port()
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn restart_code_server(app: tauri::AppHandle) -> Result<(), String> {
+    start_code_server(app);
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -3058,8 +3238,9 @@ pub fn run() {
         .manage(Arc::new(PtyManager::new()))
         .manage(WsConnectionState(ws_connected.clone()))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            let pty_manager = app.state::<Arc<PtyManager>>();
+            let _pty_manager = app.state::<Arc<PtyManager>>();
 
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -3127,94 +3308,7 @@ pub fn run() {
                 }
             }
 
-            let app_handle = app.handle().clone();
-            let code_server_port = get_code_server_port();
-            std::thread::spawn(move || {
-                log::info!("Starting code-server on 127.0.0.1:{}...", code_server_port);
-
-                // Ensure port is free by killing any existing code-server process
-                let _ = std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&format!("lsof -ti:{} | xargs kill -9", code_server_port))
-                    .status();
-
-                let cmd_path = find_executable("code-server").unwrap_or_else(|| "code-server".to_string());
-                
-                use tauri::Manager;
-                let ext_dir = get_extensions_dir();
-                
-                if let Ok(resource_ext_dir) = app_handle.path().resource_dir().map(|p| p.join("extensions")) {
-                    if resource_ext_dir.exists() {
-                        log::info!("Syncing bundled extensions from {:?} to {:?}", resource_ext_dir, ext_dir);
-                        let _ = std::fs::create_dir_all(&ext_dir);
-                        
-                        // Use cp -Rf to copy everything from resource_ext_dir into ext_dir
-                        // We use the contents of resource_ext_dir (/*) to copy into ext_dir
-                        let _ = std::process::Command::new("cp")
-                            .args(["-Rf", &format!("{}/.", resource_ext_dir.to_string_lossy()), &ext_dir.to_string_lossy()])
-                            .status();
-
-                        // CRITICAL: Remove the stale extensions.json from the destination directory
-                        // This ensures code-server rescans the directory and doesn't use old cached paths.
-                        let registry_path = ext_dir.join("extensions.json");
-                        if registry_path.exists() {
-                            let _ = std::fs::remove_file(registry_path);
-                        }
-
-                        // Auto-install custom plugins from DB
-                        if let Ok(conn) = open_db() {
-                            if let Ok(mut stmt) = conn.prepare("SELECT id FROM ide_plugins") {
-                                if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
-                                    for plugin_id in rows.flatten() {
-                                        let plugin_id_trimmed = plugin_id.trim();
-                                        if plugin_id_trimmed.is_empty() { continue; }
-                                        
-                                        // Check if any directory starting with plugin_id exists (e.g. publisher.ext-version)
-                                        let mut found = false;
-                                        if let Ok(entries) = std::fs::read_dir(&ext_dir) {
-                                            for entry in entries.flatten() {
-                                                if let Some(name) = entry.file_name().to_str() {
-                                                    if name.starts_with(plugin_id_trimmed) {
-                                                        found = true;
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        if !found {
-                                            log::info!("Auto-installing missing custom plugin: {}", plugin_id_trimmed);
-                                            let _ = std::process::Command::new(&cmd_path)
-                                                .args(["--extensions-dir", &ext_dir.to_string_lossy(), "--install-extension", plugin_id_trimmed])
-                                                .status();
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                    
-                let bind_addr = format!("127.0.0.1:{}", code_server_port);
-                match std::process::Command::new(cmd_path)
-                    .args([
-                        "--auth", "none", 
-                        "--bind-addr", &bind_addr,
-                        "--extensions-dir", &ext_dir.to_string_lossy(),
-                        "--locale", "zh-cn"
-                    ])
-                    .stdout(std::process::Stdio::inherit())
-                    .stderr(std::process::Stdio::inherit())
-                    .spawn()
-                {
-                    Ok(mut child) => {
-                        log::info!("code-server started successfully with PID: {}", child.id());
-                        let status = child.wait();
-                        log::error!("code-server exited unexpectedly with status: {:?}", status);
-                    },
-                    Err(e) => log::error!("Failed to start code-server: {}", e),
-                }
-            });
+            start_code_server(app.handle().clone());
 
             // Start HTTP listener for extension -> terminal communication
             let app_handle_for_http = app.handle().clone();
@@ -3425,6 +3519,8 @@ pub fn run() {
             pty_exists,
             record_terminal_input,
             record_terminal_output,
+            record_recent_project_url,
+            get_recent_project_urls,
             get_terminal_history,
             check_hooks_installed,
             install_hooks,
@@ -3453,6 +3549,7 @@ pub fn run() {
             check_dependencies,
             check_code_server_connection,
             code_server_port,
+            restart_code_server,
             install_code_server,
             install_code_server_extension,
             get_installed_code_server_extensions,

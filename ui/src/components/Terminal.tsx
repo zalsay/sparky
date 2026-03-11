@@ -128,7 +128,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
 
   const notifyBackendActiveProject = async (path: string) => {
     try {
-      await invoke('set_active_project', { projectPath: path });
+      await invoke('set_active_project', { project_path: path });
     } catch (e) {
       console.error('Failed to set active project:', e);
     }
