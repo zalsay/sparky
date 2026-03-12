@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, List, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select, Badge } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -317,6 +317,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [codeServerConnected, setCodeServerConnected] = useState<boolean | null>(null);
   const [codeServerPort, setCodeServerPort] = useState<number>(18080);
   const [ideRestarting, setIdeRestarting] = useState(false);
+  const [alwaysOnTop, setAlwaysOnTop] = useState(false);
+  const [alwaysOnTopLoading, setAlwaysOnTopLoading] = useState(false);
 
   // IDE Plugins state
   const [idePlugins, setIdePlugins] = useState<string[]>([]);
@@ -380,6 +382,26 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     if (tauriAvailable) {
       invoke<number>('code_server_port').then(setCodeServerPort).catch(() => { });
     }
+  }, [tauriAvailable]);
+
+  useEffect(() => {
+    if (!tauriAvailable) return;
+    let cancelled = false;
+    const loadAlwaysOnTop = async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const current = await getCurrentWindow().isAlwaysOnTop();
+        if (!cancelled) {
+          setAlwaysOnTop(current);
+        }
+      } catch (err) {
+        console.error('Failed to read always-on-top state:', err);
+      }
+    };
+    loadAlwaysOnTop();
+    return () => {
+      cancelled = true;
+    };
   }, [tauriAvailable]);
 
   useEffect(() => {
@@ -765,6 +787,23 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     setTabLoadErrors(prev => ({ ...prev, [newTab.id]: false }));
     pushRecentProjectUrl(selectedProject.path, normalizedUrl);
     recordRecentProjectUrl(selectedProject.path, normalizedUrl);
+  };
+
+  const toggleAlwaysOnTop = async () => {
+    if (!tauriAvailable || alwaysOnTopLoading) return;
+    setAlwaysOnTopLoading(true);
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      const nextValue = !alwaysOnTop;
+      await getCurrentWindow().setAlwaysOnTop(nextValue);
+      setAlwaysOnTop(nextValue);
+      messageApi.success(nextValue ? '窗口已置顶' : '已取消置顶');
+    } catch (err) {
+      console.error('Failed to toggle always-on-top:', err);
+      messageApi.error(`窗口置顶失败: ${err}`);
+    } finally {
+      setAlwaysOnTopLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -1538,6 +1577,18 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                     </div>
                   </Tooltip>
                 </>
+              )}
+              {tauriAvailable && (
+                <Tooltip title={alwaysOnTop ? "取消置顶" : "窗口置顶"}>
+                  <Button
+                    type="text"
+                    size="small"
+                    loading={alwaysOnTopLoading}
+                    icon={alwaysOnTop ? <PushpinFilled /> : <PushpinOutlined />}
+                    onClick={toggleAlwaysOnTop}
+                    style={{ color: 'var(--text-secondary)' }}
+                  />
+                </Tooltip>
               )}
               <Switch
                 className="theme-switch"

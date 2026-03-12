@@ -8,6 +8,7 @@
   "permissions": [
     "core:default",
     "dialog:default",
-    "shell:default"
+    "shell:default",
+    "core:window:allow-set-always-on-top"
   ]
 }
