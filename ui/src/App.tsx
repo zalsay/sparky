@@ -572,7 +572,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [activeMenu, selectedProject, activeTerminalId, tauriAvailable]);
+  }, [activeMenu, selectedProject, activeTerminalId, tauriAvailable, executeTerminalWeb]);
 
   useEffect(() => {
     if (tauriAvailable) return;
@@ -2776,19 +2776,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                           const tid = activeTerminalId[selectedProject.path];
                                           if (!tid) return;
                                           const isFullAuth = fullAuth[selectedProject.path] || false;
-                                          if (!tauriAvailable) {
-                                            await resumeSessionWeb(selectedProject.id, record.session_id);
+                                          if (!tauriAvailable && selectedProject) {
+                                            await executeTerminalWeb(selectedProject.id, `claude ${isFullAuth ? '--dangerously-skip-permissions ' : ''}--resume ${record.session_id}\n`);
                                             setSessionModalOpen(false);
                                             return;
                                           }
                                           const args = isFullAuth
                                             ? `--dangerously-skip-permissions --resume ${record.session_id}`
                                             : `--resume ${record.session_id}`;
-                                          if (!tauriAvailable && selectedProject) {
-                                            await executeTerminalWeb(selectedProject.id, `claude ${args}\n`);
-                                            setSessionModalOpen(false);
-                                            return;
-                                          }
                                           const cmd = await buildClaudeCmd(tid, args);
                                           invoke('pty_write', { terminal_id: tid, data: cmd });
                                           setSessionModalOpen(false);
