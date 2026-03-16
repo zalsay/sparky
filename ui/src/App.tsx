@@ -561,10 +561,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
         if (!activeTid) return;
         // Remove newlines and carriage returns to prevent immediate execution of multi-line strings
         const safeData = event.data.code.replace(/[\r\n]+/g, ' ');
-        if (!tauriAvailable) {
-          executeTerminalWeb(selectedProject.id, safeData);
-          return;
-        }
         invoke('pty_write', { terminal_id: activeTid, data: safeData })
           .catch(err => console.error('Failed to write to terminal:', err));
       }
@@ -572,25 +568,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [activeMenu, selectedProject, activeTerminalId, tauriAvailable, executeTerminalWeb]);
-
-  useEffect(() => {
-    if (tauriAvailable) return;
-    const onPopState = () => {
-      const match = window.location.pathname.match(/^\/project\/(\d+)\/detail$/);
-      if (match) {
-        const projectId = Number(match[1]);
-        if (Number.isFinite(projectId)) {
-          fetchProjectDetailWeb(projectId);
-          return;
-        }
-      }
-      setActiveMenu('project');
-      setSelectedProject(null);
-    };
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
-  }, [tauriAvailable, fetchProjectDetailWeb]);
+  }, [activeMenu, selectedProject, activeTerminalId, tauriAvailable]);
 
   // Sync active terminal ID to backend for HTTP endpoint (extension -> terminal)
   useEffect(() => {
@@ -601,26 +579,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
         .catch(err => console.error('Failed to set active terminal ID:', err));
     }
   }, [activeTerminalId, selectedProject, tauriAvailable]);
-
-  useEffect(() => {
-    if (activeMenu !== 'project-detail' || !selectedProject) {
-      return;
-    }
-
-    if (!tauriAvailable) {
-      fetchTerminalHistoryWeb(selectedProject.id, selectedProject.path);
-      return;
-    }
-
-    // load history
-    invoke<string[]>('get_terminal_history', { project_path: selectedProject.path })
-      .then((history) => {
-        setTerminalHistory(prev => ({ ...prev, [selectedProject.path]: history }));
-      })
-      .catch(() => {
-        setTerminalHistory(prev => ({ ...prev, [selectedProject.path]: [] }));
-      });
-  }, [activeMenu, selectedProject, tauriAvailable, fetchTerminalHistoryWeb]);
 
   useEffect(() => {
     if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject) {
@@ -991,6 +949,24 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
     setTerminalStateReady(true);
   }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
+
+  useEffect(() => {
+    if (tauriAvailable) return;
+    const onPopState = () => {
+      const match = window.location.pathname.match(/^\/project\/(\d+)\/detail$/);
+      if (match) {
+        const projectId = Number(match[1]);
+        if (Number.isFinite(projectId)) {
+          fetchProjectDetailWeb(projectId);
+          return;
+        }
+      }
+      setActiveMenu('project');
+      setSelectedProject(null);
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [tauriAvailable, fetchProjectDetailWeb]);
 
   const fetchSessionsWeb = useCallback(async (projectId: number, projectPath: string, projectName?: string | null) => {
     if (!ensureWebApiKey()) return;
