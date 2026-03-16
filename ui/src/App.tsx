@@ -949,7 +949,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     return () => window.removeEventListener('popstate', onPopState);
   }, [tauriAvailable, fetchProjectDetailWeb]);
 
-  const fetchSessionsWeb = useCallback(async (projectId: number, projectPath: string, projectName?: string | null) => {
+  const fetchSessionsWeb = useCallback(async (projectId: number, _projectPath: string, projectName?: string | null) => {
     if (!ensureWebApiKey()) return;
     const response = await fetch(`/api/sessions?project_id=${projectId}`, {
       headers: buildWebHeaders()
@@ -1059,24 +1059,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       handleWebApiError(response.status);
     }
   }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
-
-  const resumeSessionWeb = useCallback(async (projectId: number, sessionId: string) => {
-    if (!ensureWebApiKey()) return;
-    const response = await fetch(`/api/sessions/${sessionId}/resume`, {
-      method: 'POST',
-      headers: buildWebHeaders(),
-      body: JSON.stringify({ project_id: String(projectId) })
-    });
-    if (!response.ok) {
-      handleWebApiError(response.status);
-      messageApi.warning('后端暂未实现 resume');
-      return;
-    }
-    const data = await response.json();
-    if (data?.error || data?.status === 501) {
-      messageApi.warning('后端暂未实现 resume');
-    }
-  }, [buildWebHeaders, ensureWebApiKey, handleWebApiError, messageApi]);
 
   const startWebSse = useCallback((projectId: number) => {
     if (tauriAvailable) return;
