@@ -533,6 +533,10 @@ pub async fn pty_spawn(
     // Inject utility env vars (no proxy routing — provider config is in --settings file)
     cmd.env("SPARKY_PROXY_BASE_URL", &proxy_root_url);
     cmd.env("SPARKY_TERMINAL_ID", &terminal_id);
+    
+    // Ensure UTF-8 locale is set so Chinese characters work properly in the PTY
+    cmd.env("LANG", "en_US.UTF-8");
+    cmd.env("LC_ALL", "en_US.UTF-8");
     log::info!(
         "[PTY_SPAWN] Utility env set for terminal {}: SPARKY_TERMINAL_ID, SPARKY_PROXY_BASE_URL",
         terminal_id
