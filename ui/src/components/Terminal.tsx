@@ -34,11 +34,29 @@ interface TerminalCacheItem {
   term: Terminal;
   fit: FitAddon;
   historyApplied?: boolean;
+  followOutput: boolean;
+  lastContainerWidth?: number;
+  lastContainerHeight?: number;
 }
 
 const terminalCache = new Map<string, TerminalCacheItem>();
 
 let globalWriterReady = false;
+
+const isNearBottom = (term: Terminal, threshold = 2) => {
+  const buf = term.buffer.active;
+  return buf.baseY - buf.viewportY <= threshold;
+};
+
+const fitIfNeeded = (cached: TerminalCacheItem, container: HTMLElement) => {
+  const w = container.clientWidth;
+  const h = container.clientHeight;
+  if (w <= 0 || h <= 0) return;
+  if (cached.lastContainerWidth === w && cached.lastContainerHeight === h) return;
+  cached.lastContainerWidth = w;
+  cached.lastContainerHeight = h;
+  cached.fit.fit();
+};
 
 
 
@@ -97,7 +115,7 @@ function getOrCreateTerminal(terminalId: string, title?: string, themeVals?: { b
   term.loadAddon(fit);
   term.writeln(`正在启动 ${title || '终端'}...`);
 
-  const created = { term, fit, historyApplied: false };
+  const created: TerminalCacheItem = { term, fit, historyApplied: false, followOutput: true, lastContainerWidth: undefined, lastContainerHeight: undefined };
   terminalCache.set(terminalId, created);
   return created;
 }
@@ -141,11 +159,15 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
     if (!globalWriterReady) {
       (window as any).__terminalWrite = (tid: string, data: string) => {
         const cached = terminalCache.get(tid);
-        if (cached) {
-          cached.term.write(data, () => {
+        if (!cached) return;
+
+        // 高频输出时不要强制滚动到底部：用户一旦滚动离开底部，就暂停跟随，直到回到底部。
+        const shouldScroll = cached.followOutput;
+        cached.term.write(data, () => {
+          if (shouldScroll) {
             cached.term.scrollToBottom();
-          });
-        }
+          }
+        });
       };
       if (!(window as any).__terminalExec) {
         (window as any).__terminalExec = async (_tid: string, data: string) => {
@@ -356,6 +378,11 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
       }
     });
 
+    // 追踪用户是否在底部：离开底部则暂停自动跟随，回到底部再恢复。
+    const followDisposable = cached.term.onScroll(() => {
+      cached.followOutput = isNearBottom(cached.term);
+    });
+
     const dataDisposable = cached.term.onData((data) => {
       if (!tauriAvailable && (window as any).__terminalExec) {
         let buffer = webInputBufferRef.current;
@@ -440,7 +467,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
           setTimeout(() => {
             if (!disposed) {
               try {
-                cached.fit.fit();
+                fitIfNeeded(cached, container);
               } catch (e) {
                 // ignore
               }
@@ -453,7 +480,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
       setTimeout(() => {
         if (!disposed) {
           try {
-            cached.fit.fit();
+            fitIfNeeded(cached, container);
           } catch (e) {
             // ignore
           }
@@ -468,8 +495,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
       linkProvider.dispose();
       dataDisposable.dispose();
       resizeDisposable.dispose();
-
-
+      followDisposable?.dispose();
       clearPty();
       // Don't delete from cache - keep terminal state for when user navigates back
       if (container) {
@@ -502,8 +528,11 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
       // 字体大小变化后需要重新 fit
       setTimeout(() => {
         try {
+          const shouldScroll = isNearBottom(cached.term);
           fitRef.current?.fit();
-          cached.term.scrollToBottom();
+          if (shouldScroll) {
+            cached.term.scrollToBottom();
+          }
         } catch (e) {
           // ignore
         }
@@ -531,7 +560,10 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
       return;
     }
     cached.term.write(`${historyLines.join('\r\n')}\r\n`, () => {
-      cached.term.scrollToBottom();
+      const shouldScroll = isNearBottom(cached.term);
+      if (shouldScroll) {
+        cached.term.scrollToBottom();
+      }
     });
     cached.historyApplied = true;
   }, [historyLines, terminalId]);

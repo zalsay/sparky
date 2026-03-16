@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, List, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select, Badge } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined, PushpinOutlined, PushpinFilled, DesktopOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -20,6 +20,24 @@ interface IDEPlugin {
   name: string;
   desc: string;
   created_at?: number | null;
+}
+
+interface WebIdeProjectStatus {
+  project_id: string;
+  project_path: string;
+  project_name: string;
+  active_pty_count: number;
+  agent_id: string;
+}
+
+interface WebIdeSummaryResponse {
+  projects: WebIdeProjectStatus[];
+}
+
+interface WebIdeEvent {
+  event_type: 'agent_connected' | 'agent_disconnected' | 'pty_active_changed';
+  agent_id: string;
+  project?: WebIdeProjectStatus;
 }
 
 interface AppConfig {
@@ -241,6 +259,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [webApiKeyModalOpen, setWebApiKeyModalOpen] = useState(false);
   const [webApiKeyInput, setWebApiKeyInput] = useState('');
   const [webApiKeyMissing, setWebApiKeyMissing] = useState(false);
+  const [webIdeProjects, setWebIdeProjects] = useState<WebIdeProjectStatus[]>([]);
+  const webIdeSseAbortRef = useRef<AbortController | null>(null);
+  const webIdeSseReconnectTimerRef = useRef<number | null>(null);
+  const webIdeSseBackoffRef = useRef<number>(1000);
 
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingSessionName, setEditingSessionName] = useState('');
@@ -1035,6 +1057,136 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, [activeMenu, selectedProject, activeTerminalId, tauriAvailable]);
+
+  const fetchWebIdeSummary = useCallback(async () => {
+    if (!ensureWebApiKey()) return;
+    const response = await fetch('/api/web-ide/summary', {
+      headers: buildWebHeaders()
+    });
+    if (!response.ok) {
+      handleWebApiError(response.status);
+      return;
+    }
+    const data = (await response.json()) as WebIdeSummaryResponse;
+    const projects = data?.projects || [];
+    if (projects.length > 0) {
+      setWebIdeProjects(projects);
+      return;
+    }
+    const agentId = webApiKeyRef.current ? webApiKeyRef.current.trim() : '';
+    setWebIdeProjects([
+      {
+        project_id: '',
+        project_path: '',
+        project_name: '',
+        active_pty_count: 0,
+        agent_id: agentId || 'online'
+      }
+    ]);
+  }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
+
+  const startWebIdeSse = useCallback(() => {
+    if (tauriAvailable) return;
+    if (!ensureWebApiKey()) return;
+    webIdeSseAbortRef.current?.abort();
+    if (webIdeSseReconnectTimerRef.current) {
+      window.clearTimeout(webIdeSseReconnectTimerRef.current);
+      webIdeSseReconnectTimerRef.current = null;
+    }
+    const controller = new AbortController();
+    webIdeSseAbortRef.current = controller;
+
+    const connect = async () => {
+      try {
+        const response = await fetch('/api/web-ide/events', {
+          headers: { 'x-api-key': webApiKeyRef.current },
+          signal: controller.signal
+        });
+        if (!response.ok) {
+          handleWebApiError(response.status);
+          throw new Error(`WebIDE SSE failed: ${response.status}`);
+        }
+        webIdeSseBackoffRef.current = 1000;
+        const reader = response.body?.getReader();
+        if (!reader) return;
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let sepIndex = buffer.indexOf('\n\n');
+          while (sepIndex !== -1) {
+            const chunk = buffer.slice(0, sepIndex).trim();
+            buffer = buffer.slice(sepIndex + 2);
+            const eventLines = chunk.split('\n');
+            let dataPayload = '';
+            for (const line of eventLines) {
+              if (line.startsWith('data:')) {
+                dataPayload += line.slice(5).trim();
+              }
+            }
+            if (dataPayload) {
+              try {
+                const event = JSON.parse(dataPayload) as WebIdeEvent;
+                if (event.event_type === 'agent_connected') {
+                  setWebIdeProjects(prev => {
+                    if (prev.some(item => item.agent_id === event.agent_id)) {
+                      return prev;
+                    }
+                    return [
+                      ...prev,
+                      {
+                        project_id: '',
+                        project_path: '',
+                        project_name: '',
+                        active_pty_count: 0,
+                        agent_id: event.agent_id
+                      }
+                    ];
+                  });
+                } else if (event.event_type === 'agent_disconnected') {
+                  setWebIdeProjects(prev => prev.filter(item => item.agent_id !== event.agent_id));
+                } else if (event.project) {
+                  const project = event.project;
+                  setWebIdeProjects(prev => {
+                    const next = prev.filter(item => !(item.project_id === project.project_id && item.agent_id === event.agent_id));
+                    next.push(project);
+                    return next;
+                  });
+                }
+              } catch (err) {
+                console.warn('Failed to parse WebIDE SSE event', err);
+              }
+            }
+            sepIndex = buffer.indexOf('\n\n');
+          }
+        }
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        const nextDelay = Math.min(webIdeSseBackoffRef.current * 2, 5000);
+        webIdeSseBackoffRef.current = nextDelay;
+        webIdeSseReconnectTimerRef.current = window.setTimeout(() => connect(), nextDelay);
+      }
+    };
+
+    connect();
+  }, [ensureWebApiKey, handleWebApiError, tauriAvailable]);
+
+  useEffect(() => {
+    if (tauriAvailable || activeMenu !== 'web-ide') {
+      return;
+    }
+    fetchWebIdeSummary();
+    startWebIdeSse();
+    return () => {
+      webIdeSseAbortRef.current?.abort();
+      if (webIdeSseReconnectTimerRef.current) {
+        window.clearTimeout(webIdeSseReconnectTimerRef.current);
+        webIdeSseReconnectTimerRef.current = null;
+      }
+    };
+  }, [activeMenu, tauriAvailable, fetchWebIdeSummary, startWebIdeSse]);
 
   const renameSessionWeb = useCallback(async (projectId: number, sessionId: string, name: string) => {
     if (!ensureWebApiKey()) return;
@@ -2006,6 +2158,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                 style={{ height: '100%', borderRight: 0 }}
                 items={[
                   { key: 'project', icon: <ProjectOutlined />, label: '项目' },
+                  { key: 'web-ide', icon: <DesktopOutlined />, label: 'WebIDE' },
                   { key: 'ai-models', icon: <ThunderboltOutlined />, label: 'AI模型' },
                   { key: 'ide-plugins', icon: <AppstoreAddOutlined />, label: 'IDE 插件' },
                   { key: 'settings', icon: <SettingOutlined />, label: '设置' },
@@ -2100,6 +2253,59 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                               </Space>
                             ),
                           },
+                        ]}
+                      />
+                    )}
+                  </Card>
+                </div>
+              )}
+
+              {activeMenu === 'web-ide' && (
+                <div className="project-page">
+                  <Card className="projects-card" variant="borderless">
+                    <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <DesktopOutlined className="card-icon" />
+                        <h2>WebIDE</h2>
+                      </div>
+                      <Button size="small" onClick={fetchWebIdeSummary}>刷新</Button>
+                    </div>
+                    <p className="card-description">仅显示当前在线的 Agent 项目与活跃 PTY 数</p>
+                    <Divider />
+                    {webIdeProjects.length === 0 ? (
+                      <Empty description="暂无在线 WebIDE 项目" />
+                    ) : (
+                      <Table
+                        dataSource={webIdeProjects}
+                        rowKey={(record) => `${record.agent_id}-${record.project_id}`}
+                        pagination={false}
+                        columns={[
+                          {
+                            title: '项目名称',
+                            dataIndex: 'project_name',
+                            key: 'project_name',
+                            render: (name: string) => <span style={{ fontWeight: 500 }}>{name}</span>
+                          },
+                          {
+                            title: '路径',
+                            dataIndex: 'project_path',
+                            key: 'project_path',
+                            render: (path: string) => <span style={{ fontSize: 12, color: 'var(--text-secondary)', wordBreak: 'break-all' }}>{path}</span>
+                          },
+                          {
+                            title: 'Agent',
+                            dataIndex: 'agent_id',
+                            key: 'agent_id',
+                            width: 160,
+                            render: (text: string) => <Tag color="blue">{text}</Tag>
+                          },
+                          {
+                            title: '活跃 PTY',
+                            dataIndex: 'active_pty_count',
+                            key: 'active_pty_count',
+                            width: 120,
+                            render: (count: number) => <Tag color={count > 0 ? 'green' : 'default'}>{count}</Tag>
+                          }
                         ]}
                       />
                     )}

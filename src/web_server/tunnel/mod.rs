@@ -18,6 +18,7 @@ use crate::web_server::{
         protocol::{ClientHello, TunnelMessage},
         router::{AgentHandle, PendingRouter},
     },
+    web_ide::{WebIdeEvent, WebIdeEventHub, WebIdeState},
     AppState,
 };
 
@@ -49,15 +50,25 @@ impl AgentRegistry {
 pub struct TunnelState {
     pub registry: AgentRegistry,
     pub events: EventHub,
+    pub web_ide_state: WebIdeState,
+    pub web_ide_events: WebIdeEventHub,
     agent_token_map: Arc<HashMap<String, AgentTokenConfig>>,
 }
 
 impl TunnelState {
-    pub fn new(config: SharedConfig, registry: AgentRegistry, events: EventHub) -> Self {
+    pub fn new(
+        config: SharedConfig,
+        registry: AgentRegistry,
+        events: EventHub,
+        web_ide_state: WebIdeState,
+        web_ide_events: WebIdeEventHub,
+    ) -> Self {
         let agent_token_map = Arc::new(config.agent_token_map());
         Self {
             registry,
             events,
+            web_ide_state,
+            web_ide_events,
             agent_token_map,
         }
     }
@@ -110,10 +121,23 @@ async fn handle_socket(state: TunnelState, socket: axum::extract::ws::WebSocket)
 
     state.registry.register(hello.agent_id.clone(), handle).await;
     info!("agent connected agent_id={}", hello.agent_id);
+    info!("web_ide publish agent_connected agent_id={}", hello.agent_id);
+
+    state
+        .web_ide_events
+        .publish(WebIdeEvent {
+            event_type: "agent_connected".to_string(),
+            agent_id: hello.agent_id.clone(),
+            project: None,
+        })
+        .await;
 
     let agent_id = hello.agent_id.clone();
+    let agent_id_for_recv = agent_id.clone();
     let router = state.registry.router();
     let events = state.events.clone();
+    let web_ide_state = state.web_ide_state.clone();
+    let web_ide_events = state.web_ide_events.clone();
 
     let send_task = tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
@@ -132,7 +156,7 @@ async fn handle_socket(state: TunnelState, socket: axum::extract::ws::WebSocket)
             match msg {
                 axum::extract::ws::Message::Text(text) => {
                     if let Ok(parsed) = serde_json::from_str::<TunnelMessage>(&text) {
-                        handle_incoming(parsed, &router, &events).await;
+                        handle_incoming(parsed, &router, &events, &web_ide_state, &web_ide_events, &agent_id_for_recv).await;
                         let mut last_seen = last_seen.lock().await;
                         *last_seen = std::time::Instant::now();
                     }
@@ -150,6 +174,15 @@ async fn handle_socket(state: TunnelState, socket: axum::extract::ws::WebSocket)
     let _ = tokio::join!(send_task, recv_task);
 
     state.registry.unregister(&agent_id).await;
+    state.web_ide_state.remove_agent(&agent_id).await;
+    state
+        .web_ide_events
+        .publish(WebIdeEvent {
+            event_type: "agent_disconnected".to_string(),
+            agent_id: agent_id.clone(),
+            project: None,
+        })
+        .await;
     info!("agent disconnected agent_id={}", agent_id);
 }
 
@@ -166,7 +199,14 @@ fn parse_hello(msg: axum::extract::ws::Message) -> Option<ClientHello> {
     }
 }
 
-async fn handle_incoming(message: TunnelMessage, router: &PendingRouter, events: &EventHub) {
+async fn handle_incoming(
+    message: TunnelMessage,
+    router: &PendingRouter,
+    events: &EventHub,
+    web_ide_state: &WebIdeState,
+    web_ide_events: &WebIdeEventHub,
+    agent_id: &str,
+) {
     match message.clone() {
         TunnelMessage::Response { req_id, .. } => {
             router.resolve(&req_id, message).await;
@@ -176,7 +216,35 @@ async fn handle_incoming(message: TunnelMessage, router: &PendingRouter, events:
             event_type,
             payload,
         } => {
-            events.publish(project_id, event_type, payload).await;
+            info!("tunnel event agent_id={} project_id={} event_type={}", agent_id, project_id, event_type);
+            events.publish(project_id.clone(), event_type.clone(), payload.clone()).await;
+            if event_type == "pty_active_changed" {
+                match serde_json::from_value::<crate::web_server::web_ide::WebIdeProjectStatus>(payload.clone()) {
+                    Ok(status) => {
+                        let status = crate::web_server::web_ide::WebIdeProjectStatus {
+                            agent_id: agent_id.to_string(),
+                            ..status
+                        };
+                        info!(
+                            "web_ide upsert agent_id={} project_id={} active_pty_count={}",
+                            status.agent_id,
+                            status.project_id,
+                            status.active_pty_count
+                        );
+                        web_ide_state.upsert_project(status.clone()).await;
+                        web_ide_events
+                            .publish(WebIdeEvent {
+                                event_type: "pty_active_changed".to_string(),
+                                agent_id: agent_id.to_string(),
+                                project: Some(status),
+                            })
+                            .await;
+                    }
+                    Err(err) => {
+                        info!("web_ide parse pty_active_changed failed err={}", err);
+                    }
+                }
+            }
         }
         _ => {}
     }

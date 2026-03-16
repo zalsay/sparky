@@ -5,6 +5,7 @@ use std::io::{Read, Write};
 use std::thread;
 use tauri::{Emitter, Manager};
 use rusqlite::params;
+use serde_json::json;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 
 pub struct PtyManager {
@@ -147,6 +148,24 @@ impl PtyManager {
     pub fn get_primary_terminal_for_project(&self, project_path: &str) -> Option<String> {
         let pt = self.project_terminals.lock().unwrap();
         pt.get(project_path).and_then(|terminals| terminals.first().cloned())
+    }
+
+    pub fn get_project_terminal_count(&self, project_path: &str) -> usize {
+        let pt = self.project_terminals.lock().unwrap();
+        pt.get(project_path).map(|terminals| terminals.len()).unwrap_or(0)
+    }
+
+    pub fn get_project_terminal_counts(&self) -> HashMap<String, usize> {
+        let pt = self.project_terminals.lock().unwrap();
+        pt.iter().map(|(path, terminals)| (path.clone(), terminals.len())).collect()
+    }
+
+    pub fn get_project_verified_terminal_count(&self, project_path: &str) -> usize {
+        let pt = self.project_terminals.lock().unwrap();
+        let verified = self.verified_terminals.lock().unwrap();
+        pt.get(project_path)
+            .map(|terminals| terminals.iter().filter(|id| verified.contains(*id)).count())
+            .unwrap_or(0)
     }
 
     fn update_active_ptys_in_db(&self) {
@@ -560,6 +579,10 @@ pub async fn pty_spawn(
     // Store the pair and child with project path as key
     let manager = app.state::<Arc<PtyManager>>();
     manager.add_pty(project_path.clone(), terminal_id.clone(), pair, child);
+
+    let _ = app.emit("pty-spawn", json!({
+        "projectPath": project_path.clone(),
+    }));
 
     // Remove from spawning set
     manager.spawning.lock().unwrap().remove(&terminal_id);

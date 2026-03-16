@@ -6,6 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use rusqlite::{params, OptionalExtension};
 use std::path::PathBuf;
 use std::time::Duration;
+use std::sync::Arc;
 use tauri::{Listener, Manager};
 
 use crate::{
@@ -92,6 +93,17 @@ pub fn register_pty_event_listeners(app: tauri::AppHandle) {
         tauri::async_runtime::spawn(async move {
             if let Err(err) = forward_pty_exit_event(&app, &payload).await {
                 log::debug!("web agent pty-exit forward skipped: {}", err);
+            }
+        });
+    });
+
+    let app_for_spawn = app.clone();
+    app.listen_any("pty-spawn", move |event| {
+        let app = app_for_spawn.clone();
+        let payload = event.payload().to_string();
+        tauri::async_runtime::spawn(async move {
+            if let Err(err) = forward_pty_spawn_event(&app, &payload).await {
+                log::debug!("web agent pty-spawn forward skipped: {}", err);
             }
         });
     });
@@ -357,6 +369,43 @@ fn get_project_by_id(project_id: i64) -> Result<Option<crate::Project>, String> 
     Ok(project)
 }
 
+fn get_project_by_path(project_path: &str) -> Result<Option<crate::Project>, String> {
+    let conn = open_db()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, path, hooks_installed, created_at, updated_at, default_provider_id FROM projects WHERE path = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let project = stmt
+        .query_row(params![project_path], |row| {
+            Ok(crate::Project {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                path: row.get(2)?,
+                hooks_installed: row.get::<_, i64>(3)? != 0,
+                agent_teams_enabled: false,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                default_provider_id: row.get(6)?,
+            })
+        })
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    Ok(project)
+}
+
+fn get_active_pty_count(app: &tauri::AppHandle, project_path: &str) -> u32 {
+    let manager = app.state::<Arc<crate::pty::PtyManager>>();
+    manager.get_project_terminal_count(project_path) as u32
+}
+
+fn get_verified_pty_count(app: &tauri::AppHandle, project_path: String) -> usize {
+    let manager = app.state::<Arc<crate::pty::PtyManager>>();
+    manager.get_project_verified_terminal_count(&project_path)
+}
+
 fn get_project_path_by_id(project_id: i64) -> Result<Option<String>, String> {
     let conn = open_db()?;
     let path = conn
@@ -443,6 +492,20 @@ struct PtyExitPayload {
     terminal_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct PtySpawnPayload {
+    #[serde(rename = "projectPath")]
+    project_path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PtyActiveChangedPayload {
+    project_id: String,
+    project_path: String,
+    project_name: String,
+    active_pty_count: u32,
+}
+
 async fn forward_pty_data_event(app: &tauri::AppHandle, raw_payload: &str) -> Result<(), String> {
     let payload: PtyDataPayload = serde_json::from_str(raw_payload).map_err(|e| e.to_string())?;
     let project_id = get_project_id_by_path(&payload.project_path)?
@@ -470,6 +533,32 @@ async fn forward_pty_exit_event(app: &tauri::AppHandle, raw_payload: &str) -> Re
         event_type: "terminal_exit".to_string(),
         payload: json!({
             "terminal_id": payload.terminal_id,
+        }),
+    };
+
+    send_event(app, message).await?;
+    forward_pty_active_changed(app, &payload.project_path).await
+}
+
+async fn forward_pty_spawn_event(app: &tauri::AppHandle, raw_payload: &str) -> Result<(), String> {
+    let payload: PtySpawnPayload = serde_json::from_str(raw_payload).map_err(|e| e.to_string())?;
+    forward_pty_active_changed(app, &payload.project_path).await
+}
+
+async fn forward_pty_active_changed(app: &tauri::AppHandle, project_path: &str) -> Result<(), String> {
+    let project = get_project_by_path(project_path)?
+        .ok_or_else(|| "PROJECT_NOT_FOUND".to_string())?;
+    let active_count = get_active_pty_count(app, &project.path);
+    let verified_count = get_verified_pty_count(app, project.path.clone()) as u32;
+
+    let message = TunnelMessage::Event {
+        project_id: project.id.to_string(),
+        event_type: "pty_active_changed".to_string(),
+        payload: json!(PtyActiveChangedPayload {
+            project_id: project.id.to_string(),
+            project_path: project.path.clone(),
+            project_name: project.name.clone(),
+            active_pty_count: std::cmp::max(active_count, verified_count),
         }),
     };
 
