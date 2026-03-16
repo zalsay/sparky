@@ -18,7 +18,9 @@ use websocket::FeishuWsClient;
 mod feishu_client;
 
 mod pty;
-use pty::{PtyManager, pty_spawn, pty_write, pty_kill, pty_resize, pty_exists, get_terminal_active_process};
+use pty::{PtyManager, pty_spawn, pty_kill, pty_resize, pty_exists, get_terminal_active_process};
+
+mod web_agent;
 
 // mod proxy;
 // use proxy::{ProxyState, start_proxy_server};
@@ -28,6 +30,10 @@ pub struct ProxyConfig {
 }
 
 pub struct WsConnectionState(pub Arc<AtomicBool>);
+
+pub struct WebAgentState {
+    pub sender: StdMutex<Option<mpsc::Sender<web_agent::TunnelMessage>>>,
+}
 
 #[tauri::command(rename_all = "snake_case")]
 fn get_ws_connected(state: tauri::State<'_, WsConnectionState>) -> bool {
@@ -3237,6 +3243,7 @@ pub fn run() {
         .manage(state)
         .manage(Arc::new(PtyManager::new()))
         .manage(WsConnectionState(ws_connected.clone()))
+        .manage(WebAgentState { sender: StdMutex::new(None) })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
@@ -3477,6 +3484,14 @@ pub fn run() {
                 }
             });
 
+            web_agent::register_pty_event_listeners(app.handle().clone());
+
+            let app_handle_for_agent = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                web_agent::start_web_agent(app_handle_for_agent).await;
+            });
+
             // 应用保存的窗口大小（如果存在）
             if let Ok(conn) = open_db() {
                 if let Ok(width_str) = conn.query_row("SELECT value FROM db_meta WHERE key = 'window_width'", [], |row| row.get::<_, String>(0)) {
@@ -3513,7 +3528,7 @@ pub fn run() {
             delete_hook_records,
             get_wss_status,
             pty_spawn,
-            pty_write,
+            // pty_write (internal only)
             pty_kill,
             pty_resize,
             pty_exists,

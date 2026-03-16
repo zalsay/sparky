@@ -123,11 +123,14 @@ export function usePty(terminalId: string, projectPath: string, customEnvs?: Rec
       // Set up listener BEFORE spawn so we don't miss initial shell output
       await setupListener(terminalId);
 
+      const locale = (customEnvs && (customEnvs.LC_ALL || customEnvs.LANG || customEnvs.LC_CTYPE)) || 'en_US.UTF-8';
       const spawnEnvs = {
         TERM: 'xterm-256color',
         COLORTERM: 'truecolor',
-        LANG: navigator.language.includes('zh') ? 'zh_CN.UTF-8' : 'en_US.UTF-8',
-        LC_ALL: navigator.language.includes('zh') ? 'zh_CN.UTF-8' : 'en_US.UTF-8',
+        // 统一使用 UTF-8 locale（部分系统不存在 zh_CN.UTF-8，会导致回退到 C locale，从而影响中文输入/显示）
+        LANG: locale,
+        LC_ALL: locale,
+        LC_CTYPE: locale,
         PROMPT_EOL_MARK: '',
         ...customEnvs
       };

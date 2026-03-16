@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, List, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select, Badge } from 'antd';
 import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -112,6 +112,7 @@ const LAST_ACTIVE_MENU_STORAGE_KEY = 'sparky-last-active-menu';
 const LAST_SELECTED_PROJECT_PATH_STORAGE_KEY = 'sparky-last-selected-project-path';
 const TERMINAL_TABS_STORAGE_KEY = 'sparky-terminal-tabs';
 const ACTIVE_TERMINAL_ID_STORAGE_KEY = 'sparky-active-terminal-id';
+const WEB_API_KEY_STORAGE_KEY = 'sparky-web-api-key';
 
 const ModelListInput = ({ value = [], onChange }: { value?: string[], onChange?: (val: string[]) => void }) => {
   const [inputValue, setInputValue] = useState('');
@@ -230,6 +231,17 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [hookDetailOpen, setHookDetailOpen] = useState(false);
   const [hookDetailRecord, setHookDetailRecord] = useState<HookRecord | null>(null);
 
+  const [webApiKey, setWebApiKey] = useState<string>(() => {
+    try {
+      return localStorage.getItem(WEB_API_KEY_STORAGE_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
+  const [webApiKeyModalOpen, setWebApiKeyModalOpen] = useState(false);
+  const [webApiKeyInput, setWebApiKeyInput] = useState('');
+  const [webApiKeyMissing, setWebApiKeyMissing] = useState(false);
+
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingSessionName, setEditingSessionName] = useState('');
 
@@ -246,6 +258,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [wsConnected, setWsConnected] = useState(false);
   const [activeProjects, setActiveProjects] = useState<string[]>([]);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
+  const webApiKeyRef = useRef<string>(webApiKey);
+  const webSseAbortRef = useRef<AbortController | null>(null);
+  const webSseReconnectTimerRef = useRef<number | null>(null);
+  const webSseBackoffRef = useRef<number>(1000);
   const appConfigRef = useRef<AppConfig | null>(null);
   const hasRestoredSelectionRef = useRef(false);
   const hasRestoredTerminalStateRef = useRef(false);
@@ -258,6 +274,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     return ['50%', '50%'];
   });
   const recentUrlsForProject = selectedProject ? (recentProjectUrls[selectedProject.path] || []) : [];
+
+  useEffect(() => {
+    webApiKeyRef.current = webApiKey;
+  }, [webApiKey]);
 
   useEffect(() => {
     if (tauriAvailable) {
@@ -494,6 +514,13 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
   useEffect(() => {
     if (!tauriAvailable) {
+      if (!webApiKeyRef.current) {
+        setWebApiKeyMissing(true);
+        setWebApiKeyInput(webApiKeyRef.current);
+        setWebApiKeyModalOpen(true);
+        return;
+      }
+      fetchProjects();
       return;
     }
     loadConfig();
@@ -531,18 +558,39 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === 'SEND_TO_TERMINAL' && event.data.code) {
         const activeTid = activeTerminalId[selectedProject.path];
-        if (activeTid) {
-          // Remove newlines and carriage returns to prevent immediate execution of multi-line strings
-          const safeData = event.data.code.replace(/[\r\n]+/g, ' ');
-          invoke('pty_write', { terminal_id: activeTid, data: safeData })
-            .catch(err => console.error('Failed to write to terminal:', err));
+        if (!activeTid) return;
+        // Remove newlines and carriage returns to prevent immediate execution of multi-line strings
+        const safeData = event.data.code.replace(/[\r\n]+/g, ' ');
+        if (!tauriAvailable) {
+          executeTerminalWeb(selectedProject.id, safeData);
+          return;
         }
+        invoke('pty_write', { terminal_id: activeTid, data: safeData })
+          .catch(err => console.error('Failed to write to terminal:', err));
       }
     };
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, [activeMenu, selectedProject, activeTerminalId, tauriAvailable]);
+
+  useEffect(() => {
+    if (tauriAvailable) return;
+    const onPopState = () => {
+      const match = window.location.pathname.match(/^\/project\/(\d+)\/detail$/);
+      if (match) {
+        const projectId = Number(match[1]);
+        if (Number.isFinite(projectId)) {
+          fetchProjectDetailWeb(projectId);
+          return;
+        }
+      }
+      setActiveMenu('project');
+      setSelectedProject(null);
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [tauriAvailable, fetchProjectDetailWeb]);
 
   // Sync active terminal ID to backend for HTTP endpoint (extension -> terminal)
   useEffect(() => {
@@ -555,7 +603,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   }, [activeTerminalId, selectedProject, tauriAvailable]);
 
   useEffect(() => {
-    if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject) {
+    if (activeMenu !== 'project-detail' || !selectedProject) {
+      return;
+    }
+
+    if (!tauriAvailable) {
+      fetchTerminalHistoryWeb(selectedProject.id, selectedProject.path);
       return;
     }
 
@@ -567,7 +620,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       .catch(() => {
         setTerminalHistory(prev => ({ ...prev, [selectedProject.path]: [] }));
       });
-  }, [activeMenu, selectedProject, tauriAvailable]);
+  }, [activeMenu, selectedProject, tauriAvailable, fetchTerminalHistoryWeb]);
 
   useEffect(() => {
     if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject) {
@@ -579,6 +632,15 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     }
     fetchHookRecords(1);
   }, [activeMenu, selectedProject, tauriAvailable]);
+
+  useEffect(() => {
+    if (!tauriAvailable) {
+      setHookRecords([]);
+      setHookRecordsTotal(0);
+      setHookRecordsPage(1);
+      setHookRecordSelection([]);
+    }
+  }, [tauriAvailable]);
 
   // Fetch IDE plugins when the menu is active
   useEffect(() => {
@@ -651,6 +713,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       if (intervalId) clearInterval(intervalId);
     };
   }, [activeMenu, selectedProject, tauriAvailable, codeServerConnected, ideRestarting]);
+
+  useEffect(() => {
+    if (!tauriAvailable && activeMenu === 'project-detail') {
+      setCodeServerConnected(true);
+    }
+  }, [tauriAvailable, activeMenu]);
 
   const handleRestartIDE = async () => {
     if (!tauriAvailable) {
@@ -812,7 +880,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   }, [newTabModalOpen, selectedProject, tauriAvailable]);
 
   const handleTerminalInput = (data: string) => {
-    if (!tauriAvailable || !selectedProject) {
+    if (!selectedProject) {
       return;
     }
     const currentTerminal = activeTerminalId[selectedProject.path];
@@ -861,8 +929,270 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     inputBufferRef.current[currentTerminal] = buffer;
   };
 
-  const handleEnterProject = (project: Project) => {
+  const ensureWebApiKey = useCallback(() => {
+    if (tauriAvailable) return true;
+    if (webApiKeyRef.current) return true;
+    setWebApiKeyMissing(true);
+    setWebApiKeyModalOpen(true);
+    return false;
+  }, [tauriAvailable]);
+
+  const buildWebHeaders = useCallback(() => ({
+    'x-api-key': webApiKeyRef.current,
+    'content-type': 'application/json'
+  }), []);
+
+  const handleWebApiError = useCallback((status: number) => {
+    if (status === 401 || status === 403) {
+      setWebApiKeyMissing(true);
+      setWebApiKeyInput(webApiKeyRef.current);
+      setWebApiKeyModalOpen(true);
+    }
+  }, []);
+
+  const fetchProjectDetailWeb = useCallback(async (projectId: number) => {
+    if (!ensureWebApiKey()) return;
+    const response = await fetch(`/api/projects/${projectId}/detail`, {
+      headers: buildWebHeaders()
+    });
+    if (!response.ok) {
+      handleWebApiError(response.status);
+      return;
+    }
+    const data = await response.json();
+    const project = data?.project as Project | undefined;
+    if (!project) return;
+
+    setSelectedProject(project);
+    setActiveMenu('project-detail');
+    setActiveProjects(prev => prev.includes(project.path) ? prev : [...prev, project.path]);
+    setSessions((data?.sessions as SessionInfo[]) || []);
+    setTerminalHistory(prev => ({
+      ...prev,
+      [project.path]: (data?.terminal_history as string[]) || []
+    }));
+
+    setProjectTerminals(prev => {
+      if (prev[project.path]) return prev;
+      const defaultId = `web-${project.id}`;
+      return {
+        ...prev,
+        [project.path]: [{
+          id: defaultId,
+          title: 'Web Terminal'
+        }]
+      };
+    });
+
+    setActiveTerminalId(prev => ({
+      ...prev,
+      [project.path]: prev[project.path] || `web-${project.id}`
+    }));
+
+    setTerminalStateReady(true);
+  }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
+
+  const fetchSessionsWeb = useCallback(async (projectId: number, projectPath: string, projectName?: string | null) => {
+    if (!ensureWebApiKey()) return;
+    const response = await fetch(`/api/sessions?project_id=${projectId}`, {
+      headers: buildWebHeaders()
+    });
+    if (!response.ok) {
+      handleWebApiError(response.status);
+      setSessions([]);
+      return;
+    }
+    const data = await response.json();
+    const result = (data as SessionInfo[]) || [];
+    const filteredResult = result.filter(s => {
+      if (!s.project_name) return true;
+      return !projectName || s.project_name === projectName;
+    });
+    const uniqueSessions = Array.from(new Map(filteredResult.map(s => [s.session_id, s])).values());
+    setSessions(uniqueSessions);
+  }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
+
+  const fetchTerminalHistoryWeb = useCallback(async (projectId: number, projectPath: string) => {
+    if (!ensureWebApiKey()) return;
+    const response = await fetch(`/api/terminal/history?project_id=${projectId}`, {
+      headers: buildWebHeaders()
+    });
+    if (!response.ok) {
+      handleWebApiError(response.status);
+      setTerminalHistory(prev => ({ ...prev, [projectPath]: [] }));
+      return;
+    }
+    const data = await response.json();
+    setTerminalHistory(prev => ({
+      ...prev,
+      [projectPath]: (data as string[]) || []
+    }));
+  }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
+
+  const executeTerminalWeb = useCallback(async (projectId: number, command: string) => {
+    if (!ensureWebApiKey()) return;
+    const response = await fetch('/api/terminal/exec', {
+      method: 'POST',
+      headers: buildWebHeaders(),
+      body: JSON.stringify({ project_id: projectId, command })
+    });
+    if (!response.ok) {
+      handleWebApiError(response.status);
+    }
+  }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
+
+  const renameSessionWeb = useCallback(async (projectId: number, sessionId: string, name: string) => {
+    if (!ensureWebApiKey()) return;
+    const response = await fetch(`/api/sessions/${sessionId}/rename`, {
+      method: 'POST',
+      headers: buildWebHeaders(),
+      body: JSON.stringify({ project_id: String(projectId), name })
+    });
+    if (!response.ok) {
+      handleWebApiError(response.status);
+    }
+  }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
+
+  const deleteSessionWeb = useCallback(async (projectId: number, sessionId: string) => {
+    if (!ensureWebApiKey()) return;
+    const response = await fetch(`/api/sessions/${sessionId}/delete`, {
+      method: 'POST',
+      headers: buildWebHeaders(),
+      body: JSON.stringify({ project_id: String(projectId) })
+    });
+    if (!response.ok) {
+      handleWebApiError(response.status);
+    }
+  }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
+
+  const resumeSessionWeb = useCallback(async (projectId: number, sessionId: string) => {
+    if (!ensureWebApiKey()) return;
+    const response = await fetch(`/api/sessions/${sessionId}/resume`, {
+      method: 'POST',
+      headers: buildWebHeaders(),
+      body: JSON.stringify({ project_id: String(projectId) })
+    });
+    if (!response.ok) {
+      handleWebApiError(response.status);
+      messageApi.warning('后端暂未实现 resume');
+      return;
+    }
+    const data = await response.json();
+    if (data?.error || data?.status === 501) {
+      messageApi.warning('后端暂未实现 resume');
+    }
+  }, [buildWebHeaders, ensureWebApiKey, handleWebApiError, messageApi]);
+
+  const startWebSse = useCallback((projectId: number) => {
+    if (tauriAvailable) return;
+    if (!ensureWebApiKey()) return;
+    webSseAbortRef.current?.abort();
+    if (webSseReconnectTimerRef.current) {
+      window.clearTimeout(webSseReconnectTimerRef.current);
+      webSseReconnectTimerRef.current = null;
+    }
+    const controller = new AbortController();
+    webSseAbortRef.current = controller;
+
+    const connect = async () => {
+      try {
+        const response = await fetch(`/api/events?project_id=${projectId}`, {
+          headers: { 'x-api-key': webApiKeyRef.current },
+          signal: controller.signal
+        });
+        if (!response.ok) {
+          handleWebApiError(response.status);
+          throw new Error(`SSE failed: ${response.status}`);
+        }
+        webSseBackoffRef.current = 1000;
+        const reader = response.body?.getReader();
+        if (!reader) return;
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let sepIndex = buffer.indexOf('\n\n');
+          while (sepIndex !== -1) {
+            const chunk = buffer.slice(0, sepIndex).trim();
+            buffer = buffer.slice(sepIndex + 2);
+            const eventLines = chunk.split('\n');
+            let eventName = '';
+            let dataPayload = '';
+            for (const line of eventLines) {
+              if (line.startsWith('event:')) {
+                eventName = line.slice(6).trim();
+              } else if (line.startsWith('data:')) {
+                dataPayload += line.slice(5).trim();
+              }
+            }
+            if (eventName === 'project_event' && dataPayload) {
+              try {
+                const event = JSON.parse(dataPayload);
+                if (event.event_type === 'terminal_output_chunk') {
+                  const terminalId = event.payload?.terminal_id || `web-${projectId}`;
+                  const output = event.payload?.data || '';
+                  if ((window as any).__terminalWrite) {
+                    (window as any).__terminalWrite(terminalId, output);
+                  }
+                } else if (event.event_type === 'terminal_exit') {
+                  const terminalId = event.payload?.terminal_id || `web-${projectId}`;
+                  setTerminalStatus(prev => ({ ...prev, [terminalId]: 'offline' }));
+                }
+              } catch (err) {
+                console.warn('Failed to parse SSE event', err);
+              }
+            }
+            sepIndex = buffer.indexOf('\n\n');
+          }
+        }
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        const nextDelay = Math.min(webSseBackoffRef.current * 2, 5000);
+        webSseBackoffRef.current = nextDelay;
+        webSseReconnectTimerRef.current = window.setTimeout(() => connect(), nextDelay);
+      }
+    };
+
+    connect();
+  }, [ensureWebApiKey, handleWebApiError, tauriAvailable]);
+
+  useEffect(() => {
+    if (tauriAvailable || !selectedProject || activeMenu !== 'project-detail') {
+      return;
+    }
+    (window as any).__terminalExecImpl = async (data: string) => {
+      await executeTerminalWeb(selectedProject.id, data);
+    };
+    startWebSse(selectedProject.id);
+    return () => {
+      if ((window as any).__terminalExecImpl) {
+        delete (window as any).__terminalExecImpl;
+      }
+      webSseAbortRef.current?.abort();
+      if (webSseReconnectTimerRef.current) {
+        window.clearTimeout(webSseReconnectTimerRef.current);
+        webSseReconnectTimerRef.current = null;
+      }
+    };
+  }, [tauriAvailable, selectedProject, activeMenu, executeTerminalWeb, handleTerminalInput, startWebSse]);
+
+  const handleEnterProject = (project: Project, options?: { updateUrl?: boolean }) => {
     console.info('[IDE] handleEnterProject:', project.path);
+    const shouldUpdateUrl = options?.updateUrl !== false;
+
+    if (!tauriAvailable) {
+      if (shouldUpdateUrl) {
+        const nextPath = `/project/${project.id}/detail`;
+        if (window.location.pathname !== nextPath) {
+          window.history.pushState({ projectId: project.id }, '', nextPath);
+        }
+      }
+      fetchProjectDetailWeb(project.id);
+      return;
+    }
+
     setSelectedProject(project);
     setActiveMenu('project-detail');
     setCodeServerConnected(false); // Reset connection status to trigger polling and loading UI
@@ -889,6 +1219,22 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   useEffect(() => {
     if (hasRestoredSelectionRef.current) return;
 
+    if (!tauriAvailable) {
+      const path = window.location.pathname;
+      const match = path.match(/^\/project\/(\d+)\/detail$/);
+      if (match) {
+        const projectId = Number(match[1]);
+        if (Number.isFinite(projectId)) {
+          fetchProjectDetailWeb(projectId).finally(() => {
+            hasRestoredSelectionRef.current = true;
+          });
+          return;
+        }
+      }
+      hasRestoredSelectionRef.current = true;
+      return;
+    }
+
     if (selectedProject || activeMenu === 'project-detail') {
       hasRestoredSelectionRef.current = true;
       return;
@@ -913,11 +1259,17 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     }
 
     hasRestoredSelectionRef.current = true;
-  }, [projects, selectedProject, activeMenu]);
+  }, [projects, selectedProject, activeMenu, tauriAvailable, fetchProjectDetailWeb]);
 
   useEffect(() => {
     if (hasRestoredTerminalStateRef.current) return;
     if (!projectsLoaded) return;
+
+    if (!tauriAvailable) {
+      hasRestoredTerminalStateRef.current = true;
+      setTerminalStateReady(true);
+      return;
+    }
 
     if (projects.length === 0) {
       hasRestoredTerminalStateRef.current = true;
@@ -1051,12 +1403,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
 
   const handleCloseTerminal = async () => {
-    if (!selectedProject || !tauriAvailable) return;
+    if (!selectedProject) return;
     console.info('[IDE] handleCloseTerminal:', selectedProject.path);
     try {
-      const pTerminals = projectTerminals[selectedProject.path] || [];
-      for (const t of pTerminals) {
-        await invoke('pty_kill', { terminal_id: t.id });
+      if (tauriAvailable) {
+        const pTerminals = projectTerminals[selectedProject.path] || [];
+        for (const t of pTerminals) {
+          await invoke('pty_kill', { terminal_id: t.id });
+        }
       }
       messageApi.success(`项目 ${selectedProject.name} 已关闭`);
       // Update UI optimistically
@@ -1065,6 +1419,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       setActiveProjects(activeProjects.filter(p => p !== selectedProject.path));
       setActiveMenu('project');
       setSelectedProject(null);
+      if (!tauriAvailable) {
+        window.history.pushState({}, '', '/');
+      }
     } catch (e) {
       messageApi.error(`关闭终端失败: ${e} `);
     }
@@ -1087,16 +1444,37 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
   const fetchProjects = async () => {
     setProjectsLoaded(false);
-    if (!tauriAvailable) {
-      setProjects([]);
-      setProjectsLoaded(true);
-      return;
-    }
     try {
+      if (!tauriAvailable) {
+        if (!webApiKeyRef.current) {
+          setWebApiKeyMissing(true);
+          setWebApiKeyInput(webApiKeyRef.current);
+          setWebApiKeyModalOpen(true);
+          setProjects([]);
+          return;
+        }
+        const response = await fetch('/api/projects', {
+          headers: {
+            'x-api-key': webApiKeyRef.current
+          }
+        });
+        if (response.status === 401 || response.status === 403) {
+          setWebApiKeyMissing(true);
+          setWebApiKeyInput(webApiKeyRef.current);
+          setWebApiKeyModalOpen(true);
+          setProjects([]);
+          return;
+        }
+        const data = await response.json();
+        setProjects(data as Project[]);
+        return;
+      }
+
       const projectsData = await invoke<Project[]>('get_projects');
       setProjects(projectsData);
     } catch (error) {
       console.error('Failed to fetch projects:', error);
+      setProjects([]);
     } finally {
       setProjectsLoaded(true);
     }
@@ -1130,7 +1508,11 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const fetchSessions = async (projectPath: string) => {
-    if (!tauriAvailable || !selectedProject) return;
+    if (!selectedProject) return;
+    if (!tauriAvailable) {
+      await fetchSessionsWeb(selectedProject.id, projectPath, selectedProject.name);
+      return;
+    }
     try {
       const result = await invoke<SessionInfo[]>('get_project_sessions', { project_path: projectPath });
       // Deduplicate sessions by ID and filter by project name if present
@@ -1147,8 +1529,15 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const handleUpdateSessionName = async (session_id: string, newName: string) => {
-    if (!tauriAvailable || !selectedProject) return;
+    if (!selectedProject) return;
     try {
+      if (!tauriAvailable) {
+        await renameSessionWeb(selectedProject.id, session_id, newName);
+        messageApi.success('会话名称更新成功');
+        setEditingSessionId(null);
+        fetchSessions(selectedProject.path);
+        return;
+      }
       await invoke('update_session_name', { session_id, name: newName });
       messageApi.success('会话名称更新成功');
       setEditingSessionId(null);
@@ -1453,6 +1842,34 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     }
   };
 
+  const handleSaveWebApiKey = () => {
+    const nextKey = webApiKeyInput.trim();
+    setWebApiKey(nextKey);
+    webApiKeyRef.current = nextKey;
+    try {
+      if (nextKey) {
+        localStorage.setItem(WEB_API_KEY_STORAGE_KEY, nextKey);
+      } else {
+        localStorage.removeItem(WEB_API_KEY_STORAGE_KEY);
+      }
+    } catch {
+      // ignore storage errors
+    }
+    setWebApiKeyModalOpen(false);
+    setWebApiKeyInput('');
+    setWebApiKeyMissing(false);
+    fetchProjects();
+    if (!tauriAvailable) {
+      const match = window.location.pathname.match(/^\/project\/(\d+)\/detail$/);
+      if (match) {
+        const projectId = Number(match[1]);
+        if (Number.isFinite(projectId)) {
+          fetchProjectDetailWeb(projectId);
+        }
+      }
+    }
+  };
+
   return (
     <ConfigProvider
       theme={{
@@ -1688,7 +2105,13 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                             width: 180,
                             render: (_: any, record: Project) => (
                               <Space>
-                                <Button size="small" type="primary" onClick={() => handleEnterProject(record)}>
+                                <Button size="small" type="primary" onClick={() => {
+                                  if (!tauriAvailable) {
+                                    fetchProjectDetailWeb(record.id);
+                                    return;
+                                  }
+                                  handleEnterProject(record);
+                                }}>
                                   Go <img src={codeIcon} alt="Go" style={{ marginLeft: 4, width: 14, height: 14 }} />
                                 </Button>
                                 {!record.hooks_installed && (
@@ -2353,9 +2776,19 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                           const tid = activeTerminalId[selectedProject.path];
                                           if (!tid) return;
                                           const isFullAuth = fullAuth[selectedProject.path] || false;
+                                          if (!tauriAvailable) {
+                                            await resumeSessionWeb(selectedProject.id, record.session_id);
+                                            setSessionModalOpen(false);
+                                            return;
+                                          }
                                           const args = isFullAuth
                                             ? `--dangerously-skip-permissions --resume ${record.session_id}`
                                             : `--resume ${record.session_id}`;
+                                          if (!tauriAvailable && selectedProject) {
+                                            await executeTerminalWeb(selectedProject.id, `claude ${args}\n`);
+                                            setSessionModalOpen(false);
+                                            return;
+                                          }
                                           const cmd = await buildClaudeCmd(tid, args);
                                           invoke('pty_write', { terminal_id: tid, data: cmd });
                                           setSessionModalOpen(false);
@@ -2367,6 +2800,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         title="确定要删除该会话记录吗？"
                                         onConfirm={async () => {
                                           try {
+                                            if (!tauriAvailable) {
+                                              await deleteSessionWeb(selectedProject.id, record.session_id);
+                                              await fetchSessions(selectedProject.path);
+                                              messageApi.success('已删除');
+                                              return;
+                                            }
                                             await invoke('delete_session', { session_id: record.session_id });
                                             await fetchSessions(selectedProject.path);
                                             messageApi.success('已删除');
@@ -2544,6 +2983,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                                 }, 1000);
                                               }
 
+                                              if (!tauriAvailable && selectedProject) {
+                                                await executeTerminalWeb(selectedProject.id, cmd);
+                                                return;
+                                              }
                                               await invoke('pty_write', { terminal_id: targetTerminalId, data: cmd });
                                             } catch (err) {
                                               messageApi.error(`启动会话失败: ${err}`);
@@ -2769,6 +3212,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         const tid = activeTerminalId[selectedProject.path];
                                         if (!tid) return;
                                         const isFullAuth = fullAuth[selectedProject.path] || false;
+                                        if (!tauriAvailable && selectedProject) {
+                                          await executeTerminalWeb(selectedProject.id, `claude${isFullAuth ? ' --dangerously-skip-permissions' : ''}\n`);
+                                          return;
+                                        }
                                         const cmd = await buildClaudeCmd(tid, isFullAuth ? '--dangerously-skip-permissions' : '');
                                         invoke('pty_write', { terminal_id: tid, data: cmd });
                                       }} />
@@ -2777,6 +3224,11 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                     <Button size="small" type="text"
                                       disabled={!activeTerminalId[selectedProject.path] || activeTerminalId[selectedProject.path] === 'detail'}
                                       onClick={async () => {
+                                        if (!tauriAvailable && selectedProject) {
+                                          await fetchSessionsWeb(selectedProject.id, selectedProject.path, selectedProject.name);
+                                          setSessionModalOpen(true);
+                                          return;
+                                        }
                                         await fetchSessions(selectedProject.path);
                                         setSessionModalOpen(true);
                                       }} icon={<HistoryOutlined />} />
@@ -2794,10 +3246,13 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   <Tooltip title="清空当前输入">
                                     <Button size="small" type="text" onClick={() => {
                                       const tid = activeTerminalId[selectedProject.path];
-                                      if (tid) {
-                                        // \x05 (Ctrl+E) moves to end of line, \x15 (Ctrl+U) clears line
-                                        invoke('pty_write', { terminal_id: tid, data: '\x05\x15' });
+                                      if (!tid) return;
+                                      if (!tauriAvailable) {
+                                        messageApi.info('Web 端暂不支持清空当前输入');
+                                        return;
                                       }
+                                      // \x05 (Ctrl+E) moves to end of line, \x15 (Ctrl+U) clears line
+                                      invoke('pty_write', { terminal_id: tid, data: '\x05\x15' });
                                     }} icon={<ClearOutlined />} />
                                   </Tooltip>
                                   <Dropdown
@@ -2809,7 +3264,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                           icon: <ReloadOutlined />,
                                           onClick: () => {
                                             const tid = activeTerminalId[selectedProject.path];
-                                            if (tid) invoke('pty_write', { terminal_id: tid, data: 'claude update\n' });
+                                            if (!tid) return;
+                                            if (!tauriAvailable && selectedProject) {
+                                              executeTerminalWeb(selectedProject.id, 'claude update\n');
+                                              return;
+                                            }
+                                            invoke('pty_write', { terminal_id: tid, data: 'claude update\n' });
                                           }
                                         },
                                         {
@@ -2833,10 +3293,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                           icon: <CompressOutlined />,
                                           onClick: () => {
                                             const tid = activeTerminalId[selectedProject.path];
-                                            if (tid) {
-                                              invoke('pty_write', { terminal_id: tid, data: '/compact\n' });
+                                            if (!tid) return;
+                                            if (!tauriAvailable && selectedProject) {
+                                              executeTerminalWeb(selectedProject.id, '/compact\n');
                                               window.dispatchEvent(new CustomEvent('claude-context-reset', { detail: selectedProject.path }));
+                                              return;
                                             }
+                                            invoke('pty_write', { terminal_id: tid, data: '/compact\n' });
+                                            window.dispatchEvent(new CustomEvent('claude-context-reset', { detail: selectedProject.path }));
                                           }
                                         },
                                         {
@@ -2845,7 +3309,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                           icon: <ClearOutlined />,
                                           onClick: () => {
                                             const tid = activeTerminalId[selectedProject.path];
-                                            if (tid) invoke('pty_write', { terminal_id: tid, data: '/clear\n' });
+                                            if (!tid) return;
+                                            if (!tauriAvailable && selectedProject) {
+                                              executeTerminalWeb(selectedProject.id, '/clear\n');
+                                              return;
+                                            }
+                                            invoke('pty_write', { terminal_id: tid, data: '/clear\n' });
                                           }
                                         },
                                         {
@@ -2854,7 +3323,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                           icon: <UndoOutlined />,
                                           onClick: () => {
                                             const tid = activeTerminalId[selectedProject.path];
-                                            if (tid) invoke('pty_write', { terminal_id: tid, data: '/undo\n' });
+                                            if (!tid) return;
+                                            if (!tauriAvailable && selectedProject) {
+                                              executeTerminalWeb(selectedProject.id, '/undo\n');
+                                              return;
+                                            }
+                                            invoke('pty_write', { terminal_id: tid, data: '/undo\n' });
                                           }
                                         },
                                         {
@@ -2863,7 +3337,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                           icon: <FileTextOutlined />,
                                           onClick: () => {
                                             const tid = activeTerminalId[selectedProject.path];
-                                            if (tid) invoke('pty_write', { terminal_id: tid, data: '/files\n' });
+                                            if (!tid) return;
+                                            if (!tauriAvailable && selectedProject) {
+                                              executeTerminalWeb(selectedProject.id, '/files\n');
+                                              return;
+                                            }
+                                            invoke('pty_write', { terminal_id: tid, data: '/files\n' });
                                           }
                                         },
                                         {
@@ -3683,6 +4162,34 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
             <p style={{ marginTop: '20px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
               请在操作系统的终端中运行上述安装命令。安装完成后，您需要<strong>完全重新启动</strong> Sparky 以使环境变量生效。
             </p>
+          </div>
+        </Modal>
+
+        <Modal
+          title={(
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <ApiOutlined style={{ color: '#1677ff', fontSize: '18px' }} />
+              <span>输入 Web API Key</span>
+            </div>
+          )}
+          open={webApiKeyModalOpen}
+          onCancel={() => setWebApiKeyModalOpen(false)}
+          okText="保存"
+          cancelText="取消"
+          onOk={handleSaveWebApiKey}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <Input
+              placeholder="请输入 x-api-key"
+              value={webApiKeyInput}
+              onChange={(e) => setWebApiKeyInput(e.target.value)}
+              onPressEnter={handleSaveWebApiKey}
+            />
+            {webApiKeyMissing && (
+              <div style={{ fontSize: 12, color: '#faad14' }}>
+                API Key 缺失或无权限，请重新输入。
+              </div>
+            )}
           </div>
         </Modal>
 

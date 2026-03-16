@@ -756,7 +756,7 @@ fn get_pty_log_path(project_path: &str) -> std::path::PathBuf {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn pty_write(app: tauri::AppHandle, terminal_id: String, data: String) -> Result<(), String> {
+fn pty_write(app: tauri::AppHandle, terminal_id: String, data: String) -> Result<(), String> {
     log::debug!("PTY write: terminal={}, data={}", terminal_id, data);
 
     let manager = app.state::<Arc<PtyManager>>();

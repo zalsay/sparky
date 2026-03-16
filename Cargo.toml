@@ -22,6 +22,12 @@ flate2 = "1.0"
 rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = "0.4"
 rand = "0.9"
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.5", features = ["trace"] }
+hyper = "1"
+http-body-util = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
+uuid = { version = "1", features = ["v4"] }
 
 [build-dependencies]
 prost-build = "0.13"

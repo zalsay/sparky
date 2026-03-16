@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { Tooltip, Popover, Button } from 'antd';
 import { WarningOutlined } from '@ant-design/icons';
 
@@ -59,6 +59,10 @@ export default function ContextDonut({ projectPath }: ContextDonutProps) {
     const [warningClosed, setWarningClosed] = useState(false);
 
     const fetchContext = useCallback(async () => {
+        if (!isTauri()) {
+            setContextData(null);
+            return;
+        }
         try {
             const jsonlData: string = await invoke('get_latest_claude_jsonl', { project_path: projectPath });
             if (jsonlData) {
@@ -99,6 +103,20 @@ export default function ContextDonut({ projectPath }: ContextDonutProps) {
             window.removeEventListener('claude-context-reset', onResetEvent as EventListener);
         };
     }, [projectPath]);
+
+    if (!isTauri()) {
+        return (
+            <div style={{
+                padding: '6px 10px',
+                background: 'rgba(0, 0, 0, 0.2)',
+                borderRadius: 6,
+                color: 'var(--text-secondary, #94a3b8)',
+                fontSize: 12,
+            }}>
+                上下文仅桌面端可用
+            </div>
+        );
+    }
 
     if (!contextData) return null;
 

@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
@@ -117,6 +117,12 @@ export default function ChatView({ projectPath, activeTerminalId }: ChatViewProp
     const isFirstLoad = useRef(true);
 
     const fetchMessages = useCallback(async () => {
+        if (!isTauri()) {
+            setLoading(false);
+            setMessages([]);
+            setError(null);
+            return;
+        }
         try {
             console.log('[ChatView] Fetching messages for projectPath:', projectPath);
             const jsonlData: string = await invoke('get_latest_claude_jsonl', { project_path: projectPath });
@@ -178,6 +184,26 @@ export default function ChatView({ projectPath, activeTerminalId }: ChatViewProp
             console.error('[ChatView] Failed to send message to PTY:', err);
         }
     };
+
+    if (!isTauri()) {
+        return (
+            <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                height: '100%',
+                width: '100%',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'var(--bg-primary, #0f172a)',
+                color: 'var(--text-secondary, #94a3b8)',
+                textAlign: 'center',
+                padding: 24,
+            }}>
+                <div style={{ fontSize: 36, marginBottom: 12 }}>💬</div>
+                <div>Chat 仅桌面端可用</div>
+            </div>
+        );
+    }
 
     if (loading && messages.length === 0) {
         return (

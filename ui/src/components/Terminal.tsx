@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { usePty } from '../hooks/usePty';
 import CodeIcon from '../assets/Code.svg';
 
@@ -108,8 +108,10 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
   const fitRef = useRef<FitAddon | null>(null);
   const onDataRef = useRef(onData);
   const onLinkClickRef = useRef(onLinkClick);
+  const webInputBufferRef = useRef('');
 
 
+  const tauriAvailable = isTauri();
   const { startPty, write, clearPty } = usePty(terminalId, projectPath, envs, undefined, defaultProviderId, selectedModelId);
 
   useImperativeHandle(ref, () => ({
@@ -127,6 +129,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
   }, [onLinkClick]);
 
   const notifyBackendActiveProject = async (path: string) => {
+    if (!tauriAvailable) return;
     try {
       await invoke('set_active_project', { project_path: path });
     } catch (e) {
@@ -139,9 +142,19 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
       (window as any).__terminalWrite = (tid: string, data: string) => {
         const cached = terminalCache.get(tid);
         if (cached) {
-          cached.term.write(data);
+          cached.term.write(data, () => {
+            cached.term.scrollToBottom();
+          });
         }
       };
+      if (!(window as any).__terminalExec) {
+        (window as any).__terminalExec = async (_tid: string, data: string) => {
+          const exec = (window as any).__terminalExecImpl;
+          if (exec) {
+            await exec(data);
+          }
+        };
+      }
       globalWriterReady = true;
     }
   }, []);
@@ -344,7 +357,47 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
     });
 
     const dataDisposable = cached.term.onData((data) => {
-      write(data);
+      if (!tauriAvailable && (window as any).__terminalExec) {
+        let buffer = webInputBufferRef.current;
+        let i = 0;
+        while (i < data.length) {
+          const code = data.charCodeAt(i);
+          if (code === 0x1b) {
+            i++;
+            if (i < data.length && data[i] === '[') {
+              i++;
+              while (i < data.length && !/[A-Za-z~]/.test(data[i])) i++;
+              i++;
+            } else if (i < data.length) {
+              i++;
+            }
+            continue;
+          }
+          if (data[i] === '\r' || data[i] === '\n') {
+            const command = buffer + '\n';
+            buffer = '';
+            if (command.trim()) {
+              (window as any).__terminalExec(terminalId, command);
+            }
+            i++;
+            continue;
+          }
+          if (code === 127) {
+            buffer = buffer.slice(0, -1);
+            i++;
+            continue;
+          }
+          if (code < 32) {
+            i++;
+            continue;
+          }
+          buffer += data[i];
+          i++;
+        }
+        webInputBufferRef.current = buffer;
+      } else {
+        write(data);
+      }
       if (onDataRef.current) {
         onDataRef.current(data);
       }
@@ -352,6 +405,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
 
     const resizeDisposable = cached.term.onResize(async ({ cols, rows }) => {
       if (disposed || !ptyReady) return;
+      if (!tauriAvailable) return;
       try {
         await invoke('pty_resize', { terminalId, cols, rows });
       } catch (e) {
@@ -369,6 +423,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
         if (container && container.clientWidth > 0 && container.clientHeight > 0) {
           try {
             cached.fit.fit();
+            cached.term.scrollToBottom();
           } catch (e) {
             // ignore
           }
@@ -377,21 +432,34 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
     });
     resizeObserver.observe(container);
 
-    // Start PTY, then mark ready and do initial fit
-    startPty().then((result) => {
-      if (!disposed && result) {
-        ptyReady = true;
-        setTimeout(() => {
-          if (!disposed) {
-            try {
-              cached.fit.fit();
-            } catch (e) {
-              // ignore
+    if (tauriAvailable) {
+      // Start PTY, then mark ready and do initial fit
+      startPty().then((result) => {
+        if (!disposed && result) {
+          ptyReady = true;
+          setTimeout(() => {
+            if (!disposed) {
+              try {
+                cached.fit.fit();
+              } catch (e) {
+                // ignore
+              }
             }
+          }, 50);
+        }
+      });
+    } else {
+      ptyReady = true;
+      setTimeout(() => {
+        if (!disposed) {
+          try {
+            cached.fit.fit();
+          } catch (e) {
+            // ignore
           }
-        }, 50);
-      }
-    });
+        }
+      }, 50);
+    }
 
     return () => {
       disposed = true;
@@ -435,6 +503,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
       setTimeout(() => {
         try {
           fitRef.current?.fit();
+          cached.term.scrollToBottom();
         } catch (e) {
           // ignore
         }
@@ -461,7 +530,9 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
     if (!cached || cached.historyApplied) {
       return;
     }
-    cached.term.write(`${historyLines.join('\r\n')}\r\n`);
+    cached.term.write(`${historyLines.join('\r\n')}\r\n`, () => {
+      cached.term.scrollToBottom();
+    });
     cached.historyApplied = true;
   }, [historyLines, terminalId]);
 
@@ -513,7 +584,16 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
           tabIndex={0}
           onClick={handleClick}
           onKeyDown={(e) => {
-            if (e.shiftKey) {
+            // IME / 中文输入法组合输入期间（以及 macOS 常见的 key="Process" / keyCode=229），
+            // 不能拦截/吞掉 keydown，否则可能导致中文/全角符号无法提交到 xterm。
+            const anyEvent = e as any;
+            if (anyEvent.isComposing || e.key === 'Process' || anyEvent.keyCode === 229) {
+              return;
+            }
+
+            // 仅在“组合键快捷键”场景下阻止冒泡，避免触发外层快捷键；
+            // 不要对单纯的 Shift（常用于输入中文标点/全角符号）做 stopPropagation。
+            if (e.shiftKey && (e.metaKey || e.ctrlKey || e.altKey)) {
               e.stopPropagation();
             }
           }}
