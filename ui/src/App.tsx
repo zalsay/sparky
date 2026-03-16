@@ -551,25 +551,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     };
   }, []);
 
-  // Listen for messages from the code-server extension
-  useEffect(() => {
-    if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject) return;
-
-    const handleMessage = (event: MessageEvent) => {
-      if (event.data?.type === 'SEND_TO_TERMINAL' && event.data.code) {
-        const activeTid = activeTerminalId[selectedProject.path];
-        if (!activeTid) return;
-        // Remove newlines and carriage returns to prevent immediate execution of multi-line strings
-        const safeData = event.data.code.replace(/[\r\n]+/g, ' ');
-        invoke('pty_write', { terminal_id: activeTid, data: safeData })
-          .catch(err => console.error('Failed to write to terminal:', err));
-      }
-    };
-
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
-  }, [activeMenu, selectedProject, activeTerminalId, tauriAvailable]);
-
   // Sync active terminal ID to backend for HTTP endpoint (extension -> terminal)
   useEffect(() => {
     if (!tauriAvailable || !selectedProject) return;
@@ -1005,6 +986,26 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     }));
   }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
 
+  useEffect(() => {
+    if (activeMenu !== 'project-detail' || !selectedProject) {
+      return;
+    }
+
+    if (!tauriAvailable) {
+      fetchTerminalHistoryWeb(selectedProject.id, selectedProject.path);
+      return;
+    }
+
+    // load history
+    invoke<string[]>('get_terminal_history', { project_path: selectedProject.path })
+      .then((history) => {
+        setTerminalHistory(prev => ({ ...prev, [selectedProject.path]: history }));
+      })
+      .catch(() => {
+        setTerminalHistory(prev => ({ ...prev, [selectedProject.path]: [] }));
+      });
+  }, [activeMenu, selectedProject, tauriAvailable, fetchTerminalHistoryWeb]);
+
   const executeTerminalWeb = useCallback(async (projectId: number, command: string) => {
     if (!ensureWebApiKey()) return;
     const response = await fetch('/api/terminal/exec', {
@@ -1016,6 +1017,24 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       handleWebApiError(response.status);
     }
   }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
+
+  useEffect(() => {
+    if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject) return;
+
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'SEND_TO_TERMINAL' && event.data.code) {
+        const activeTid = activeTerminalId[selectedProject.path];
+        if (!activeTid) return;
+        // Remove newlines and carriage returns to prevent immediate execution of multi-line strings
+        const safeData = event.data.code.replace(/[\r\n]+/g, ' ');
+        invoke('pty_write', { terminal_id: activeTid, data: safeData })
+          .catch(err => console.error('Failed to write to terminal:', err));
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [activeMenu, selectedProject, activeTerminalId, tauriAvailable]);
 
   const renameSessionWeb = useCallback(async (projectId: number, sessionId: string, name: string) => {
     if (!ensureWebApiKey()) return;

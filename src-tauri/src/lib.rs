@@ -18,7 +18,7 @@ use websocket::FeishuWsClient;
 mod feishu_client;
 
 mod pty;
-use pty::{PtyManager, pty_spawn, pty_kill, pty_resize, pty_exists, get_terminal_active_process};
+use crate::pty::{PtyManager, pty_spawn, pty_write, pty_kill, pty_resize, pty_exists, get_terminal_active_process};
 
 mod web_agent;
 
@@ -3528,7 +3528,7 @@ pub fn run() {
             delete_hook_records,
             get_wss_status,
             pty_spawn,
-            // pty_write (internal only)
+            pty_write,
             pty_kill,
             pty_resize,
             pty_exists,
