@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+const CODE_SERVER_PATH: &str = "/Users/sisu/sparky/code-server/bin/code-server";
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex as StdMutex;
@@ -1686,7 +1688,7 @@ fn check_file_exists(file_path: String) -> Result<bool, String> {
 #[tauri::command(rename_all = "snake_case")]
 async fn open_in_coder(file_path: String) -> Result<(), String> {
     log::info!("Attempting to open file in code-server: {}", file_path);
-    let cmd_path = find_executable("code-server").unwrap_or_else(|| "code-server".to_string());
+    let cmd_path = CODE_SERVER_PATH.to_string();
     let output = std::process::Command::new(cmd_path)
         .args(["-r", &file_path])
         .output()
@@ -2925,19 +2927,14 @@ pub struct DependencyStatus {
 
 #[tauri::command(rename_all = "snake_case")]
 async fn install_code_server() -> Result<String, String> {
-    log::info!("Attempting to install code-server via brew");
-    let output = std::process::Command::new("sh")
-        .arg("-lc")
-        .arg("brew install code-server")
-        .output()
-        .map_err(|e| format!("Failed to execute brew install: {}", e))?;
-
-    if output.status.success() {
-        Ok("code-server installed successfully".to_string())
-    } else {
-        let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
-        Err(format!("Install failed: {}", err_msg))
+    if std::path::Path::new(CODE_SERVER_PATH).is_file() {
+        return Ok(format!("code-server is available at {}", CODE_SERVER_PATH));
     }
+
+    Err(format!(
+        "code-server not found at {}. Please install it manually.",
+        CODE_SERVER_PATH
+    ))
 }
 
 fn get_extensions_dir() -> std::path::PathBuf {
@@ -3027,7 +3024,7 @@ fn delete_ide_plugin(id: String) -> Result<(), String> {
 async fn install_code_server_extension(extension_id: String) -> Result<String, String> {
     log::info!("Attempting to install code-server extension: {}", extension_id);
     let ext_dir = get_extensions_dir();
-    let output = std::process::Command::new("code-server")
+    let output = std::process::Command::new(CODE_SERVER_PATH)
         .arg("--extensions-dir")
         .arg(&*ext_dir.to_string_lossy())
         .arg("--install-extension")
@@ -3055,7 +3052,7 @@ async fn install_code_server_extension(extension_id: String) -> Result<String, S
 #[tauri::command(rename_all = "snake_case")]
 async fn get_installed_code_server_extensions() -> Result<Vec<String>, String> {
     let ext_dir = get_extensions_dir();
-    let output = std::process::Command::new("code-server")
+    let output = std::process::Command::new(CODE_SERVER_PATH)
         .arg("--extensions-dir")
         .arg(&*ext_dir.to_string_lossy())
         .arg("--list-extensions")
@@ -3087,7 +3084,7 @@ async fn get_installed_code_server_extensions() -> Result<Vec<String>, String> {
 fn check_dependencies() -> Result<DependencyStatus, String> {
     Ok(DependencyStatus {
         claude: find_executable("claude").is_some(),
-        code_server: find_executable("code-server").is_some(),
+        code_server: std::path::Path::new(CODE_SERVER_PATH).is_file(),
     })
 }
 
@@ -3111,7 +3108,7 @@ fn start_code_server(app_handle: tauri::AppHandle) {
             .arg(&format!("lsof -ti:{} | xargs kill -9", code_server_port))
             .status();
 
-        let cmd_path = "/Users/sisu/sparky/code-server/bin/code-server".to_string();
+        let cmd_path = CODE_SERVER_PATH.to_string();
 
         use tauri::Manager;
         let ext_dir = get_extensions_dir();
