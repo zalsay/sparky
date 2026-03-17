@@ -3,9 +3,10 @@
 echo "🚀 Starting Claude Monitor Development..."
 
 # 检查是否安装了 code-server
-if ! command -v code-server &>/dev/null; then
-    echo "⚠️  code-server not found. Installing..."
-    brew install code-server
+CODE_SERVER_PATH="/Users/sisu/sparky/code-server/bin/code-server"
+if [ ! -x "$CODE_SERVER_PATH" ]; then
+    echo "⚠️  code-server not found at $CODE_SERVER_PATH"
+    exit 1
 fi
 
 # 检查是否安装了依赖

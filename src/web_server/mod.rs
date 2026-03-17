@@ -3,7 +3,6 @@ pub mod auth;
 pub mod config;
 pub mod events;
 pub mod tunnel;
-pub mod web_ide;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -22,7 +21,6 @@ use crate::web_server::{
     config::WebServerConfig,
     events::EventHub,
     tunnel::{AgentRegistry, TunnelState},
-    web_ide::{WebIdeEventHub, WebIdeState},
 };
 
 #[derive(Clone)]
@@ -32,8 +30,6 @@ pub struct AppState {
     pub registry: AgentRegistry,
     pub events: EventHub,
     pub tunnel: TunnelState,
-    pub web_ide_state: WebIdeState,
-    pub web_ide_events: WebIdeEventHub,
 }
 
 pub async fn start_server(config: WebServerConfig) -> Result<(), anyhow::Error> {
@@ -41,10 +37,8 @@ pub async fn start_server(config: WebServerConfig) -> Result<(), anyhow::Error> 
     let config = Arc::new(config);
     let registry = AgentRegistry::default();
     let events = EventHub::default();
-    let web_ide_state = WebIdeState::default();
-    let web_ide_events = WebIdeEventHub::default();
     let auth_state = Arc::new(AuthState::new(config.clone()));
-    let tunnel_state = TunnelState::new(config.clone(), registry.clone(), events.clone(), web_ide_state.clone(), web_ide_events.clone());
+    let tunnel_state = TunnelState::new(config.clone(), registry.clone(), events.clone());
 
     let state = AppState {
         config: config.clone(),
@@ -52,8 +46,6 @@ pub async fn start_server(config: WebServerConfig) -> Result<(), anyhow::Error> 
         registry: registry.clone(),
         events: events.clone(),
         tunnel: tunnel_state,
-        web_ide_state,
-        web_ide_events,
     };
 
     let api = api_routes().route_layer(middleware::from_fn_with_state(auth_state, auth_guard));

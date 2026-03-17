@@ -3111,7 +3111,7 @@ fn start_code_server(app_handle: tauri::AppHandle) {
             .arg(&format!("lsof -ti:{} | xargs kill -9", code_server_port))
             .status();
 
-        let cmd_path = find_executable("code-server").unwrap_or_else(|| "code-server".to_string());
+        let cmd_path = "/Users/sisu/sparky/code-server/bin/code-server".to_string();
 
         use tauri::Manager;
         let ext_dir = get_extensions_dir();

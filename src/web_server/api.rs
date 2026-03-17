@@ -16,7 +16,6 @@ use crate::web_server::{
     auth::AuthSession,
     events::ServerEvent,
     tunnel::protocol::TunnelMessage,
-    web_ide::WebIdeEvent,
     AppState,
 };
 
@@ -33,8 +32,6 @@ pub fn api_routes() -> axum::Router<AppState> {
         .route("/api/sessions/:id/delete", axum::routing::post(delete_session))
         .route("/api/sessions/:id/resume", axum::routing::post(resume_session))
         .route("/api/events", axum::routing::get(event_stream))
-        .route("/api/web-ide/summary", axum::routing::get(web_ide_summary))
-        .route("/api/web-ide/events", axum::routing::get(web_ide_events))
 }
 
 async fn list_projects(
@@ -193,92 +190,6 @@ async fn event_stream(
     Ok(Sse::new(stream))
 }
 
-async fn web_ide_summary(
-    State(state): State<AppState>,
-    auth: AuthSession,
-) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
-    info!(
-        "web_ide_summary agent_id={} allowed_projects={}",
-        auth.0.agent_id,
-        auth.0.allowed_projects.len()
-    );
-    let mut projects = state
-        .web_ide_state
-        .summary_for_agent(&auth.0.agent_id, &auth.0.allowed_projects)
-        .await;
-    if projects.is_empty() {
-        let online = state.registry.get(&auth.0.agent_id).await.is_some();
-        if online {
-            info!("web_ide_summary online agent placeholder agent_id={}", auth.0.agent_id);
-            projects.push(crate::web_server::web_ide::WebIdeProjectStatus {
-                project_id: String::new(),
-                project_path: String::new(),
-                project_name: String::new(),
-                active_pty_count: 0,
-                agent_id: auth.0.agent_id.clone(),
-            });
-        }
-    }
-    info!(
-        "web_ide_summary result agent_id={} projects={}",
-        auth.0.agent_id,
-        projects.len()
-    );
-    Ok(Json(json!({ "projects": projects })))
-}
-
-async fn web_ide_events(
-    State(state): State<AppState>,
-    auth: AuthSession,
-) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, axum::Error>>>, (axum::http::StatusCode, String)> {
-    info!(
-        "web_ide_events subscribe agent_id={} allowed_projects={}",
-        auth.0.agent_id,
-        auth.0.allowed_projects.len()
-    );
-    let receiver = state.web_ide_events.subscribe();
-    let allowed_projects = auth.0.allowed_projects.clone();
-    let agent_id = auth.0.agent_id.clone();
-    let stream = BroadcastStream::new(receiver).filter_map(move |message| {
-        let allowed_projects = allowed_projects.clone();
-        let agent_id = agent_id.clone();
-        async move {
-            match message {
-                Ok(event) => {
-                    if event.agent_id != agent_id {
-                        info!(
-                            "web_ide_events skip agent_mismatch expected={} got={}",
-                            agent_id,
-                            event.agent_id
-                        );
-                        return None;
-                    }
-                    if let Some(project) = event.project.as_ref() {
-                        if !allowed_projects.is_empty()
-                            && !allowed_projects.iter().any(|p| p == &project.project_id)
-                        {
-                            info!(
-                                "web_ide_events skip project_not_allowed agent_id={} project_id={}",
-                                agent_id,
-                                project.project_id
-                            );
-                            return None;
-                        }
-                    }
-                    info!(
-                        "web_ide_events emit agent_id={} event_type={}",
-                        event.agent_id,
-                        event.event_type
-                    );
-                    Some(Ok(web_ide_event_to_sse(event)))
-                }
-                Err(_) => None,
-            }
-        }
-    });
-
-    Ok(Sse::new(stream))
-}
 
 async fn forward_request(
     state: AppState,
@@ -374,7 +285,3 @@ fn event_to_sse(event: ServerEvent) -> Event {
     Event::default().event("project_event").data(data)
 }
 
-fn web_ide_event_to_sse(event: WebIdeEvent) -> Event {
-    let data = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string());
-    Event::default().event("web_ide_event").data(data)
-}
