@@ -1,87 +1,42 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useMemo } from 'react';
+
+import { useAuth } from '../../features/auth';
 
 export const WEB_API_KEY_STORAGE_KEY = 'sparky-web-access-token';
-const LEGACY_WEB_API_KEY_STORAGE_KEY = 'sparky-web-api-key';
 
 interface UseWebApiKeyOptions {
   onSaved?: () => void;
 }
 
-function readStoredToken() {
-  try {
-    return localStorage.getItem(WEB_API_KEY_STORAGE_KEY) || localStorage.getItem(LEGACY_WEB_API_KEY_STORAGE_KEY) || '';
-  } catch {
-    return '';
-  }
-}
-
 export function useWebApiKey(options: UseWebApiKeyOptions = {}) {
   const { onSaved } = options;
-  const [webApiKey, setWebApiKey] = useState<string>(() => readStoredToken());
-  const [webApiKeyModalOpen, setWebApiKeyModalOpen] = useState(false);
-  const [webApiKeyInput, setWebApiKeyInput] = useState('');
-  const [webApiKeyMissing, setWebApiKeyMissing] = useState(false);
-  const webApiKeyRef = useRef<string>(webApiKey);
+  const { accessToken, logout } = useAuth();
 
-  useEffect(() => {
-    webApiKeyRef.current = webApiKey;
-  }, [webApiKey]);
-
-  const ensureWebApiKey = useCallback(() => {
-    if (webApiKeyRef.current) return true;
-    setWebApiKeyMissing(true);
-    setWebApiKeyInput('');
-    setWebApiKeyModalOpen(true);
-    return false;
-  }, []);
-
-  const getWebApiKey = useCallback(() => {
-    if (!ensureWebApiKey()) return null;
-    return webApiKeyRef.current;
-  }, [ensureWebApiKey]);
+  const getWebApiKey = useCallback(() => accessToken || null, [accessToken]);
 
   const handleWebApiError = useCallback((status: number) => {
     if (status === 401 || status === 403) {
-      setWebApiKeyMissing(true);
-      setWebApiKeyInput(webApiKeyRef.current);
-      setWebApiKeyModalOpen(true);
+      void logout();
     }
-  }, []);
+  }, [logout]);
 
   const handleSaveWebApiKey = useCallback(() => {
-    const nextKey = webApiKeyInput.trim();
-    setWebApiKey(nextKey);
-    webApiKeyRef.current = nextKey;
-    try {
-      if (nextKey) {
-        localStorage.setItem(WEB_API_KEY_STORAGE_KEY, nextKey);
-        localStorage.removeItem(LEGACY_WEB_API_KEY_STORAGE_KEY);
-      } else {
-        localStorage.removeItem(WEB_API_KEY_STORAGE_KEY);
-        localStorage.removeItem(LEGACY_WEB_API_KEY_STORAGE_KEY);
-      }
-    } catch {
-      // ignore storage errors
-    }
-    setWebApiKeyModalOpen(false);
-    setWebApiKeyInput('');
-    setWebApiKeyMissing(false);
     onSaved?.();
-  }, [onSaved, webApiKeyInput]);
+  }, [onSaved]);
 
-  return {
-    webApiKey,
-    webApiKeyRef,
-    webApiKeyModalOpen,
-    webApiKeyInput,
-    webApiKeyMissing,
-    setWebApiKey,
-    setWebApiKeyModalOpen,
-    setWebApiKeyInput,
-    setWebApiKeyMissing,
-    ensureWebApiKey,
+  return useMemo(() => ({
+    webApiKey: accessToken,
+    webApiKeyRef: { current: accessToken },
+    webApiKeyModalOpen: false,
+    webApiKeyInput: '',
+    webApiKeyMissing: false,
+    setWebApiKey: () => undefined,
+    setWebApiKeyModalOpen: () => undefined,
+    setWebApiKeyInput: () => undefined,
+    setWebApiKeyMissing: () => undefined,
+    ensureWebApiKey: () => Boolean(accessToken),
     getWebApiKey,
     handleWebApiError,
     handleSaveWebApiKey,
-  };
+  }), [accessToken, getWebApiKey, handleSaveWebApiKey, handleWebApiError]);
 }

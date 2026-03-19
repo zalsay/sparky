@@ -58,8 +58,8 @@ export default function ProjectListPage({
                 key: 'hooks',
                 width: 140,
                 render: (_: unknown, record: Project) => (
-                  <Tag className={`hooks - tag ${record.hooks_installed ? 'installed' : ''}`} style={{ margin: 0 }}>
-                    {record.hooks_installed ? '已安装' : '未安装'}
+                  <Tag className={`hooks - tag ${record.hooks_installed || record.hooks_enabled ? 'installed' : ''}`} style={{ margin: 0 }}>
+                    {record.hooks_installed || record.hooks_enabled ? '已安装' : '未安装'}
                   </Tag>
                 ),
               },

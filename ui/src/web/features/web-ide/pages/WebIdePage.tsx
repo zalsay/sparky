@@ -5,10 +5,11 @@ import type { WebIdeProjectStatus } from '../../../types';
 
 interface WebIdePageProps {
   projects: WebIdeProjectStatus[];
+  activeInstances?: number;
   onRefresh: () => void | Promise<void>;
 }
 
-export default function WebIdePage({ projects, onRefresh }: WebIdePageProps) {
+export default function WebIdePage({ projects, activeInstances, onRefresh }: WebIdePageProps) {
   return (
     <div className="project-page">
       <Card className="projects-card" variant="borderless">
@@ -19,7 +20,7 @@ export default function WebIdePage({ projects, onRefresh }: WebIdePageProps) {
           </div>
           <Button size="small" onClick={() => void onRefresh()} icon={<ReloadOutlined />}>刷新</Button>
         </div>
-        <p className="card-description">显示当前在线的 WebIDE 项目与活跃 PTY 数</p>
+        <p className="card-description">显示当前在线的 WebIDE 项目与活跃 PTY 数{typeof activeInstances === 'number' ? `（当前 ${activeInstances} 个实例）` : ''}</p>
         <Divider />
         {projects.length === 0 ? (
           <Empty description="暂无在线 WebIDE 项目" />

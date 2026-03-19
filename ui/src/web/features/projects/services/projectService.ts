@@ -1,52 +1,77 @@
 import { WebApiError, webApi } from '../../../../services/webApi';
-import type { HookRecordsResponse, Project, ProjectDetailResponse, SessionInfo, WebIdeSummaryResponse } from '../../../types';
+import type {
+  HookRecordsResponse,
+  Project,
+  ProjectDetailResponse,
+  SessionInfo,
+  TerminalHistoryEntry,
+  WebIdeSummaryResponse,
+} from '../../../types';
 
-export async function fetchProjects(apiKey: string) {
-  return webApi.listProjects<Project[]>(apiKey);
+function normalizeProject(project: Project): Project {
+  return {
+    ...project,
+    hooks_installed: project.hooks_installed ?? project.hooks_enabled ?? false,
+    hooks_enabled: project.hooks_enabled ?? project.hooks_installed ?? false,
+  };
 }
 
-export async function createProject(apiKey: string, payload: { name: string; path: string }) {
-  return webApi.createProject<Project>(apiKey, payload);
+export async function fetchProjects() {
+  const result = await webApi.listProjects<Project[]>();
+  return (result || []).map(normalizeProject);
 }
 
-export async function deleteProject(apiKey: string, id: number) {
-  return webApi.deleteProject(apiKey, id);
+export async function createProject(payload: { name: string; path: string }) {
+  const project = await webApi.createProject<Project>(payload);
+  return normalizeProject(project);
 }
 
-export async function fetchProjectDetailWeb(apiKey: string, projectId: number) {
-  return webApi.getProjectDetail<ProjectDetailResponse>(apiKey, projectId);
+export async function deleteProject(id: number) {
+  return webApi.deleteProject(id);
 }
 
-export async function fetchSessionsWeb(apiKey: string, projectId: number) {
-  return webApi.listSessions<SessionInfo[]>(apiKey, projectId);
+export async function fetchProjectDetailWeb(projectId: number) {
+  const detail = await webApi.getProjectDetail<ProjectDetailResponse>(projectId);
+  return {
+    ...detail,
+    project: detail?.project ? normalizeProject(detail.project) : detail?.project,
+  };
 }
 
-export async function fetchTerminalHistoryWeb(apiKey: string, projectId: number) {
-  return webApi.getTerminalHistory<string[]>(apiKey, projectId);
+export async function fetchSessionsWeb(projectId: number) {
+  return webApi.listSessions<SessionInfo[]>(projectId);
 }
 
-export async function executeTerminalWeb(apiKey: string, projectId: number, command: string) {
-  return webApi.execTerminal(apiKey, { project_id: projectId, command });
+export async function fetchTerminalHistoryWeb(projectId: number) {
+  return webApi.getTerminalHistory<TerminalHistoryEntry[]>(projectId);
 }
 
-export async function renameSessionWeb(apiKey: string, projectId: number, sessionId: string, name: string) {
-  return webApi.renameSession(apiKey, sessionId, { project_id: String(projectId), name });
+export async function executeTerminalWeb(payload: { projectId?: number; sessionId?: string; command: string }) {
+  return webApi.execTerminal<{ stdout?: string; stderr?: string; exit_code?: number }>({
+    ...(payload.projectId !== undefined ? { project_id: payload.projectId } : {}),
+    ...(payload.sessionId ? { session_id: payload.sessionId } : {}),
+    command: payload.command,
+  });
 }
 
-export async function deleteSessionWeb(apiKey: string, projectId: number, sessionId: string) {
-  return webApi.deleteSession(apiKey, sessionId, { project_id: String(projectId) });
+export async function renameSessionWeb(projectId: number, sessionId: string, name: string) {
+  return webApi.renameSession(sessionId, { project_id: projectId, name });
 }
 
-export async function resumeSessionWeb(apiKey: string, projectId: number, sessionId: string) {
-  return webApi.resumeSession(apiKey, sessionId, { project_id: String(projectId) });
+export async function deleteSessionWeb(projectId: number, sessionId: string) {
+  return webApi.deleteSession(sessionId, { project_id: projectId });
 }
 
-export async function fetchHookRecords(apiKey: string, projectId: number, page: number, pageSize: number) {
-  return webApi.listHookRecords<HookRecordsResponse>(apiKey, projectId, page, pageSize);
+export async function resumeSessionWeb(projectId: number, sessionId: string) {
+  return webApi.resumeSession<{ session_id?: string; status?: string }>(sessionId, { project_id: projectId });
 }
 
-export async function fetchWebIdeSummary(apiKey: string) {
-  return webApi.getWebIdeSummary<WebIdeSummaryResponse>(apiKey);
+export async function fetchHookRecords(projectId: number, page: number, pageSize: number) {
+  return webApi.listHookRecords<HookRecordsResponse>(projectId, page, pageSize);
+}
+
+export async function fetchWebIdeSummary() {
+  return webApi.getWebIdeSummary<WebIdeSummaryResponse>();
 }
 
 export function isUnauthorizedWebError(error: unknown) {

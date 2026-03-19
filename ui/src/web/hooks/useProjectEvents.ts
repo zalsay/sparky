@@ -10,35 +10,64 @@ import {
   renameSessionWeb,
   resumeSessionWeb,
 } from '../features/projects/services/projectService';
-import type { Project, SessionInfo } from '../types';
+import type { Project, SessionInfo, TerminalHistoryEntry } from '../types';
 
 const FULL_AUTH_STORAGE_KEY = 'sparky-full-auth';
 
 interface UseProjectEventsOptions {
   active: boolean;
   project: Project | null;
-  getWebApiKey: () => string | null;
   handleWebRequestError: (error: unknown) => void;
 }
 
-function normalizeSession(session: SessionInfo): SessionInfo {
+function toTimestamp(value: string | number | null | undefined): number | null {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  if (typeof value === 'number') {
+    return value;
+  }
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function normalizeSession(session: SessionInfo, project: Project | null): SessionInfo {
   return {
     ...session,
     id: session.id,
     session_id: session.session_id || String(session.id || ''),
-    project_path: session.project_path || '',
-    started_at: session.started_at ?? null,
-    ended_at: session.ended_at ?? null,
+    project_id: session.project_id,
+    project_path: session.project_path || project?.path || '',
+    started_at: toTimestamp(session.started_at),
+    ended_at: toTimestamp(session.ended_at),
     reason: session.reason ?? null,
     name: session.name ?? null,
-    project_name: session.project_name ?? null,
+    project_name: session.project_name ?? project?.name ?? null,
+    status: session.status ?? null,
   };
+}
+
+function mapTerminalHistory(entries: TerminalHistoryEntry[] | string[] | undefined): string[] {
+  if (!entries || entries.length === 0) {
+    return [];
+  }
+
+  if (typeof entries[0] === 'string') {
+    return entries as string[];
+  }
+
+  return (entries as TerminalHistoryEntry[]).map((entry) => {
+    const content = entry.content || '';
+    if (!entry.direction) {
+      return content;
+    }
+    return entry.direction === 'in' ? `$ ${content}` : content;
+  });
 }
 
 export function useProjectEvents({
   active,
   project,
-  getWebApiKey,
   handleWebRequestError,
 }: UseProjectEventsOptions) {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -79,13 +108,11 @@ export function useProjectEvents({
       setSessions([]);
       return;
     }
-    const apiKey = getWebApiKey();
-    if (!apiKey) return;
 
     try {
-      const result = (await fetchSessionsWeb(apiKey, project.id)) || [];
+      const result = (await fetchSessionsWeb(project.id)) || [];
       const uniqueSessions = Array.from(new Map(result.map((session) => {
-        const normalized = normalizeSession(session);
+        const normalized = normalizeSession(session, project);
         return [normalized.session_id, normalized] as const;
       })).values());
       setSessions(uniqueSessions);
@@ -93,18 +120,16 @@ export function useProjectEvents({
       handleWebRequestError(error);
       setSessions([]);
     }
-  }, [getWebApiKey, handleWebRequestError, project]);
+  }, [handleWebRequestError, project]);
 
   const refreshTerminalHistory = useCallback(async () => {
     if (!project) return;
-    const apiKey = getWebApiKey();
-    if (!apiKey) return;
 
     try {
-      const data = await fetchTerminalHistoryWeb(apiKey, project.id);
+      const data = await fetchTerminalHistoryWeb(project.id);
       setTerminalHistory((prev) => ({
         ...prev,
-        [project.path]: data || [],
+        [project.path]: mapTerminalHistory(data),
       }));
     } catch (error) {
       handleWebRequestError(error);
@@ -113,37 +138,38 @@ export function useProjectEvents({
         [project.path]: [],
       }));
     }
-  }, [getWebApiKey, handleWebRequestError, project]);
+  }, [handleWebRequestError, project]);
 
   const refreshProjectDetail = useCallback(async () => {
     if (!project) return;
-    const apiKey = getWebApiKey();
-    if (!apiKey) return;
 
     try {
-      const data = await fetchProjectDetailWeb(apiKey, project.id);
-      setSessions((data?.sessions || []).map(normalizeSession));
+      const data = await fetchProjectDetailWeb(project.id);
+      setSessions(((data?.sessions || []) as SessionInfo[]).map((session) => normalizeSession(session, project)));
       setTerminalHistory((prev) => ({
         ...prev,
-        [project.path]: data?.terminal_history || [],
+        [project.path]: mapTerminalHistory(data?.terminal_history),
       }));
     } catch (error) {
       handleWebRequestError(error);
       void Promise.all([refreshSessions(), refreshTerminalHistory()]);
     }
-  }, [getWebApiKey, handleWebRequestError, project, refreshSessions, refreshTerminalHistory]);
+  }, [handleWebRequestError, project, refreshSessions, refreshTerminalHistory]);
 
   const sendTerminalCommand = useCallback(async (command: string) => {
     if (!project) return;
-    const apiKey = getWebApiKey();
-    if (!apiKey) return;
 
     try {
-      await executeTerminalWeb(apiKey, project.id, command);
+      const activeSession = sessions.find((item) => !item.ended_at && item.session_id);
+      await executeTerminalWeb({
+        projectId: activeSession ? undefined : project.id,
+        sessionId: activeSession?.session_id,
+        command,
+      });
     } catch (error) {
       handleWebRequestError(error);
     }
-  }, [getWebApiKey, handleWebRequestError, project]);
+  }, [handleWebRequestError, project, sessions]);
 
   const toggleFullAuth = useCallback(() => {
     if (!project) return;
@@ -170,44 +196,39 @@ export function useProjectEvents({
 
   const resumeClaudeSession = useCallback(async (sessionId: string) => {
     if (!project) return;
-    const apiKey = getWebApiKey();
-    if (!apiKey) return;
 
     try {
-      await resumeSessionWeb(apiKey, project.id, sessionId);
+      await resumeSessionWeb(project.id, sessionId);
       closeSessionModal();
+      await refreshSessions();
     } catch (error) {
       handleWebRequestError(error);
     }
-  }, [closeSessionModal, getWebApiKey, handleWebRequestError, project]);
+  }, [closeSessionModal, handleWebRequestError, project, refreshSessions]);
 
   const updateSessionName = useCallback(async (sessionId: string, name: string) => {
     if (!project) return;
-    const apiKey = getWebApiKey();
-    if (!apiKey) return;
 
     try {
-      await renameSessionWeb(apiKey, project.id, sessionId, name);
+      await renameSessionWeb(project.id, sessionId, name);
       setEditingSessionId(null);
       setEditingSessionName('');
       await refreshSessions();
     } catch (error) {
       handleWebRequestError(error);
     }
-  }, [getWebApiKey, handleWebRequestError, project, refreshSessions]);
+  }, [handleWebRequestError, project, refreshSessions]);
 
   const removeSession = useCallback(async (sessionId: string) => {
     if (!project) return;
-    const apiKey = getWebApiKey();
-    if (!apiKey) return;
 
     try {
-      await deleteSessionWeb(apiKey, project.id, sessionId);
+      await deleteSessionWeb(project.id, sessionId);
       await refreshSessions();
     } catch (error) {
       handleWebRequestError(error);
     }
-  }, [getWebApiKey, handleWebRequestError, project, refreshSessions]);
+  }, [handleWebRequestError, project, refreshSessions]);
 
   useEffect(() => {
     if (!active || !project) {
@@ -223,15 +244,6 @@ export function useProjectEvents({
       await sendTerminalCommand(data);
     };
 
-    const apiKey = getWebApiKey();
-    if (!apiKey) {
-      return () => {
-        if ((window as any).__terminalExecImpl) {
-          delete (window as any).__terminalExecImpl;
-        }
-      };
-    }
-
     webSseAbortRef.current?.abort();
     if (webSseReconnectTimerRef.current) {
       window.clearTimeout(webSseReconnectTimerRef.current);
@@ -243,7 +255,7 @@ export function useProjectEvents({
 
     const connect = async () => {
       try {
-        await streamSse(`/api/events?project_id=${project.id}`, apiKey, controller.signal, ({ event, data }) => {
+        await streamSse(`/api/events?project_id=${project.id}`, controller.signal, ({ event, data }) => {
           if (event !== 'project_event' || !data) return;
 
           try {
@@ -258,6 +270,8 @@ export function useProjectEvents({
             } else if (parsed.event_type === 'terminal_exit') {
               const nextTerminalId = parsed.payload?.terminal_id || terminalId;
               setTerminalStatus((prev) => ({ ...prev, [nextTerminalId]: 'offline' }));
+            } else if (parsed.event_type === 'session_updated' || parsed.event_type === 'session_deleted') {
+              void refreshSessions();
             }
           } catch (error) {
             console.warn('Failed to parse project SSE event', error);
@@ -285,7 +299,7 @@ export function useProjectEvents({
         webSseReconnectTimerRef.current = null;
       }
     };
-  }, [active, getWebApiKey, handleWebRequestError, project, refreshProjectDetail, sendTerminalCommand, terminalId]);
+  }, [active, handleWebRequestError, project, refreshProjectDetail, refreshSessions, sendTerminalCommand, terminalId]);
 
   return {
     terminalId,

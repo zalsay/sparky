@@ -1,58 +1,87 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 
 interface UseProjectDetailRouteOptions {
+  isAuthenticated: boolean;
   onEnterProjectById: (projectId: number) => void | Promise<void>;
   onLeaveProjectDetail: () => void;
+  onRouteChange?: (pathname: string) => void;
 }
 
 export function useProjectDetailRoute({
+  isAuthenticated,
   onEnterProjectById,
   onLeaveProjectDetail,
+  onRouteChange,
 }: UseProjectDetailRouteOptions) {
-  const hasRestoredSelectionRef = useRef(false);
+  const resolveRoute = useCallback(async (pathname: string) => {
+    onRouteChange?.(pathname);
 
-  useEffect(() => {
-    if (hasRestoredSelectionRef.current) return;
-    const match = window.location.pathname.match(/^\/project\/(\d+)\/detail$/);
+    if (!isAuthenticated) {
+      onLeaveProjectDetail();
+      return;
+    }
+
+    const match = pathname.match(/^\/project\/(\d+)\/detail$/);
     if (match) {
       const projectId = Number(match[1]);
       if (Number.isFinite(projectId)) {
-        void Promise.resolve(onEnterProjectById(projectId)).finally(() => {
-          hasRestoredSelectionRef.current = true;
-        });
+        await onEnterProjectById(projectId);
         return;
       }
     }
-    hasRestoredSelectionRef.current = true;
-  }, [onEnterProjectById]);
+
+    onLeaveProjectDetail();
+  }, [isAuthenticated, onEnterProjectById, onLeaveProjectDetail, onRouteChange]);
+
+  useEffect(() => {
+    void resolveRoute(window.location.pathname);
+  }, [resolveRoute]);
 
   useEffect(() => {
     const onPopState = () => {
-      const match = window.location.pathname.match(/^\/project\/(\d+)\/detail$/);
-      if (match) {
-        const projectId = Number(match[1]);
-        if (Number.isFinite(projectId)) {
-          void onEnterProjectById(projectId);
-          return;
-        }
-      }
-      onLeaveProjectDetail();
+      void resolveRoute(window.location.pathname);
     };
 
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, [onEnterProjectById, onLeaveProjectDetail]);
+  }, [resolveRoute]);
+
+  const currentAuthMode = useMemo<'login' | 'register'>(() => {
+    return window.location.pathname === '/register' ? 'register' : 'login';
+  }, []);
+
+  const navigate = useCallback((pathname: string, replace = false) => {
+    if (window.location.pathname === pathname) {
+      onRouteChange?.(pathname);
+      return;
+    }
+
+    const method = replace ? 'replaceState' : 'pushState';
+    window.history[method]({}, '', pathname);
+    onRouteChange?.(pathname);
+  }, [onRouteChange]);
 
   const openProjectDetailRoute = useCallback((projectId: number) => {
-    window.history.pushState({}, '', `/project/${projectId}/detail`);
-  }, []);
+    navigate(`/project/${projectId}/detail`);
+  }, [navigate]);
 
   const goProjectListRoute = useCallback(() => {
-    window.history.pushState({}, '', '/');
-  }, []);
+    navigate('/');
+  }, [navigate]);
+
+  const goLoginRoute = useCallback((replace = false) => {
+    navigate('/login', replace);
+  }, [navigate]);
+
+  const goRegisterRoute = useCallback((replace = false) => {
+    navigate('/register', replace);
+  }, [navigate]);
 
   return {
+    currentAuthMode,
     openProjectDetailRoute,
     goProjectListRoute,
+    goLoginRoute,
+    goRegisterRoute,
   };
 }

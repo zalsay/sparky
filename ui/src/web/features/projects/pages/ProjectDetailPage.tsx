@@ -69,10 +69,21 @@ interface ProjectDetailPageProps {
   onIdeTabLoadErrorChange: (tabId: string, hasError: boolean) => void;
 }
 
-function formatSessionTime(value: number | null) {
-  if (!value) {
+function formatSessionTime(value: string | number | null | undefined) {
+  if (value === null || value === undefined || value === '') {
     return '—';
   }
+
+  if (typeof value === 'string') {
+    const numericValue = Number(value);
+    if (Number.isFinite(numericValue) && value.trim() !== '') {
+      value = numericValue;
+    } else {
+      const parsedTime = Date.parse(value);
+      return Number.isNaN(parsedTime) ? '—' : new Date(parsedTime).toLocaleString();
+    }
+  }
+
   const time = value > 1_000_000_000_000 ? value : value * 1000;
   return new Date(time).toLocaleString();
 }
@@ -371,7 +382,7 @@ export default function ProjectDetailPage({
                     </div>
                     <div>
                       <strong>Hooks：</strong>{' '}
-                      <Tag color={project.hooks_installed ? 'black' : 'default'}>{project.hooks_installed ? '已安装' : '未安装'}</Tag>
+                      <Tag color={project.hooks_installed || project.hooks_enabled ? 'black' : 'default'}>{project.hooks_installed || project.hooks_enabled ? '已安装' : '未安装'}</Tag>
                     </div>
                   </div>
                 </Card>

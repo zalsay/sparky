@@ -71,11 +71,22 @@ export interface AIProvider {
   endpoints: AIProviderEndpoint[];
 }
 
+export interface ProjectMember {
+  username: string;
+  role: string;
+  user_id?: string;
+  joined_at?: string | null;
+}
+
 export interface Project {
   id: number;
   name: string;
   path: string;
-  hooks_installed: boolean;
+  hooks_enabled?: boolean;
+  hooks_installed?: boolean;
+  created_at?: string | number | null;
+  description?: string | null;
+  members?: ProjectMember[];
   agent_teams_enabled?: boolean;
   default_provider_id?: string;
 }
@@ -109,16 +120,26 @@ export interface HookRecordsResponse {
 export interface SessionInfo {
   id: number | string;
   session_id: string;
-  project_path: string;
-  started_at: number | null;
-  ended_at: number | null;
+  project_id?: number;
+  project_path?: string;
+  started_at: string | number | null;
+  ended_at: string | number | null;
   reason: string | null;
   name: string | null;
   project_name: string | null;
+  status?: string | null;
+}
+
+export interface TerminalHistoryEntry {
+  id?: string;
+  session_id?: string;
+  direction?: string;
+  content: string;
+  created_at?: string | number | null;
 }
 
 export interface ProjectDetailResponse {
   project: Project;
-  sessions: SessionInfo[];
-  terminal_history: string[];
+  sessions?: SessionInfo[];
+  terminal_history?: TerminalHistoryEntry[];
 }

@@ -6,35 +6,32 @@ import type { WebIdeEvent, WebIdeProjectStatus } from '../types';
 
 interface UseWebIdeEventsOptions {
   active: boolean;
-  getWebApiKey: () => string | null;
   handleWebRequestError: (error: unknown) => void;
 }
 
 export function useWebIdeEvents({
   active,
-  getWebApiKey,
   handleWebRequestError,
 }: UseWebIdeEventsOptions) {
   const [webIdeProjects, setWebIdeProjects] = useState<WebIdeProjectStatus[]>([]);
+  const [activeInstances, setActiveInstances] = useState(0);
   const webIdeSseAbortRef = useRef<AbortController | null>(null);
   const webIdeSseReconnectTimerRef = useRef<number | null>(null);
   const webIdeSseBackoffRef = useRef<number>(1000);
 
   const refreshWebIdeSummary = useCallback(async () => {
-    const apiKey = getWebApiKey();
-    if (!apiKey) return;
     try {
-      const data = await fetchWebIdeSummary(apiKey);
+      const data = await fetchWebIdeSummary();
       setWebIdeProjects(data?.projects || []);
+      setActiveInstances(data?.active_instances ?? data?.projects?.length ?? 0);
     } catch (error) {
       handleWebRequestError(error);
       setWebIdeProjects([]);
+      setActiveInstances(0);
     }
-  }, [getWebApiKey, handleWebRequestError]);
+  }, [handleWebRequestError]);
 
   const startWebIdeSse = useCallback(() => {
-    const apiKey = getWebApiKey();
-    if (!apiKey) return;
     webIdeSseAbortRef.current?.abort();
     if (webIdeSseReconnectTimerRef.current) {
       window.clearTimeout(webIdeSseReconnectTimerRef.current);
@@ -45,13 +42,17 @@ export function useWebIdeEvents({
 
     const connect = async () => {
       try {
-        await streamSse('/api/web-ide/events', apiKey, controller.signal, ({ event, data }) => {
+        await streamSse('/api/web-ide/events', controller.signal, ({ event, data }) => {
           if (event !== 'web_ide_event' || !data) return;
 
           try {
             const next = JSON.parse(data) as WebIdeEvent;
             if (next.event_type === 'agent_disconnected') {
-              setWebIdeProjects((prev) => prev.filter((item) => item.agent_id !== next.agent_id));
+              setWebIdeProjects((prev) => {
+                const filtered = prev.filter((item) => item.agent_id !== next.agent_id);
+                setActiveInstances(filtered.length);
+                return filtered;
+              });
               return;
             }
 
@@ -61,7 +62,9 @@ export function useWebIdeEvents({
                 const remaining = prev.filter(
                   (item) => !(item.project_id === project.project_id && item.agent_id === project.agent_id),
                 );
-                return [...remaining, project];
+                const merged = [...remaining, project];
+                setActiveInstances(merged.length);
+                return merged;
               });
             }
           } catch (err) {
@@ -79,7 +82,7 @@ export function useWebIdeEvents({
     };
 
     void connect();
-  }, [getWebApiKey, handleWebRequestError]);
+  }, [handleWebRequestError]);
 
   useEffect(() => {
     if (!active) return;
@@ -96,6 +99,7 @@ export function useWebIdeEvents({
 
   return {
     webIdeProjects,
+    activeInstances,
     refreshWebIdeSummary,
   };
 }

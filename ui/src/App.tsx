@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import type { ReactNode } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, List, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select, Badge } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined, PushpinOutlined, PushpinFilled, LogoutOutlined, UserOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -14,6 +15,8 @@ import claudeIcon from './assets/Claude.svg';
 import claudeDeactiveIcon from './assets/claude-deactive.svg';
 import feishuIcon from './assets/飞书.svg';
 import AppWeb from './web/AppWeb';
+import AuthPage from './features/auth/components/AuthPage';
+import { AuthProvider, useAuth } from './features/auth';
 import './App.css';
 
 interface IDEPlugin {
@@ -154,6 +157,7 @@ const ModelListInput = ({ value = [], onChange }: { value?: string[], onChange?:
 };
 
 function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsDarkMode: (v: boolean) => void }) {
+  const { user, logout } = useAuth();
   const { message: messageApi, modal: modalApi, notification: notificationApi } = AntApp.useApp();
   const [form] = Form.useForm();
   const [providerForm] = Form.useForm();
@@ -1606,6 +1610,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                   />
                 </Tooltip>
               )}
+              <Tag icon={<UserOutlined />} style={{ margin: 0 }}>
+                {user?.display_name || user?.username || '已登录用户'}
+              </Tag>
+              <Button size="small" icon={<LogoutOutlined />} onClick={() => void logout()}>
+                退出登录
+              </Button>
               <Switch
                 className="theme-switch"
                 checked={isDarkMode}
@@ -3856,25 +3866,13 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   );
 }
 
-function App() {
-  const [isDarkMode, setIsDarkMode] = useState(() => {
-    const saved = localStorage.getItem('theme');
-    if (saved === 'dark') return true;
-    if (saved === 'light') return false;
-    return window.matchMedia('(prefers-color-scheme: dark)').matches;
-  });
-
-  useEffect(() => {
-    localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
-    if (isDarkMode) {
-      document.body.classList.add('dark-mode');
-    } else {
-      document.body.classList.remove('dark-mode');
-    }
-  }, [isDarkMode]);
-
-  const tauriAvailable = isTauri();
-
+function AppShell({
+  isDarkMode,
+  children,
+}: {
+  isDarkMode: boolean;
+  children: ReactNode;
+}) {
   return (
     <ConfigProvider
       theme={{
@@ -3893,19 +3891,130 @@ function App() {
             itemColor: isDarkMode ? '#a0a0a0' : '#000000',
             itemSelectedColor: isDarkMode ? '#ffffff' : '#ffffff',
             itemHoverColor: isDarkMode ? '#ffffff' : '#000000',
-          }
-        }
+          },
+        },
       }}
     >
-      <AntApp>
-        {tauriAvailable ? (
-          <AppContent isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} />
-        ) : (
-          <AppWeb isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} />
-        )}
-      </AntApp>
+      <AntApp>{children}</AntApp>
     </ConfigProvider>
   );
 }
 
+function AppGate({
+  isDarkMode,
+  setIsDarkMode,
+}: {
+  isDarkMode: boolean;
+  setIsDarkMode: (value: boolean) => void;
+}) {
+  const { initialized, isAuthenticated } = useAuth();
+  const tauriAvailable = isTauri();
+  const [authMode, setAuthMode] = useState<'login' | 'register'>(() =>
+    window.location.pathname === '/register' ? 'register' : 'login',
+  );
+
+  useEffect(() => {
+    if (!initialized) {
+      return;
+    }
+
+    const pathname = window.location.pathname;
+    if (isAuthenticated) {
+      if (pathname === '/login' || pathname === '/register') {
+        window.history.replaceState({}, '', '/');
+      }
+      return;
+    }
+
+    const nextMode = pathname === '/register' ? 'register' : 'login';
+    setAuthMode(nextMode);
+    if (pathname !== '/login' && pathname !== '/register') {
+      window.history.replaceState({}, '', '/login');
+      setAuthMode('login');
+    }
+  }, [initialized, isAuthenticated]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const pathname = window.location.pathname;
+      if (pathname === '/register') {
+        setAuthMode('register');
+      } else if (pathname === '/login') {
+        setAuthMode('login');
+      }
+    };
+
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  const handleAuthModeChange = useCallback((mode: 'login' | 'register') => {
+    setAuthMode(mode);
+    const target = mode === 'register' ? '/register' : '/login';
+    if (window.location.pathname !== target) {
+      window.history.pushState({}, '', target);
+    }
+  }, []);
+
+  if (!initialized) {
+    return (
+      <div className={`app-container ${isDarkMode ? 'dark-mode' : ''}`}>
+        <main className="app-main" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Typography.Text type="secondary">正在恢复登录状态...</Typography.Text>
+        </main>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <AuthPage
+        mode={authMode}
+        onModeChange={handleAuthModeChange}
+        isDarkMode={isDarkMode}
+        onThemeChange={setIsDarkMode}
+        title={tauriAvailable ? '登录 Sparky 桌面端' : '登录 Sparky Web'}
+        description={
+          tauriAvailable
+            ? '桌面端会共用同一套账号体系。登录成功后继续进入现有本地 Tauri 主界面。'
+            : 'Web 端会使用服务端认证接口恢复会话，并统一通过 Bearer token 访问业务 API。'
+        }
+      />
+    );
+  }
+
+  return tauriAvailable ? (
+    <AppContent isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} />
+  ) : (
+    <AppWeb isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} />
+  );
+}
+
+function App() {
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const saved = localStorage.getItem('theme');
+    if (saved === 'dark') return true;
+    if (saved === 'light') return false;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
+    if (isDarkMode) {
+      document.body.classList.add('dark-mode');
+    } else {
+      document.body.classList.remove('dark-mode');
+    }
+  }, [isDarkMode]);
+
+  return (
+    <AppShell isDarkMode={isDarkMode}>
+      <AuthProvider>
+        <AppGate isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} />
+      </AuthProvider>
+    </AppShell>
+  );
+}
+
 export default App;
+

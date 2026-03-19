@@ -13,19 +13,43 @@ export interface SseMessage {
   data: string;
 }
 
+type AuthMode = 'required' | 'optional' | 'none';
+
+interface RequestOptions {
+  authMode?: AuthMode;
+  retryOnUnauthorized?: boolean;
+  accessToken?: string;
+}
+
+interface WebApiAuthAdapter {
+  getAccessToken: () => string;
+  refreshAccessToken: () => Promise<string | null>;
+  clearSession: () => void;
+}
+
 const API_BASE_URL = import.meta.env.VITE_WEB_API_BASE_URL?.trim() || 'https://i.meetlife.com.cn:3010';
 
-function resolvePath(path: string) {
+let authAdapter: WebApiAuthAdapter | null = null;
+
+export function registerWebApiAuth(adapter: WebApiAuthAdapter | null) {
+  authAdapter = adapter;
+}
+
+export function resolvePath(path: string) {
   if (!API_BASE_URL) {
     return path;
   }
   return `${API_BASE_URL.replace(/\/$/, '')}${path}`;
 }
 
-function buildHeaders(apiKey: string, includeJsonContentType = false, headers?: HeadersInit): HeadersInit {
+function buildHeaders(
+  accessToken?: string,
+  includeJsonContentType = false,
+  headers?: HeadersInit,
+  authMode: AuthMode = 'required',
+): HeadersInit {
   return {
-    Authorization: `Bearer ${apiKey}`,
-    'x-api-key': apiKey,
+    ...(authMode !== 'none' && accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
     ...(includeJsonContentType ? { 'content-type': 'application/json' } : {}),
     ...(headers || {}),
   };
@@ -47,12 +71,44 @@ async function parseError(response: Response): Promise<WebApiError> {
   return new WebApiError(response.status, text || response.statusText || 'Request failed');
 }
 
-async function requestJson<T>(path: string, apiKey: string, init?: RequestInit): Promise<T> {
+async function fetchWithAuth(path: string, init?: RequestInit, options: RequestOptions = {}): Promise<Response> {
+  const {
+    authMode = 'required',
+    retryOnUnauthorized = true,
+    accessToken: explicitAccessToken,
+  } = options;
   const hasBody = init?.body !== undefined && init?.body !== null;
-  const response = await fetch(resolvePath(path), {
+
+  const execute = async (accessToken?: string) => fetch(resolvePath(path), {
     ...init,
-    headers: buildHeaders(apiKey, hasBody, init?.headers),
+    headers: buildHeaders(accessToken, hasBody, init?.headers, authMode),
   });
+
+  const initialAccessToken = explicitAccessToken ?? authAdapter?.getAccessToken() ?? '';
+  if (authMode === 'required' && !initialAccessToken) {
+    throw new WebApiError(401, 'Missing auth token');
+  }
+
+  let response = await execute(initialAccessToken || undefined);
+  if (response.status !== 401 || authMode !== 'required' || !retryOnUnauthorized || explicitAccessToken) {
+    return response;
+  }
+
+  const refreshedAccessToken = await authAdapter?.refreshAccessToken();
+  if (!refreshedAccessToken) {
+    authAdapter?.clearSession();
+    return response;
+  }
+
+  response = await execute(refreshedAccessToken);
+  if (response.status === 401) {
+    authAdapter?.clearSession();
+  }
+  return response;
+}
+
+async function requestJson<T>(path: string, init?: RequestInit, options?: RequestOptions): Promise<T> {
+  const response = await fetchWithAuth(path, init, options);
 
   if (!response.ok) {
     throw await parseError(response);
@@ -62,12 +118,8 @@ async function requestJson<T>(path: string, apiKey: string, init?: RequestInit):
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
-async function requestVoid(path: string, apiKey: string, init?: RequestInit): Promise<void> {
-  const hasBody = init?.body !== undefined && init?.body !== null;
-  const response = await fetch(resolvePath(path), {
-    ...init,
-    headers: buildHeaders(apiKey, hasBody, init?.headers),
-  });
+async function requestVoid(path: string, init?: RequestInit, options?: RequestOptions): Promise<void> {
+  const response = await fetchWithAuth(path, init, options);
 
   if (!response.ok) {
     throw await parseError(response);
@@ -76,14 +128,16 @@ async function requestVoid(path: string, apiKey: string, init?: RequestInit): Pr
 
 export async function streamSse(
   path: string,
-  apiKey: string,
   signal: AbortSignal,
   onMessage: (message: SseMessage) => void,
+  options?: RequestOptions,
 ): Promise<void> {
-  const response = await fetch(resolvePath(path), {
-    headers: buildHeaders(apiKey),
+  const response = await fetchWithAuth(path, {
     signal,
-  });
+    headers: {
+      accept: 'text/event-stream',
+    },
+  }, options);
 
   if (!response.ok) {
     throw await parseError(response);
@@ -132,38 +186,51 @@ export async function streamSse(
 }
 
 export const webApi = {
-  listProjects: <T>(apiKey: string) => requestJson<T>('/api/projects', apiKey),
-  createProject: <T>(apiKey: string, payload: { name: string; path: string }) =>
-    requestJson<T>('/api/projects', apiKey, { method: 'POST', body: JSON.stringify(payload) }),
-  deleteProject: (apiKey: string, id: number) =>
-    requestVoid(`/api/projects/${id}`, apiKey, { method: 'DELETE' }),
-  getProjectDetail: <T>(apiKey: string, projectId: number) =>
-    requestJson<T>(`/api/projects/${projectId}/detail`, apiKey),
-  listSessions: <T>(apiKey: string, projectId: number) =>
-    requestJson<T>(`/api/sessions?project_id=${projectId}`, apiKey),
-  getTerminalHistory: <T>(apiKey: string, projectId: number) =>
-    requestJson<T>(`/api/terminal/history?project_id=${projectId}`, apiKey),
-  execTerminal: (apiKey: string, payload: { project_id: number; command: string }) =>
-    requestVoid('/api/terminal/exec', apiKey, { method: 'POST', body: JSON.stringify(payload) }),
-  getConfig: <T>(apiKey: string) => requestJson<T>('/api/config', apiKey),
-  saveConfig: (apiKey: string, config: unknown) =>
-    requestVoid('/api/config', apiKey, { method: 'POST', body: JSON.stringify(config) }),
-  listProviders: <T>(apiKey: string) => requestJson<T>('/api/providers', apiKey),
-  saveProvider: <T>(apiKey: string, provider: unknown) =>
-    requestJson<T>('/api/providers', apiKey, { method: 'POST', body: JSON.stringify(provider) }),
-  deleteProvider: (apiKey: string, appType: string, id: string) =>
-    requestVoid(`/api/providers/${encodeURIComponent(appType)}/${encodeURIComponent(id)}`, apiKey, { method: 'DELETE' }),
-  listHookRecords: <T>(apiKey: string, projectId: number, page: number, pageSize: number) =>
-    requestJson<T>(`/api/hooks?project_id=${projectId}&page=${page}&page_size=${pageSize}`, apiKey),
-  deleteHookRecord: (apiKey: string, projectId: number, id: number) =>
-    requestVoid(`/api/hooks/${id}?project_id=${projectId}`, apiKey, { method: 'DELETE' }),
-  deleteHookRecords: (apiKey: string, payload: { project_id: string; ids: number[] }) =>
-    requestVoid('/api/hooks/batch-delete', apiKey, { method: 'POST', body: JSON.stringify(payload) }),
-  getWebIdeSummary: <T>(apiKey: string) => requestJson<T>('/api/web-ide/summary', apiKey),
-  renameSession: (apiKey: string, sessionId: string, payload: { project_id: string; name: string }) =>
-    requestVoid(`/api/sessions/${encodeURIComponent(sessionId)}/rename`, apiKey, { method: 'POST', body: JSON.stringify(payload) }),
-  deleteSession: (apiKey: string, sessionId: string, payload: { project_id: string }) =>
-    requestVoid(`/api/sessions/${encodeURIComponent(sessionId)}/delete`, apiKey, { method: 'POST', body: JSON.stringify(payload) }),
-  resumeSession: (apiKey: string, sessionId: string, payload: { project_id: string }) =>
-    requestVoid(`/api/sessions/${encodeURIComponent(sessionId)}/resume`, apiKey, { method: 'POST', body: JSON.stringify(payload) }),
+  register: <T>(payload: unknown) =>
+    requestJson<T>('/api/auth/register', { method: 'POST', body: JSON.stringify(payload) }, { authMode: 'none' }),
+  login: <T>(payload: unknown) =>
+    requestJson<T>('/api/auth/login', { method: 'POST', body: JSON.stringify(payload) }, { authMode: 'none' }),
+  refresh: <T>(payload: unknown) =>
+    requestJson<T>('/api/auth/refresh', { method: 'POST', body: JSON.stringify(payload) }, { authMode: 'none', retryOnUnauthorized: false }),
+  logout: <T>(payload: unknown) =>
+    requestJson<T>('/api/auth/logout', { method: 'POST', body: JSON.stringify(payload) }, { authMode: 'none', retryOnUnauthorized: false }),
+  getMe: <T>() => requestJson<T>('/api/me'),
+  listProjects: <T>() => requestJson<T>('/api/projects'),
+  createProject: <T>(payload: { name: string; path: string }) =>
+    requestJson<T>('/api/projects', { method: 'POST', body: JSON.stringify(payload) }),
+  deleteProject: (id: number) =>
+    requestVoid(`/api/projects/${id}`, { method: 'DELETE' }),
+  getProjectDetail: <T>(projectId: number) =>
+    requestJson<T>(`/api/projects/${projectId}/detail`),
+  listSessions: <T>(projectId: number) =>
+    requestJson<T>(`/api/sessions?project_id=${projectId}`),
+  getTerminalHistory: <T>(projectId: number, page = 1, pageSize = 100) =>
+    requestJson<T>(`/api/terminal/history?project_id=${projectId}&page=${page}&page_size=${pageSize}`),
+  execTerminal: <T>(payload: { project_id?: number | string; session_id?: string; command: string }) =>
+    requestJson<T>('/api/terminal/exec', { method: 'POST', body: JSON.stringify(payload) }),
+  getConfig: <T>() => requestJson<T>('/api/config'),
+  saveConfig: (config: unknown) =>
+    requestVoid('/api/config', { method: 'POST', body: JSON.stringify(config) }),
+  listProviders: <T>() => requestJson<T>('/api/providers'),
+  saveProvider: <T>(provider: unknown) =>
+    requestJson<T>('/api/providers', { method: 'POST', body: JSON.stringify(provider) }),
+  deleteProvider: (idOrAppType: string, maybeId?: string) => {
+    const path = maybeId
+      ? `/api/providers/${encodeURIComponent(idOrAppType)}/${encodeURIComponent(maybeId)}`
+      : `/api/providers/${encodeURIComponent(idOrAppType)}`;
+    return requestVoid(path, { method: 'DELETE' });
+  },
+  listHookRecords: <T>(projectId: number, page: number, pageSize: number) =>
+    requestJson<T>(`/api/hooks?project_id=${projectId}&page=${page}&page_size=${pageSize}`),
+  deleteHookRecord: (projectId: number, id: number) =>
+    requestVoid(`/api/hooks/${id}?project_id=${projectId}`, { method: 'DELETE' }),
+  deleteHookRecords: (payload: { project_id: string | number; ids: Array<number | string> }) =>
+    requestVoid('/api/hooks/batch-delete', { method: 'POST', body: JSON.stringify(payload) }),
+  getWebIdeSummary: <T>() => requestJson<T>('/api/web-ide/summary'),
+  renameSession: (sessionId: string, payload: { project_id?: string | number; name: string }) =>
+    requestVoid(`/api/sessions/${encodeURIComponent(sessionId)}/rename`, { method: 'POST', body: JSON.stringify(payload) }),
+  deleteSession: (sessionId: string, payload: { project_id?: string | number }) =>
+    requestVoid(`/api/sessions/${encodeURIComponent(sessionId)}/delete`, { method: 'POST', body: JSON.stringify(payload) }),
+  resumeSession: <T>(sessionId: string, payload: { project_id?: string | number }) =>
+    requestJson<T>(`/api/sessions/${encodeURIComponent(sessionId)}/resume`, { method: 'POST', body: JSON.stringify(payload) }),
 };
