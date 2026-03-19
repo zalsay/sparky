@@ -1,18 +1,142 @@
 # cc-rust-server API Reference
 
-**Authentication:** All `/api/**` routes require an API token. The server currently accepts either of these headers:
+**Base URL:** `https://i.meetlife.com.cn:3010`
 
-```http
-Authorization: Bearer <token>
+**Authentication:** Bearer token (JWT) in `Authorization` header, except for auth endpoints.
+
+---
+
+## Auth
+
+All auth endpoints are **public** (no token required).
+
+### Register
+
+```
+POST /api/auth/register
 ```
 
-or
-
-```http
-x-api-key: <token>
+**Request:**
+```json
+{
+  "username": "alice",
+  "password": "secret123",
+  "display_name": "Alice",
+  "email": "alice@example.com"   // optional
+}
 ```
 
-`/health` does not require authentication.
+**Response 200:**
+```json
+{
+  "user": {
+    "id": "692eab3d-d711-4028-90f9-4414a0e8f9ab",
+    "username": "alice",
+    "display_name": "Alice",
+    "email": null
+  },
+  "access_token": "eyJ...",
+  "refresh_token": "eyJ...",
+  "expires_in": 3600
+}
+```
+
+---
+
+### Login
+
+```
+POST /api/auth/login
+```
+
+**Request:**
+```json
+{
+  "username": "alice",
+  "password": "secret123"
+}
+```
+
+**Response 200:**
+```json
+{
+  "user": { "id": "...", "username": "alice", "display_name": "Alice", "email": null },
+  "access_token": "eyJ...",
+  "refresh_token": "eyJ...",
+  "expires_in": 3600
+}
+```
+
+---
+
+### Refresh Token
+
+```
+POST /api/auth/refresh
+```
+
+**Request:**
+```json
+{
+  "refresh_token": "eyJ..."
+}
+```
+
+**Response 200:**
+```json
+{
+  "access_token": "eyJ...",
+  "expires_in": 3600
+}
+```
+
+---
+
+### Logout
+
+```
+POST /api/auth/logout
+```
+
+**Request:**
+```json
+{
+  "refresh_token": "eyJ..."
+}
+```
+
+**Response 200:**
+```json
+{ "status": "ok" }
+```
+
+---
+
+## Authenticated Endpoints
+
+All routes under `/api/**` (except `/api/auth/*`) require:
+
+```
+Authorization: Bearer <access_token>
+```
+
+---
+
+### Get Current User
+
+```
+GET /api/me
+```
+
+**Response 200:**
+```json
+{
+  "id": "692eab3d-d711-4028-90f9-4414a0e8f9ab",
+  "username": "alice",
+  "display_name": "Alice",
+  "email": null
+}
+```
 
 ---
 
@@ -20,7 +144,7 @@ x-api-key: <token>
 
 ### List Projects
 
-```http
+```
 GET /api/projects
 ```
 
@@ -31,11 +155,8 @@ GET /api/projects
     "id": 1,
     "name": "MyProject",
     "path": "/root/project",
-    "hooks_installed": false,
-    "agent_teams_enabled": false,
-    "created_at": 1742370270,
-    "updated_at": 1742370270,
-    "default_provider_id": null
+    "hooks_enabled": false,
+    "created_at": "2026-03-19T07:44:30.098947Z"
   }
 ]
 ```
@@ -44,9 +165,8 @@ GET /api/projects
 
 ### Create Project
 
-```http
+```
 POST /api/projects
-Content-Type: application/json
 ```
 
 **Request:**
@@ -57,212 +177,150 @@ Content-Type: application/json
 }
 ```
 
-**Response 200:**
+**Response 201:**
 ```json
 {
   "id": 1,
   "name": "MyProject",
-  "path": "/root/project",
-  "hooks_installed": false,
-  "agent_teams_enabled": false,
-  "created_at": 1742370270,
-  "updated_at": 1742370270,
-  "default_provider_id": null
+  "path": "/root/project"
 }
 ```
 
-If the token is scoped to specific projects, create/delete project operations return `403 Forbidden`.
+---
+
+### Update Project
+
+```
+PATCH /api/projects/:id
+```
+
+**Request:**
+```json
+{
+  "name": "New Name",
+  "description": "Updated description",
+  "hooks_enabled": true
+}
+```
+
+All fields optional. Only `owner`/`admin` can update.
+
+**Response 200:**
+```json
+{ "status": "updated" }
+```
 
 ---
 
 ### Delete Project
 
-```http
+```
 DELETE /api/projects/:id
 ```
 
+Only `owner` role can delete. Performs soft delete.
+
 **Response 200:**
 ```json
-{}
+{ "status": "deleted" }
 ```
 
 ---
 
 ### Get Project Detail
 
-```http
+```
 GET /api/projects/:id/detail
 ```
+
+Returns project info with full member list.
 
 **Response 200:**
 ```json
 {
-  "project": {
-    "id": 1,
-    "name": "MyProject",
-    "path": "/root/project",
-    "hooks_installed": false,
-    "agent_teams_enabled": false,
-    "created_at": 1742370270,
-    "updated_at": 1742370270,
-    "default_provider_id": null
-  },
-  "sessions": [
-    {
-      "id": 1,
-      "session_id": "session-uuid",
-      "project_path": "/root/project",
-      "started_at": 1742370270,
-      "ended_at": null,
-      "reason": null,
-      "name": "Debug session",
-      "project_name": "MyProject"
-    }
-  ],
-  "terminal_history": [
-    "$ pwd",
-    "/root/project"
+  "id": 1,
+  "name": "MyProject",
+  "description": null,
+  "created_at": "2026-03-19T07:44:30.098947Z",
+  "members": [
+    { "username": "alice", "role": "owner", "user_id": "...", "joined_at": "2026-03-19 07:44:30.098947" }
   ]
 }
 ```
 
-**Response 404:**
-```json
-"PROJECT_NOT_FOUND"
-```
-
 ---
 
-## Sessions
+## Project Members
 
-### List Sessions
+### List Members
 
-```http
-GET /api/sessions?project_id=1
+```
+GET /api/projects/:id/members
 ```
 
 **Response 200:**
 ```json
 [
-  {
-    "id": 1,
-    "session_id": "session-uuid",
-    "project_path": "/root/project",
-    "started_at": 1742370270,
-    "ended_at": null,
-    "reason": null,
-    "name": "Debug session",
-    "project_name": "MyProject"
-  }
+  { "username": "alice", "role": "owner", "user_id": "..." }
 ]
 ```
 
 ---
 
-### Rename Session
+### Add Member
 
-```http
-POST /api/sessions/:id/rename
-Content-Type: application/json
 ```
+POST /api/projects/:id/members
+```
+
+Only `owner`/`admin` can add.
 
 **Request:**
 ```json
 {
-  "project_id": "1",
-  "name": "New Name"
+  "user_id": "user-uuid",
+  "role": "member"
 }
 ```
 
-**Response 200:**
+**Response 201:**
 ```json
-{}
+{ "status": "added" }
 ```
 
 ---
 
-### Delete Session
+### Update Member Role
 
-```http
-POST /api/sessions/:id/delete
-Content-Type: application/json
 ```
+PATCH /api/projects/:id/members/:user_id
+```
+
+Only `owner`/`admin` can update.
 
 **Request:**
 ```json
-{
-  "project_id": "1"
-}
+{ "role": "admin" }
 ```
 
 **Response 200:**
 ```json
-{}
+{ "status": "updated" }
 ```
 
 ---
 
-### Resume Session
+### Remove Member
 
-```http
-POST /api/sessions/:id/resume
-Content-Type: application/json
+```
+DELETE /api/projects/:id/members/:user_id
 ```
 
-**Request:**
-```json
-{
-  "project_id": "1"
-}
-```
+Only `owner`/`admin` can remove. Cannot remove self.
 
 **Response 200:**
 ```json
-{}
-```
-
-This endpoint forwards a `sessions.resume` request to the connected agent for the token's `agent_id`.
-
----
-
-## Terminal
-
-### Execute Command
-
-```http
-POST /api/terminal/exec
-Content-Type: application/json
-```
-
-**Request:**
-```json
-{
-  "project_id": "1",
-  "command": "ls -la\n"
-}
-```
-
-**Response 200:**
-```json
-{}
-```
-
-This endpoint forwards a `terminal.exec` request to the connected agent for the token's `agent_id`.
-
----
-
-### Terminal History
-
-```http
-GET /api/terminal/history?project_id=1
-```
-
-**Response 200:**
-```json
-[
-  "$ pwd",
-  "/root/project"
-]
+{ "status": "removed" }
 ```
 
 ---
@@ -271,7 +329,7 @@ GET /api/terminal/history?project_id=1
 
 ### List Providers
 
-```http
+```
 GET /api/providers
 ```
 
@@ -280,55 +338,167 @@ GET /api/providers
 [
   {
     "id": "provider-uuid",
-    "app_type": "openai",
     "name": "OpenAI",
-    "settings_config": "{}",
-    "website_url": null,
-    "category": null,
-    "created_at": 1742370270,
-    "sort_index": 0,
-    "notes": null,
-    "icon": null,
-    "icon_color": null,
-    "meta": "{}",
-    "is_current": false,
-    "in_failover_queue": false,
-    "cost_multiplier": "1",
-    "limit_daily_usd": null,
-    "limit_monthly_usd": null,
-    "provider_type": null,
-    "endpoints": []
+    "app_type": "openai",
+    "scope_type": "user"
   }
 ]
 ```
 
 ---
 
-### Save Provider
+### Create Provider
 
-```http
+```
 POST /api/providers
-Content-Type: application/json
 ```
 
-**Request:** full `AIProvider` object.
-
-**Response 200:**
+**Request:**
 ```json
-{ "id": "provider-uuid" }
+{
+  "name": "OpenAI",
+  "app_type": "openai",
+  "api_type": "openai"
+}
+```
+
+**Response 201:**
+```json
+{ "id": "...", "name": "OpenAI", "app_type": "openai" }
 ```
 
 ---
 
 ### Delete Provider
 
-```http
-DELETE /api/providers/:app_type/:id
+```
+DELETE /api/providers/:id
 ```
 
 **Response 200:**
 ```json
-{}
+{ "status": "deleted" }
+```
+
+---
+
+## Sessions
+
+### List Sessions
+
+```
+GET /api/sessions?project_id=1
+```
+
+**Response 200:**
+```json
+[
+  {
+    "id": "session-uuid",
+    "project_id": 1,
+    "name": "Debug session",
+    "status": "active"
+  }
+]
+```
+
+---
+
+### Rename Session
+
+```
+POST /api/sessions/:id/rename
+```
+
+**Request:**
+```json
+{ "name": "New Name" }
+```
+
+**Response 200:**
+```json
+{ "status": "renamed" }
+```
+
+---
+
+### Delete Session
+
+```
+POST /api/sessions/:id/delete
+```
+
+**Request:**
+```json
+{ "project_id": 1 }
+```
+
+**Response 200:**
+```json
+{ "status": "deleted" }
+```
+
+---
+
+### Resume Session
+
+```
+POST /api/sessions/:id/resume
+```
+
+**Request:**
+```json
+{ "project_id": 1 }
+```
+
+**Response 200:**
+```json
+{ "session_id": "...", "status": "resumed" }
+```
+
+---
+
+## Terminal
+
+### Execute Command
+
+```
+POST /api/terminal/exec
+```
+
+**Request:**
+```json
+{ "session_id": "session-uuid", "command": "ls -la" }
+```
+
+**Response 200:**
+```json
+{
+  "stdout": "total 64\ndrwxr-xr-x  5 root root 4096 Mar 19 07:44 ...",
+  "stderr": "",
+  "exit_code": 0
+}
+```
+
+---
+
+### Terminal History
+
+```
+GET /api/terminal/history?project_id=1&page=1&page_size=20
+```
+
+**Response 200:**
+```json
+[
+  {
+    "id": "log-uuid",
+    "session_id": "session-uuid",
+    "direction": "out",
+    "content": "ls -la",
+    "created_at": "2026-03-19T07:45:00Z"
+  }
+]
 ```
 
 ---
@@ -337,64 +507,55 @@ DELETE /api/providers/:app_type/:id
 
 ### List Hooks
 
-```http
+```
 GET /api/hooks?project_id=1&page=1&page_size=20
 ```
 
 **Response 200:**
 ```json
-{
-  "records": [
-    {
-      "id": 1,
-      "event_name": "pre-command",
-      "session_id": "session-uuid",
-      "notification_text": "Claude hook notification",
-      "transcript_path": "/tmp/transcript.jsonl",
-      "content": "payload",
-      "result": "ok",
-      "created_at": 1742370270
-    }
-  ],
-  "total": 1,
-  "page": 1,
-  "page_size": 20
-}
+[
+  {
+    "id": "hook-uuid",
+    "hook_type": "pre-deploy",
+    "name": "Lint check",
+    "description": "Run linter before deploy",
+    "created_at": "2026-03-19T07:45:00Z"
+  }
+]
 ```
 
 ---
 
 ### Delete Hook
 
-```http
+```
 DELETE /api/hooks/:id?project_id=1
 ```
 
 **Response 200:**
 ```json
-{}
+{ "status": "deleted" }
 ```
 
 ---
 
 ### Batch Delete Hooks
 
-```http
+```
 POST /api/hooks/batch-delete
-Content-Type: application/json
 ```
 
 **Request:**
 ```json
 {
-  "project_id": "1",
-  "ids": [1, 2]
+  "ids": ["hook-uuid-1", "hook-uuid-2"],
+  "project_id": 1
 }
 ```
 
 **Response 200:**
 ```json
-{}
+{ "deleted": 2 }
 ```
 
 ---
@@ -403,52 +564,49 @@ Content-Type: application/json
 
 ### Summary
 
-```http
+```
 GET /api/web-ide/summary
 ```
 
 **Response 200:**
 ```json
-{
-  "projects": [
-    {
-      "project_id": "1",
-      "project_path": "/root/project",
-      "project_name": "MyProject",
-      "active_pty_count": 1,
-      "agent_id": "agent-alpha"
-    }
-  ]
-}
+{ "active_instances": 0 }
 ```
 
 ---
 
 ### WebIDE Events (SSE)
 
-```http
+```
 GET /api/web-ide/events
 ```
 
-SSE event name:
+Returns Server-Sent Events stream for WebIDE activity.
 
-```text
-web_ide_event
+---
+
+### Project WebIDE Status
+
+```
+GET /api/projects/:id/web-ide/status
 ```
 
-**Event data example:**
+**Response 200:**
 ```json
-{
-  "event_type": "pty_active_changed",
-  "agent_id": "agent-alpha",
-  "project": {
-    "project_id": "1",
-    "project_path": "/root/project",
-    "project_name": "MyProject",
-    "active_pty_count": 1,
-    "agent_id": "agent-alpha"
-  }
-}
+{ "status": "stopped", "instance_id": null }
+```
+
+---
+
+### Start WebIDE
+
+```
+POST /api/projects/:id/web-ide/start
+```
+
+**Response 200:**
+```json
+{ "instance_id": "...", "status": "starting" }
 ```
 
 ---
@@ -457,31 +615,11 @@ web_ide_event
 
 ### Event Stream (SSE)
 
-```http
-GET /api/events?project_id=1
+```
+GET /api/events
 ```
 
-SSE event name:
-
-```text
-project_event
-```
-
-**Event data shape:**
-```json
-{
-  "project_id": "1",
-  "event_type": "terminal_output_chunk",
-  "payload": {
-    "terminal_id": "web-1",
-    "data": "hello\n"
-  }
-}
-```
-
-Known event types currently consumed by the web UI:
-- `terminal_output_chunk`
-- `terminal_exit`
+Returns Server-Sent Events stream for real-time events.
 
 ---
 
@@ -489,44 +627,79 @@ Known event types currently consumed by the web UI:
 
 ### Get Config
 
-```http
+```
 GET /api/config
 ```
 
 **Response 200:**
 ```json
 {
-  "app_id": "",
-  "app_secret": "",
-  "app_name": null,
-  "encrypt_key": null,
-  "verification_token": null,
-  "chat_id": null,
-  "project_path": null,
-  "open_id": null,
-  "hook_events_filter": null,
-  "anthropic_logo_img_key": null,
-  "terminal_bg_color": null,
-  "terminal_fg_color": null,
-  "terminal_font_size": null,
-  "default_provider_id": null
+  "key": "hook.default_timeout",
+  "value": "300"
 }
 ```
 
 ---
 
-### Save Config
+### Set Config
 
-```http
+```
 POST /api/config
-Content-Type: application/json
 ```
 
-**Request:** full `AppConfig` object.
+**Request:**
+```json
+{
+  "key": "hook.default_timeout",
+  "value": "300"
+}
+```
 
 **Response 200:**
 ```json
-{}
+{ "status": "saved" }
+```
+
+---
+
+## Internal (No Auth)
+
+### Agent Connect
+
+```
+POST /internal/agents/connect
+```
+
+**Request:**
+```json
+{
+  "node_id": "node-alpha",
+  "name": "Alpha Node",
+  "capabilities": ["exec", "file-access"]
+}
+```
+
+**Response 200:**
+```json
+{ "status": "connected" }
+```
+
+---
+
+### Agent Heartbeat
+
+```
+POST /internal/agents/:id/heartbeat
+```
+
+**Request:**
+```json
+{ "status": "online" }
+```
+
+**Response 200:**
+```json
+{ "status": "ok" }
 ```
 
 ---
@@ -535,7 +708,7 @@ Content-Type: application/json
 
 ### Health Check
 
-```http
+```
 GET /health
 ```
 
@@ -550,26 +723,17 @@ No auth required.
 
 ## Error Responses
 
-Errors are currently returned as plain strings by many handlers, for example:
+All errors follow this format:
 
 ```json
-"PROJECT_NOT_FOUND"
+{ "error": "description of the error" }
 ```
-
-or HTTP error text such as:
-
-```json
-"Forbidden"
-```
-
-Common statuses:
 
 | HTTP Status | Meaning |
 |-------------|---------|
 | 400 | Bad Request |
 | 401 | Unauthorized (missing or invalid token) |
-| 403 | Forbidden |
+| 403 | Forbidden (insufficient permissions) |
 | 404 | Not Found |
+| 409 | Conflict (e.g. username already exists) |
 | 500 | Internal Server Error |
-| 503 | Agent offline / service unavailable |
-| 504 | Agent timeout |
