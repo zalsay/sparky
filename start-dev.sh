@@ -3,7 +3,7 @@
 echo "🚀 Starting Claude Monitor Development..."
 
 # 检查是否安装了 code-server
-CODE_SERVER_PATH="/Users/sisu/sparky/code-server/bin/code-server"
+CODE_SERVER_PATH="$HOME/sparky/code-server/bin/code-server"
 if [ ! -x "$CODE_SERVER_PATH" ]; then
     echo "⚠️  code-server not found at $CODE_SERVER_PATH"
     exit 1

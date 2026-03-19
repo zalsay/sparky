@@ -603,35 +603,16 @@ pub async fn pty_spawn(
     // PTY Reader Thread
     let project_path_clone = project_path.clone();
     let terminal_id_clone = terminal_id.clone();
-    let log_path = get_pty_log_path(&project_path); // Might want to add terminal_id to log path?
-    
-    // Ensure directory exists
-    if let Some(parent) = log_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
 
     thread::spawn(move || {
         let mut reader = master_reader;
         let mut buf = [0u8; 1024];
         let mut pending: Vec<u8> = Vec::new();
 
-        // Open log file in the thread
-        let mut log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .ok();
-
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    // Write to log file
-                    if let Some(f) = log_file.as_mut() {
-                        let _ = f.write_all(&buf[..n]);
-                        let _ = f.flush();
-                    }
-
                     pending.extend_from_slice(&buf[..n]);
                     // ... (rest of parsing logic)
                     loop {
@@ -774,12 +755,6 @@ pub async fn pty_spawn(
     });
 
     Ok(terminal_id)
-}
-
-fn get_pty_log_path(project_path: &str) -> std::path::PathBuf {
-    let home = dirs::home_dir().expect("Failed to get home dir");
-    let safe_name = project_path.replace("/", "_").replace(":", "_");
-    home.join("sparky/pty_logs").join(format!("{}.log", safe_name))
 }
 
 #[tauri::command(rename_all = "snake_case")]

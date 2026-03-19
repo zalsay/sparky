@@ -3,6 +3,7 @@ pub mod auth;
 pub mod config;
 pub mod events;
 pub mod tunnel;
+pub mod web_ide;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -15,12 +16,16 @@ use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
-use crate::web_server::{
-    api::api_routes,
-    auth::{auth_guard, AuthState},
-    config::WebServerConfig,
-    events::EventHub,
-    tunnel::{AgentRegistry, TunnelState},
+use crate::{
+    storage::db::open_db,
+    web_server::{
+        api::api_routes,
+        auth::{auth_guard, AuthState},
+        config::WebServerConfig,
+        events::EventHub,
+        tunnel::{AgentRegistry, TunnelState},
+        web_ide::{WebIdeEventHub, WebIdeState},
+    },
 };
 
 #[derive(Clone)]
@@ -30,6 +35,8 @@ pub struct AppState {
     pub registry: AgentRegistry,
     pub events: EventHub,
     pub tunnel: TunnelState,
+    pub web_ide: WebIdeState,
+    pub web_ide_events: WebIdeEventHub,
 }
 
 pub async fn start_server(config: WebServerConfig) -> Result<(), anyhow::Error> {
@@ -39,6 +46,10 @@ pub async fn start_server(config: WebServerConfig) -> Result<(), anyhow::Error> 
     let events = EventHub::default();
     let auth_state = Arc::new(AuthState::new(config.clone()));
     let tunnel_state = TunnelState::new(config.clone(), registry.clone(), events.clone());
+    let web_ide = WebIdeState::default();
+    let web_ide_events = WebIdeEventHub::default();
+
+    let _ = open_db().map_err(anyhow::Error::msg)?;
 
     let state = AppState {
         config: config.clone(),
@@ -46,6 +57,8 @@ pub async fn start_server(config: WebServerConfig) -> Result<(), anyhow::Error> 
         registry: registry.clone(),
         events: events.clone(),
         tunnel: tunnel_state,
+        web_ide,
+        web_ide_events,
     };
 
     let api = api_routes().route_layer(middleware::from_fn_with_state(auth_state, auth_guard));
