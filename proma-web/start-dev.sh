@@ -62,4 +62,4 @@ echo "Starting web frontend..."
 ) &
 WEB_PID=$!
 
-wait -n "$SERVER_PID" "$WEB_PID"
+wait "$SERVER_PID" "$WEB_PID"

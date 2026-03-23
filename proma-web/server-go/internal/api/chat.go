@@ -72,9 +72,16 @@ func (s *Server) handleConversation(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodPatch:
-		var renameReq renameConversationRequest
-		if err := decodeJSON(r, &renameReq); err == nil && strings.TrimSpace(renameReq.Title) != "" {
-			updated, err := s.store.RenameConversation(r.Context(), conversationID, renameReq.Title)
+		var req struct {
+			Title  *string `json:"title"`
+			Pinned *bool   `json:"pinned"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+			return
+		}
+		if req.Title != nil && strings.TrimSpace(*req.Title) != "" {
+			updated, err := s.store.RenameConversation(r.Context(), conversationID, strings.TrimSpace(*req.Title))
 			if err != nil {
 				writeStoreError(w, err)
 				return
@@ -82,18 +89,16 @@ func (s *Server) handleConversation(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, updated)
 			return
 		}
-
-		var pinReq pinConversationRequest
-		if err := decodeJSON(r, &pinReq); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		if req.Pinned != nil {
+			updated, err := s.store.SetConversationPinned(r.Context(), conversationID, *req.Pinned)
+			if err != nil {
+				writeStoreError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, updated)
 			return
 		}
-		updated, err := s.store.SetConversationPinned(r.Context(), conversationID, pinReq.Pinned)
-		if err != nil {
-			writeStoreError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, updated)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing title or pinned"})
 	case http.MethodDelete:
 		if err := s.store.DeleteConversation(r.Context(), conversationID); err != nil {
 			writeStoreError(w, err)

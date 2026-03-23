@@ -389,7 +389,7 @@ Expected: 前两项 PASS，TypeScript 校验当前仍因 internal crash 未通�
 - refresh messages
 - load more messages
 - edit / resend / truncate（若已实现）
-- [*] 已完成代码路径与接口链路回归：逐项复核 `packages/frontend-core/src/index.tsx`、`proma-web/web/src/App.tsx`、`packages/platform-web/src/index.ts` 与 `proma-web/server-go/internal/api/chat.go` / `internal/store/*` 的调用闭环，确认 bootstrap、会话列表、创建、选择、发送、重命名、删除、置顶、刷新、加载更多，以及 edit / resend / truncate 均已有前后端实现与装配；本批未额外执行浏览器人工点击回归。
+- [*] 已完成浏览器/接口真实手动回归：启动 `proma-web/start-dev.sh` 后，基于实际运行中的 `http://localhost:3010` 接口逐项验证了 create/select 等效 list/send 流程、rename、pin / unpin、refresh、load more、edit / resend / truncate、delete；期间发现并修复 `proma-web/server-go/internal/api/chat.go` 中 `PATCH /api/chat/sessions/:id` 对请求体重复 decode 导致 pin/unpin 失败的问题，修复后已重新回归通过。
 
 **Step 3: 更新 `plans.md` 勾选状态**
 - 所有已完成项标记为 `[*]`
@@ -424,7 +424,7 @@ git commit -m "docs: update decoupling implementation progress"
 - [*] 当前 `frontend-core/src/index.tsx` 已按 bootstrap/sidebar/chat 状态收敛拆分为独立 state 片段与 helper，避免继续膨胀
 - [ ] Go server API 可能尚未完全覆盖 upstream 行为，需以 web 最小链路优先，不追求一轮对齐全部功能
 - [*] 根目录 `go test ./...` 与仓库结构不匹配，后续验证应在 `proma-web/server-go` 模块内执行
-- [*] TypeScript 类型检查问题已定位并修复；根因是 `packages/platform-contract/src/index.ts` 中 `import type` 语句错误地混用了命名 `type` 修饰符
+- [*] `proma-web/start-dev.sh` 已兼容当前 shell 环境；原先 `wait -n` 在本机 bash 上不可用，现已改为兼容写法
 
 ## 完成定义
 
