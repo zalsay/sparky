@@ -420,11 +420,16 @@ git commit -m "docs: update decoupling implementation progress"
 
 ## 已知风险与决策
 
-- [ ] upstream `ChatView` 绑定了流式、附件、tool、prompt、context divider 等大量 Electron 特性，本轮只迁最小数据层，不强行一次搬完
+- [*] upstream `ChatView` 绑定了流式、附件、tool、prompt、context divider 等大量 Electron 特性；本轮按计划只迁最小数据层，已完成当前 web 最小链路目标，剩余特性明确留待后续独立阶段处理
 - [*] 当前 `frontend-core/src/index.tsx` 已按 bootstrap/sidebar/chat 状态收敛拆分为独立 state 片段与 helper，避免继续膨胀
-- [ ] Go server API 可能尚未完全覆盖 upstream 行为，需以 web 最小链路优先，不追求一轮对齐全部功能
+- [*] Go server API 已覆盖本轮 web 最小链路所需能力；与 upstream 的更完整行为仍存在范围差异，后续按功能域逐项补齐，而不是在本轮一次性追平
 - [*] 根目录 `go test ./...` 与仓库结构不匹配，后续验证应在 `proma-web/server-go` 模块内执行
 - [*] `proma-web/start-dev.sh` 已兼容当前 shell 环境；原先 `wait -n` 在本机 bash 上不可用，现已改为兼容写法
+
+## 后续建议
+
+- [ ] 若要继续贴近 upstream，可单独规划流式消息、附件、tool 调用、prompt/context divider 等 Electron 专属能力迁移
+- [ ] 为 Go server API 补更细粒度的行为对齐与回归测试，逐步缩小与 upstream 的语义差异
 
 ## 完成定义
 
