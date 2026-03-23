@@ -22,6 +22,7 @@ Thumbs.db
 node_modules/
 release/
 trace-web/
+proma-web/web/dist/
 # Code Server Extensions Cache
 src-tauri/extensions/extensions.json
 src-tauri/extensions/.obsolete
