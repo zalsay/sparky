@@ -1,0 +1,7 @@
+database:
+  host: i.meetlife.com.cn
+  prot: 5436
+  user: postgres
+  password: 1qaz2wsx
+  database: proma_db
+  sslmode: disable
