@@ -122,7 +122,7 @@
 - [*] 校验 workspace capabilities 缓存与刷新策略
 - [*] 明确 profile/runtime/workspaces 的 bootstrap 顺序与失败处理
 - [*] 将 bootstrap 中的并发加载错误收敛为稳定的页面状态
-- [ ] 必要时拆分 `SparkyApp` 过大的状态与 handler
+- [*] 必要时拆分 `SparkyApp` 过大的状态与 handler
 
 ### 7. proma-web/web 薄壳治理
 - [*] `proma-web/web` 只负责注入 `PlatformClient`
@@ -421,18 +421,18 @@ git commit -m "docs: update decoupling implementation progress"
 ## 已知风险与决策
 
 - [ ] upstream `ChatView` 绑定了流式、附件、tool、prompt、context divider 等大量 Electron 特性，本轮只迁最小数据层，不强行一次搬完
-- [ ] 当前 `frontend-core/src/index.tsx` 状态过于集中，后续可能需要拆分组件，但只有在解耦落地后再做，避免提前抽象
+- [*] 当前 `frontend-core/src/index.tsx` 已按 bootstrap/sidebar/chat 状态收敛拆分为独立 state 片段与 helper，避免继续膨胀
 - [ ] Go server API 可能尚未完全覆盖 upstream 行为，需以 web 最小链路优先，不追求一轮对齐全部功能
 - [*] 根目录 `go test ./...` 与仓库结构不匹配，后续验证应在 `proma-web/server-go` 模块内执行
 - [*] TypeScript 类型检查问题已定位并修复；根因是 `packages/platform-contract/src/index.ts` 中 `import type` 语句错误地混用了命名 `type` 修饰符
 
 ## 完成定义
 
-- [ ] `frontend-core` 不直接依赖 Electron API
-- [ ] sidebar 会话管理完整经由 `PlatformClient`
-- [ ] chat 最小数据层完整经由 `PlatformClient`
-- [ ] web 平台与 Go server 支撑上述所有能力
-- [ ] `proma-web/web` 维持薄壳
+- [*] `frontend-core` 不直接依赖 Electron API
+- [*] sidebar 会话管理完整经由 `PlatformClient`
+- [*] chat 最小数据层完整经由 `PlatformClient`
+- [*] web 平台与 Go server 支撑上述所有能力
+- [*] `proma-web/web` 维持薄壳
 - [*] web build 通过
 - [*] web type-check 通过
 - [*] server test / build 通过

@@ -1,5 +1,6 @@
 import React from 'react'
 import type { PlatformClient } from '@sparky/platform-contract'
+import { PlatformRequestError } from '@sparky/shared'
 import type {
   ChatMessage,
   ConversationMeta,
@@ -17,6 +18,36 @@ interface SidebarSectionProps {
   title: string
   children: React.ReactNode
   action?: React.ReactNode
+}
+
+interface BootstrapData {
+  runtime: RuntimeInfo | null
+  profile: UserProfile | null
+  workspaces: Workspace[]
+  conversations: ConversationMeta[]
+  bootstrapError: string | null
+}
+
+interface ChatState {
+  currentConversationId: string | null
+  messages: ChatMessage[]
+  input: string
+  editingMessageId: string | null
+  editingMessageContent: string
+  messagesLoading: boolean
+  refreshingMessages: boolean
+  loadingMoreMessages: boolean
+  sending: boolean
+  chatError: string | null
+  hasMoreMessages: boolean
+}
+
+interface SidebarState {
+  conversations: ConversationMeta[]
+  editingConversationId: string | null
+  editingTitle: string
+  pinnedExpanded: boolean
+  sidebarError: string | null
 }
 
 function SidebarSection({ title, children, action }: SidebarSectionProps): React.ReactElement {
@@ -70,56 +101,154 @@ function conversationTitleForInput(title: string): string {
   return title === '新对话' ? '' : title
 }
 
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof PlatformRequestError) {
+    if (error.message.trim()) {
+      return error.message
+    }
+
+    if (typeof error.body === 'string' && error.body.trim()) {
+      return error.body
+    }
+
+    if (error.body && typeof error.body === 'object') {
+      if (typeof error.body.message === 'string' && error.body.message.trim()) {
+        return error.body.message
+      }
+      if (typeof error.body.error === 'string' && error.body.error.trim()) {
+        return error.body.error
+      }
+    }
+
+    return fallback
+  }
+
+  return error instanceof Error && error.message.trim() ? error.message : fallback
+}
+
+async function loadBootstrapData(client: PlatformClient, refreshWorkspaceCapabilities: (workspaceItems: Workspace[]) => Promise<void>): Promise<BootstrapData> {
+  const [runtimeResult, workspaceResult, profileResult] = await Promise.allSettled([
+    client.getRuntime(),
+    client.listWorkspaces(),
+    client.getUserProfile(),
+  ])
+
+  const workspaces = workspaceResult.status === 'fulfilled' ? workspaceResult.value : []
+
+  if (workspaces.length > 0) {
+    await refreshWorkspaceCapabilities(workspaces)
+  }
+
+  const conversations = sortConversations(await client.listConversations())
+
+  const bootstrapError = [
+    runtimeResult.status === 'rejected' ? getErrorMessage(runtimeResult.reason, '加载 runtime 失败') : null,
+    workspaceResult.status === 'rejected' ? getErrorMessage(workspaceResult.reason, '加载 workspaces 失败') : null,
+    profileResult.status === 'rejected' ? getErrorMessage(profileResult.reason, '加载用户信息失败') : null,
+  ].filter(Boolean).join('；')
+
+  return {
+    runtime: runtimeResult.status === 'fulfilled' ? runtimeResult.value : null,
+    profile: profileResult.status === 'fulfilled' ? profileResult.value : null,
+    workspaces,
+    conversations,
+    bootstrapError: bootstrapError || null,
+  }
+}
+
+function useSidebarState(): [SidebarState, React.Dispatch<React.SetStateAction<SidebarState>>] {
+  return React.useState<SidebarState>({
+    conversations: [],
+    editingConversationId: null,
+    editingTitle: '',
+    pinnedExpanded: true,
+    sidebarError: null,
+  })
+}
+
+function useChatState(): [ChatState, React.Dispatch<React.SetStateAction<ChatState>>] {
+  return React.useState<ChatState>({
+    currentConversationId: null,
+    messages: [],
+    input: '',
+    editingMessageId: null,
+    editingMessageContent: '',
+    messagesLoading: false,
+    refreshingMessages: false,
+    loadingMoreMessages: false,
+    sending: false,
+    chatError: null,
+    hasMoreMessages: false,
+  })
+}
+
 export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
   const [runtime, setRuntime] = React.useState<RuntimeInfo | null>(null)
   const [profile, setProfile] = React.useState<UserProfile | null>(null)
   const [workspaces, setWorkspaces] = React.useState<Workspace[]>([])
   const [workspaceCapabilities, setWorkspaceCapabilities] = React.useState<Record<string, WorkspaceCapabilities>>({})
-  const [conversations, setConversations] = React.useState<ConversationMeta[]>([])
-  const [currentConversationId, setCurrentConversationId] = React.useState<string | null>(null)
-  const [messages, setMessages] = React.useState<ChatMessage[]>([])
-  const [input, setInput] = React.useState('')
-  const [editingConversationId, setEditingConversationId] = React.useState<string | null>(null)
-  const [editingTitle, setEditingTitle] = React.useState('')
-  const [editingMessageId, setEditingMessageId] = React.useState<string | null>(null)
-  const [editingMessageContent, setEditingMessageContent] = React.useState('')
-  const [pinnedExpanded, setPinnedExpanded] = React.useState(true)
+  const [sidebarState, setSidebarState] = useSidebarState()
+  const [chatState, setChatState] = useChatState()
   const [loading, setLoading] = React.useState(true)
-  const [messagesLoading, setMessagesLoading] = React.useState(false)
-  const [refreshingMessages, setRefreshingMessages] = React.useState(false)
-  const [loadingMoreMessages, setLoadingMoreMessages] = React.useState(false)
-  const [sending, setSending] = React.useState(false)
-  const [sidebarError, setSidebarError] = React.useState<string | null>(null)
-  const [chatError, setChatError] = React.useState<string | null>(null)
-  const [hasMoreMessages, setHasMoreMessages] = React.useState(false)
+  const [bootstrapError, setBootstrapError] = React.useState<string | null>(null)
+
+  const {
+    conversations,
+    editingConversationId,
+    editingTitle,
+    pinnedExpanded,
+    sidebarError,
+  } = sidebarState
+
+  const {
+    currentConversationId,
+    messages,
+    input,
+    editingMessageId,
+    editingMessageContent,
+    messagesLoading,
+    refreshingMessages,
+    loadingMoreMessages,
+    sending,
+    chatError,
+    hasMoreMessages,
+  } = chatState
 
   const applyMessagesResult = React.useCallback((result: { messages: ChatMessage[]; hasMore: boolean }, mode: 'replace' | 'prepend' = 'replace') => {
-    setHasMoreMessages(result.hasMore)
-    setMessages((prev) => {
-      if (mode === 'prepend') {
-        const knownIds = new Set(prev.map((message) => message.id))
-        const older = result.messages.filter((message) => !knownIds.has(message.id))
-        return [...older, ...prev]
-      }
-      return result.messages
-    })
-  }, [])
+    setChatState((prev) => ({
+      ...prev,
+      hasMoreMessages: result.hasMore,
+      messages: mode === 'prepend'
+        ? (() => {
+            const knownIds = new Set(prev.messages.map((message) => message.id))
+            const older = result.messages.filter((message) => !knownIds.has(message.id))
+            return [...older, ...prev.messages]
+          })()
+        : result.messages,
+    }))
+  }, [setChatState])
+
+  const refreshWorkspaceCapabilities = React.useCallback(async (workspaceItems: Workspace[]) => {
+    const capabilitiesEntries = await Promise.all(
+      workspaceItems.map(async (workspace) => [workspace.id, await client.getWorkspaceCapabilities(workspace.id)] as const),
+    )
+    setWorkspaceCapabilities(Object.fromEntries(capabilitiesEntries))
+  }, [client])
 
   const refreshConversations = React.useCallback(async () => {
     const sessionItems = sortConversations(await client.listConversations())
-    setConversations(sessionItems)
+    setSidebarState((prev) => ({ ...prev, conversations: sessionItems }))
     return sessionItems
-  }, [client])
+  }, [client, setSidebarState])
 
   const loadMessages = React.useCallback(async (conversationId: string, options?: { append?: boolean; before?: string; refresh?: boolean }) => {
-    if (options?.append) {
-      setLoadingMoreMessages(true)
-    } else if (options?.refresh) {
-      setRefreshingMessages(true)
-    } else {
-      setMessagesLoading(true)
-    }
-    setChatError(null)
+    setChatState((prev) => ({
+      ...prev,
+      loadingMoreMessages: Boolean(options?.append),
+      refreshingMessages: Boolean(options?.refresh),
+      messagesLoading: !options?.append && !options?.refresh,
+      chatError: null,
+    }))
     try {
       const result = options?.append
         ? await client.loadMoreMessages(conversationId, { limit: 20, before: options.before })
@@ -128,122 +257,139 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
           : await client.getMessages(conversationId, { limit: 50 })
       applyMessagesResult(result, options?.append ? 'prepend' : 'replace')
     } catch (err) {
-      setChatError(err instanceof Error ? err.message : '加载消息失败')
+      setChatState((prev) => ({ ...prev, chatError: getErrorMessage(err, '加载消息失败') }))
     } finally {
-      setMessagesLoading(false)
-      setRefreshingMessages(false)
-      setLoadingMoreMessages(false)
+      setChatState((prev) => ({
+        ...prev,
+        messagesLoading: false,
+        refreshingMessages: false,
+        loadingMoreMessages: false,
+      }))
     }
-  }, [applyMessagesResult, client])
+  }, [applyMessagesResult, client, setChatState])
 
   const selectConversationAfterDeletion = React.useCallback((nextConversations: ConversationMeta[], deletedId: string) => {
     if (currentConversationId !== deletedId) return
     const nextActive = nextConversations[0]?.id ?? null
-    setCurrentConversationId(nextActive)
-    if (!nextActive) {
-      setMessages([])
-      setHasMoreMessages(false)
-    }
-  }, [currentConversationId])
+    setChatState((prev) => ({
+      ...prev,
+      currentConversationId: nextActive,
+      messages: nextActive ? prev.messages : [],
+      hasMoreMessages: nextActive ? prev.hasMoreMessages : false,
+    }))
+  }, [currentConversationId, setChatState])
 
   const bootstrap = React.useCallback(async () => {
     setLoading(true)
-    setSidebarError(null)
-    setChatError(null)
+    setBootstrapError(null)
+    setSidebarState((prev) => ({ ...prev, sidebarError: null }))
+    setChatState((prev) => ({ ...prev, chatError: null }))
+    setWorkspaceCapabilities({})
     try {
-      const [runtimeInfo, workspaceItems, userProfile] = await Promise.all([
-        client.getRuntime(),
-        client.listWorkspaces(),
-        client.getUserProfile(),
-      ])
-      setRuntime(runtimeInfo)
-      setProfile(userProfile)
-      setWorkspaces(workspaceItems)
-
-      const capabilitiesEntries = await Promise.all(
-        workspaceItems.map(async (workspace) => [workspace.id, await client.getWorkspaceCapabilities(workspace.id)] as const),
-      )
-      setWorkspaceCapabilities(Object.fromEntries(capabilitiesEntries))
-
-      const sessionItems = await refreshConversations()
-      const activeId = sessionItems[0]?.id ?? null
-      setCurrentConversationId(activeId)
+      const data = await loadBootstrapData(client, refreshWorkspaceCapabilities)
+      setRuntime(data.runtime)
+      setProfile(data.profile)
+      setWorkspaces(data.workspaces)
+      setSidebarState((prev) => ({ ...prev, conversations: data.conversations }))
+      const activeId = data.conversations[0]?.id ?? null
+      setChatState((prev) => ({
+        ...prev,
+        currentConversationId: activeId,
+        messages: activeId ? prev.messages : [],
+        hasMoreMessages: activeId ? prev.hasMoreMessages : false,
+      }))
       if (activeId) {
         await loadMessages(activeId)
       } else {
-        setMessages([])
-        setHasMoreMessages(false)
+        setChatState((prev) => ({ ...prev, messages: [], hasMoreMessages: false }))
       }
+      setBootstrapError(data.bootstrapError)
     } catch (err) {
-      setSidebarError(err instanceof Error ? err.message : '加载失败')
+      setBootstrapError(getErrorMessage(err, '加载应用失败'))
     } finally {
       setLoading(false)
     }
-  }, [client, loadMessages, refreshConversations])
+  }, [client, loadMessages, refreshWorkspaceCapabilities, setChatState, setSidebarState])
 
   React.useEffect(() => {
     void bootstrap()
   }, [bootstrap])
 
+  const handleRefreshWorkspaceCapabilities = async () => {
+    if (workspaces.length === 0) return
+    setSidebarState((prev) => ({ ...prev, sidebarError: null }))
+    try {
+      await refreshWorkspaceCapabilities(workspaces)
+    } catch (err) {
+      setSidebarState((prev) => ({ ...prev, sidebarError: getErrorMessage(err, '刷新 workspace capabilities 失败') }))
+    }
+  }
+
   const handleSelectConversation = async (conversationId: string) => {
-    setCurrentConversationId(conversationId)
-    setEditingMessageId(null)
+    setChatState((prev) => ({ ...prev, currentConversationId: conversationId, editingMessageId: null }))
     await loadMessages(conversationId)
   }
 
   const handleCreateConversation = async () => {
-    setSidebarError(null)
+    setSidebarState((prev) => ({ ...prev, sidebarError: null }))
     try {
       const created = await client.createConversation({ title: '新对话' })
       const next = sortConversations([created, ...conversations])
-      setConversations(next)
-      setCurrentConversationId(created.id)
-      setMessages([])
-      setHasMoreMessages(false)
+      setSidebarState((prev) => ({ ...prev, conversations: next }))
+      setChatState((prev) => ({ ...prev, currentConversationId: created.id, messages: [], hasMoreMessages: false }))
     } catch (err) {
-      setSidebarError(err instanceof Error ? err.message : '创建对话失败')
+      setSidebarState((prev) => ({ ...prev, sidebarError: getErrorMessage(err, '创建对话失败') }))
     }
   }
 
   const handleStartRenameConversation = (conversation: ConversationMeta) => {
-    setEditingConversationId(conversation.id)
-    setEditingTitle(conversationTitleForInput(conversation.title))
+    setSidebarState((prev) => ({
+      ...prev,
+      editingConversationId: conversation.id,
+      editingTitle: conversationTitleForInput(conversation.title),
+    }))
   }
 
   const handleRenameConversation = async (conversationId: string) => {
     const title = editingTitle.trim() || '新对话'
-    setSidebarError(null)
+    setSidebarState((prev) => ({ ...prev, sidebarError: null }))
     try {
       const updated = await client.renameConversation(conversationId, { title })
-      setConversations((prev) => sortConversations(prev.map((item) => (item.id === updated.id ? updated : item))))
-      setEditingConversationId(null)
-      setEditingTitle('')
+      setSidebarState((prev) => ({
+        ...prev,
+        conversations: sortConversations(prev.conversations.map((item) => (item.id === updated.id ? updated : item))),
+        editingConversationId: null,
+        editingTitle: '',
+      }))
     } catch (err) {
-      setSidebarError(err instanceof Error ? err.message : '重命名失败')
+      setSidebarState((prev) => ({ ...prev, sidebarError: getErrorMessage(err, '重命名失败') }))
     }
   }
 
   const handleDeleteConversation = async (conversationId: string) => {
-    setSidebarError(null)
+    setSidebarState((prev) => ({ ...prev, sidebarError: null }))
     try {
       await client.deleteConversation(conversationId)
       const next = sortConversations(conversations.filter((item) => item.id !== conversationId))
-      setConversations(next)
+      setSidebarState((prev) => ({ ...prev, conversations: next }))
       selectConversationAfterDeletion(next, conversationId)
     } catch (err) {
-      setSidebarError(err instanceof Error ? err.message : '删除失败')
+      setSidebarState((prev) => ({ ...prev, sidebarError: getErrorMessage(err, '删除失败') }))
     }
   }
 
   const handleTogglePinConversation = async (conversation: ConversationMeta) => {
-    setSidebarError(null)
+    setSidebarState((prev) => ({ ...prev, sidebarError: null }))
     try {
       const updated = conversation.pinned
         ? await client.unpinConversation(conversation.id, { pinned: false })
         : await client.pinConversation(conversation.id, { pinned: true })
-      setConversations((prev) => sortConversations(prev.map((item) => (item.id === updated.id ? updated : item))))
+      setSidebarState((prev) => ({
+        ...prev,
+        conversations: sortConversations(prev.conversations.map((item) => (item.id === updated.id ? updated : item))),
+      }))
     } catch (err) {
-      setSidebarError(err instanceof Error ? err.message : '置顶操作失败')
+      setSidebarState((prev) => ({ ...prev, sidebarError: getErrorMessage(err, '置顶操作失败') }))
     }
   }
 
@@ -262,61 +408,66 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
     event.preventDefault()
     if (!currentConversationId || !input.trim()) return
 
-    setSending(true)
-    setChatError(null)
+    setChatState((prev) => ({ ...prev, sending: true, chatError: null }))
     try {
       await client.sendMessage(currentConversationId, { content: input.trim() })
-      setInput('')
+      setChatState((prev) => ({ ...prev, input: '' }))
       await loadMessages(currentConversationId, { refresh: true })
       await refreshConversations()
     } catch (err) {
-      setChatError(err instanceof Error ? err.message : '发送失败')
+      setChatState((prev) => ({ ...prev, chatError: getErrorMessage(err, '发送失败') }))
     } finally {
-      setSending(false)
+      setChatState((prev) => ({ ...prev, sending: false }))
     }
   }
 
   const handleStartEditMessage = (message: ChatMessage) => {
-    setEditingMessageId(message.id)
-    setEditingMessageContent(message.content)
+    setChatState((prev) => ({
+      ...prev,
+      editingMessageId: message.id,
+      editingMessageContent: message.content,
+    }))
   }
 
   const handleEditMessage = async (messageId: string) => {
     if (!currentConversationId || !editingMessageContent.trim()) return
-    setChatError(null)
+    setChatState((prev) => ({ ...prev, chatError: null }))
     try {
       const result = await client.editMessage(currentConversationId, messageId, { content: editingMessageContent.trim() })
-      setMessages(result.messages as ChatMessage[])
-      setEditingMessageId(null)
-      setEditingMessageContent('')
+      setChatState((prev) => ({
+        ...prev,
+        messages: result.messages as ChatMessage[],
+        editingMessageId: null,
+        editingMessageContent: '',
+      }))
       await refreshConversations()
     } catch (err) {
-      setChatError(err instanceof Error ? err.message : '编辑消息失败')
+      setChatState((prev) => ({ ...prev, chatError: getErrorMessage(err, '编辑消息失败') }))
     }
   }
 
   const handleResendMessage = async (messageId: string) => {
     if (!currentConversationId) return
-    setChatError(null)
+    setChatState((prev) => ({ ...prev, chatError: null }))
     try {
       await client.resendMessage(currentConversationId, { messageId })
       await loadMessages(currentConversationId, { refresh: true })
       await refreshConversations()
     } catch (err) {
-      setChatError(err instanceof Error ? err.message : '重发失败')
+      setChatState((prev) => ({ ...prev, chatError: getErrorMessage(err, '重发失败') }))
     }
   }
 
   const handleTruncateMessages = async (messageId: string) => {
     if (!currentConversationId) return
-    setChatError(null)
+    setChatState((prev) => ({ ...prev, chatError: null }))
     try {
       const result = await client.truncateMessages(currentConversationId, { messageId })
       applyMessagesResult(result)
-      setEditingMessageId(null)
+      setChatState((prev) => ({ ...prev, editingMessageId: null }))
       await refreshConversations()
     } catch (err) {
-      setChatError(err instanceof Error ? err.message : '截断失败')
+      setChatState((prev) => ({ ...prev, chatError: getErrorMessage(err, '截断失败') }))
     }
   }
 
@@ -345,6 +496,8 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
 
         <button className="primary" onClick={handleCreateConversation}>新对话</button>
 
+        {bootstrapError ? <div className="error">{bootstrapError}</div> : null}
+
         <SidebarSection title="Runtime">
           <div className="card small">
             <div>{runtime?.service}</div>
@@ -353,7 +506,10 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
           </div>
         </SidebarSection>
 
-        <SidebarSection title="Workspaces">
+        <SidebarSection
+          title="Workspaces"
+          action={workspaces.length > 0 ? <button className="ghost" onClick={() => void handleRefreshWorkspaceCapabilities()}>刷新</button> : null}
+        >
           {workspaces.map((workspace: Workspace) => {
             const capability = workspaceCapabilities[workspace.id]
             return (
@@ -370,7 +526,7 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
 
         <SidebarSection
           title="Pinned"
-          action={pinnedConversations.length > 0 ? <button className="ghost" onClick={() => setPinnedExpanded((prev) => !prev)}>{pinnedExpanded ? '收起' : '展开'}</button> : null}
+          action={pinnedConversations.length > 0 ? <button className="ghost" onClick={() => setSidebarState((prev) => ({ ...prev, pinnedExpanded: !prev.pinnedExpanded }))}>{pinnedExpanded ? '收起' : '展开'}</button> : null}
         >
           {pinnedExpanded && pinnedConversations.length > 0 ? pinnedConversations.map((conversation) => (
             <ConversationListItem
@@ -379,11 +535,11 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
               active={conversation.id === currentConversationId}
               editing={editingConversationId === conversation.id}
               editingTitle={editingTitle}
-              onEditingTitleChange={setEditingTitle}
+              onEditingTitleChange={(value) => setSidebarState((prev) => ({ ...prev, editingTitle: value }))}
               onSelect={handleSelectConversation}
               onStartRename={handleStartRenameConversation}
               onConfirmRename={handleRenameConversation}
-              onCancelRename={() => setEditingConversationId(null)}
+              onCancelRename={() => setSidebarState((prev) => ({ ...prev, editingConversationId: null }))}
               onDelete={handleDeleteConversation}
               onTogglePin={handleTogglePinConversation}
             />
@@ -404,11 +560,11 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
                   active={conversation.id === currentConversationId}
                   editing={editingConversationId === conversation.id}
                   editingTitle={editingTitle}
-                  onEditingTitleChange={setEditingTitle}
+                  onEditingTitleChange={(value) => setSidebarState((prev) => ({ ...prev, editingTitle: value }))}
                   onSelect={handleSelectConversation}
                   onStartRename={handleStartRenameConversation}
                   onConfirmRename={handleRenameConversation}
-                  onCancelRename={() => setEditingConversationId(null)}
+                  onCancelRename={() => setSidebarState((prev) => ({ ...prev, editingConversationId: null }))}
                   onDelete={handleDeleteConversation}
                   onTogglePin={handleTogglePinConversation}
                 />
@@ -436,10 +592,14 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
 
         {chatError ? <div className="error">{chatError}</div> : null}
 
+        {!currentConversationId && !messagesLoading ? (
+          <div className="empty-state">请选择一个对话，或先创建一个新对话。</div>
+        ) : null}
+
         {messagesLoading ? <div className="muted">正在加载消息...</div> : null}
 
         <div className="messages">
-          {!messagesLoading && messages.length === 0 ? <div className="empty-state">当前对话还没有消息。</div> : null}
+          {currentConversationId && !messagesLoading && messages.length === 0 ? <div className="empty-state">当前对话还没有消息。</div> : null}
           {messages.map((message: ChatMessage) => (
             <article key={message.id} className={`message ${message.role}`}>
               <div className="message-header">
@@ -454,12 +614,12 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
                 <div className="list">
                   <textarea
                     value={editingMessageContent}
-                    onChange={(event) => setEditingMessageContent(event.target.value)}
+                    onChange={(event) => setChatState((prev) => ({ ...prev, editingMessageContent: event.target.value }))}
                     rows={4}
                   />
                   <div className="toolbar">
                     <button className="primary" type="button" onClick={() => void handleEditMessage(message.id)}>保存</button>
-                    <button className="ghost" type="button" onClick={() => setEditingMessageId(null)}>取消</button>
+                    <button className="ghost" type="button" onClick={() => setChatState((prev) => ({ ...prev, editingMessageId: null }))}>取消</button>
                   </div>
                 </div>
               ) : (
@@ -472,12 +632,12 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
         <form className="composer" onSubmit={handleSend}>
           <textarea
             value={input}
-            onChange={(event) => setInput(event.target.value)}
+            onChange={(event) => setChatState((prev) => ({ ...prev, input: event.target.value }))}
             placeholder="输入一条消息，验证 frontend-core -> platform-web -> Go server"
             rows={4}
           />
           <button className="primary" type="submit" disabled={!currentConversationId || sending}>
-            {sending ? '发送中...' : '发送'}
+            {sending ? '发送中...' : currentConversationId ? '发送' : '请先选择对话'}
           </button>
         </form>
       </main>
