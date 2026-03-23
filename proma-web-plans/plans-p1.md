@@ -1,3 +1,9 @@
+# Proma Web 项目总计划（P1）
+
+**项目总题目：** 完整迁移 GitHub 上的 Proma 项目核心功能到 `sparky` 工作区，并在保留原有产品能力与交互语义的前提下，将原本偏 Electron renderer 耦合的实现改造为 `web + server` 的前后端分离架构。前端以可复用的共享核心为中心，后端以 Go server 提供平台能力与数据接口，最终形成一套可在浏览器环境独立运行、并可继续向多平台扩展的 Proma Web 版本。
+
+**项目描述：** 本项目的核心目标不是机械复制 upstream 代码，而是把 Proma 在会话管理、聊天数据流、运行时信息、workspace 能力、用户信息以及后续高级消息能力上的有效产品行为，系统性迁移到 `sparky-proma` 中。迁移过程中，需要拆除前端对 Electron 特定注入能力的直接依赖，统一收敛到 `PlatformClient` 契约之上，再通过 `frontend-core`、`platform-web` 和 `proma-web/server-go` 分层实现 web 端闭环。P1 聚焦最小可运行主链路与基础能力解耦，确保 web 版本可以稳定完成核心聊天与会话操作，并为后续高级能力迁移打下清晰边界。
+
 # Upstream Frontend 能力解耦完整开发计划
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
