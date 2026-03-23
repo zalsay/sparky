@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   title TEXT NOT NULL,
   model_id TEXT,
   channel_id TEXT,
+  pinned BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

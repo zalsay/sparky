@@ -15,6 +15,8 @@ import type {
   Workspace,
   WorkspaceCapabilities,
 } from '@sparky/shared'
+import { PlatformRequestError } from '@sparky/shared'
+import type { PlatformRequestErrorDetails } from '@sparky/shared'
 
 export interface PlatformClient {
   getRuntime(): Promise<RuntimeInfo>

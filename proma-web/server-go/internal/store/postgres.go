@@ -20,7 +20,21 @@ func NewPostgresStore(db *sql.DB) *PostgresStore {
 	return &PostgresStore{db: db}
 }
 
+func (s *PostgresStore) ensureSchema(ctx context.Context) error {
+	const addPinnedColumn = `
+		ALTER TABLE chat_sessions
+		ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE`
+	if _, err := s.db.ExecContext(ctx, addPinnedColumn); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *PostgresStore) ensureSeed(ctx context.Context) error {
+	if err := s.ensureSchema(ctx); err != nil {
+		return err
+	}
+
 	const insertSettings = `
 		INSERT INTO settings (id, theme_mode, onboarding_completed, environment_check_skipped, notifications_enabled)
 		VALUES (TRUE, 'system', TRUE, FALSE, TRUE)

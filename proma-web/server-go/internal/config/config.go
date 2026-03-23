@@ -29,7 +29,7 @@ type fileConfig struct {
 func Load() Config {
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080"
+		port = "3010"
 	}
 
 	environment := os.Getenv("APP_ENV")

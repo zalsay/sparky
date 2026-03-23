@@ -1,5 +1,40 @@
 export type ThemeMode = 'light' | 'dark' | 'system'
 
+export interface PlatformRequestErrorDetails {
+  error?: string
+  message?: string
+  code?: string
+  details?: unknown
+}
+
+export class PlatformRequestError extends Error {
+  status: number
+  statusText: string
+  path: string
+  body?: PlatformRequestErrorDetails | string
+  code?: string
+  details?: unknown
+
+  constructor(input: {
+    message: string
+    status: number
+    statusText: string
+    path: string
+    body?: PlatformRequestErrorDetails | string
+  }) {
+    super(input.message)
+    this.name = 'PlatformRequestError'
+    this.status = input.status
+    this.statusText = input.statusText
+    this.path = input.path
+    this.body = input.body
+    if (input.body && typeof input.body === 'object') {
+      this.code = input.body.code
+      this.details = input.body.details
+    }
+  }
+}
+
 export interface AppSettings {
   themeMode: ThemeMode
   onboardingCompleted: boolean

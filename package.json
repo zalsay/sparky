@@ -4,10 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "web:dev": "cd apps/web && ./node_modules/.bin/vite",
-    "web:build": "cd apps/web && ./node_modules/.bin/vite build",
-    "server:dev": "cd apps/server-go && go run ./cmd/server",
-    "server:start": "cd apps/server-go && go run ./cmd/server"
+    "web:dev": "cd proma-web/web && ./node_modules/.bin/vite",
+    "web:build": "cd proma-web/web && ./node_modules/.bin/vite build",
+    "server:dev": "cd proma-web/server-go && go run ./cmd/server",
+    "server:start": "cd proma-web/server-go && go run ./cmd/server"
   },
   "devDependencies": {
     "@types/react": "^18.3.0",
