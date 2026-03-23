@@ -13,7 +13,7 @@
 ## 总体原则
 
 - [ ] 所有共享前端逻辑必须只依赖 `PlatformClient`，不直接访问 `window.electronAPI`
-- [ ] `apps/web` 维持薄壳，只做平台注入和启动
+- [ ] `proma-web/web` 维持薄壳，只做平台注入和启动
 - [ ] 先补数据与能力边界，再迁 UI 行为，不硬搬 upstream 全量 renderer 结构
 - [ ] 以最小可运行链路为先：list/create/select/send，再逐步补 rename/delete/pin/load-more/refresh
 - [ ] 每完成一个独立能力块都执行对应 build / type-check / API 验证
@@ -28,7 +28,7 @@
 - [*] 将 runtime / settings / workspaces / listConversations / createConversation / getMessages / sendMessage 接入 web 版本
 - [*] 补充 `UserProfile`、`WorkspaceCapabilities`、`ConversationMeta.pinned` 共享类型
 - [*] 在 `frontend-core` 落下会话按 今天 / 昨天 / 更早 分组的基础能力
-- [*] `apps/web` 已收敛为平台注入薄壳
+- [*] `proma-web/web` 已收敛为平台注入薄壳
 - [*] Go server 可编译，web build 可通过
 - [ ] TypeScript 全链路校验稳定通过
 
@@ -66,7 +66,7 @@
 - [*] 为消息分页 / load more 增加 HTTP 请求实现
 - [*] 为消息刷新逻辑统一封装请求方法
 - [*] 为 edit / resend / truncate 增加最小 web 请求实现
-- [ ] 统一 `request()` 错误结构，返回更清晰的前端错误信息
+- [*] 统一 `request()` 错误结构，返回更清晰的前端错误信息
 - [*] 校验 API base URL、headers、JSON body 行为在所有新接口上一致
 
 ### 3. Go server API 对齐
@@ -106,7 +106,7 @@
 - [*] 增加消息加载中状态
 - [*] 增加消息刷新能力
 - [*] 增加 load more / 分页加载更早消息
-- [ ] 增加 chat 空状态
+- [*] 增加 chat 空状态
 - [*] 增加 chat 错误态
 - [*] 增加 resend 的平台接口与最小 UI 行为
 - [*] 增加 edit message 的平台接口与最小 UI 行为
@@ -119,27 +119,27 @@
 - [*] workspace 列表基础展示
 - [*] workspace capabilities 基础展示
 - [*] user profile 基础展示
-- [ ] 校验 workspace capabilities 缓存与刷新策略
-- [ ] 明确 profile/runtime/workspaces 的 bootstrap 顺序与失败处理
-- [ ] 将 bootstrap 中的并发加载错误收敛为稳定的页面状态
+- [*] 校验 workspace capabilities 缓存与刷新策略
+- [*] 明确 profile/runtime/workspaces 的 bootstrap 顺序与失败处理
+- [*] 将 bootstrap 中的并发加载错误收敛为稳定的页面状态
 - [ ] 必要时拆分 `SparkyApp` 过大的状态与 handler
 
-### 7. apps/web 薄壳治理
-- [*] `apps/web` 只负责注入 `PlatformClient`
-- [ ] 确认 `apps/web/src/App.tsx` 不再承载业务逻辑
-- [ ] 确认 `apps/web` 只依赖 package 导出，不直接引用内部源码路径
-- [ ] 清理为解耦临时保留的直连实现
-- [ ] 统一 web 入口、样式、provider 装配方式
+### 7. proma-web/web 薄壳治理
+- [*] `proma-web/web` 只负责注入 `PlatformClient`
+- [*] 确认 `proma-web/web/src/App.tsx` 不再承载业务逻辑
+- [*] 确认 `proma-web/web` 只依赖 package 导出，不直接引用内部源码路径
+- [*] 清理为解耦临时保留的直连实现
+- [*] 统一 web 入口、样式、provider 装配方式
 
 ### 8. 类型系统与构建稳定性
 - [*] web build 已通过
-- [*] 复现 `tsc -p apps/web/tsconfig.json --noEmit` 的 internal crash
-- [ ] 定位是 TS 版本、paths、package exports 还是 monorepo 引用方式导致
-- [ ] 统一 package.json exports / types / main 字段
-- [ ] 统一 tsconfig path 与 workspace 解析方式
-- [ ] 去掉容易触发 TS Debug Failure 的混合引用模式
-- [ ] 让 `frontend-core / platform-web / platform-contract / shared / apps/web` 类型检查稳定通过
-- [ ] 记录根因与修复方式，避免后续回归
+- [*] 复现 `tsc -p proma-web/web/tsconfig.json --noEmit` 的 internal crash
+- [*] 定位是 TS 版本、paths、package exports 还是 monorepo 引用方式导致
+- [*] 统一 package.json exports / types / main 字段
+- [*] 统一 tsconfig path 与 workspace 解析方式
+- [*] 去掉容易触发 TS Debug Failure 的混合引用模式
+- [*] 让 `frontend-core / platform-web / platform-contract / shared / proma-web/web` 类型检查稳定通过
+- [*] 记录根因与修复方式，避免后续回归
 
 ### 9. 文档与交付
 - [*] 写出本计划文档 `plans.md`
@@ -159,7 +159,7 @@
 - Read: `packages/platform-web/src/index.ts`
 - Read: `packages/frontend-core/src/index.tsx`
 - Read: `packages/shared/src/index.ts`
-- Read: `apps/server-go/internal/api/server.go`
+- Read: `proma-web/server-go/internal/api/server.go`
 - Read: upstream `Proma/apps/electron/src/renderer/components/app-shell/LeftSidebar.tsx`
 - Read: upstream `Proma/apps/electron/src/renderer/components/chat/ChatView.tsx`
 
@@ -172,7 +172,7 @@
 - [*] 已完成。当前 `platform-web` 仅覆盖 list/create/get/send，Go server 路由同样只覆盖 sessions list/create 与 messages list/send。
 
 **Step 3: 校验当前最小链路**
-Run: `npm --prefix apps/web run build`
+Run: `npm --prefix proma-web/web run build`
 Expected: PASS
 - [*] 已完成。当前 build PASS。
 
@@ -219,8 +219,8 @@ git commit -m "feat: extend shared types and platform contract"
 
 **Files:**
 - Modify: `packages/platform-web/src/index.ts`
-- Modify: `apps/server-go/internal/api/server.go`
-- Modify: `apps/server-go/internal/store/*.go`
+- Modify: `proma-web/server-go/internal/api/server.go`
+- Modify: `proma-web/server-go/internal/store/*.go`
 - Modify: `plans.md`
 
 **Step 1: 先写或确认 server 侧接口**
@@ -236,18 +236,18 @@ git commit -m "feat: extend shared types and platform contract"
 - [*] 已完成。相关 request 已写入工作区。
 
 **Step 3: 运行 server 编译验证**
-Run: `cd /Volumes/RC500/cib/sparky-proma/apps/server-go && go test ./...`
+Run: `cd /Volumes/RC500/cib/sparky-proma/proma-web/server-go && go test ./...`
 Expected: PASS
-- [*] 已完成。已改为在 `apps/server-go` 模块上下文执行并 PASS。
+- [*] 已完成。已改为在 `proma-web/server-go` 模块上下文执行并 PASS。
 
 **Step 4: 运行 web build 验证**
-Run: `npm --prefix apps/web run build`
+Run: `npm --prefix proma-web/web run build`
 Expected: PASS
 - [*] 已完成。build PASS。
 
 **Step 5: 更新计划状态并提交**
 ```bash
-git add packages/platform-web/src/index.ts apps/server-go plans.md
+git add packages/platform-web/src/index.ts proma-web/server-go plans.md
 git commit -m "feat: add platform web conversation and message APIs"
 ```
 - [ ] 未执行。本轮按你的要求只更新计划并提交计划文件，不提交代码实现。
@@ -274,7 +274,7 @@ git commit -m "feat: add platform web conversation and message APIs"
 - [*] 已完成。`selectConversationAfterDeletion` 已实现。
 
 **Step 4: 运行 web build**
-Run: `npm --prefix apps/web run build`
+Run: `npm --prefix proma-web/web run build`
 Expected: PASS
 - [*] 已完成。build PASS。
 
@@ -315,7 +315,7 @@ git commit -m "feat: decouple sidebar conversation management"
 - [*] 已完成。当前实现中已在 send / resend / edit / truncate 后刷新 conversations。
 
 **Step 5: 运行 web build 与类型检查**
-Run: `npm --prefix apps/web run build && npx tsc -p apps/web/tsconfig.json --noEmit`
+Run: `npm --prefix proma-web/web run build && npx tsc -p proma-web/web/tsconfig.json --noEmit`
 Expected: build PASS；type-check 尽量 PASS，若仍 crash 则记录并在 Task 6 处理
 - [*] build 已完成并 PASS。
 - [*] type-check 已复现 TS internal crash。
@@ -333,30 +333,30 @@ git commit -m "feat: decouple chat data flow from platform"
 - Modify: `package.json`
 - Modify: `tsconfig.json`
 - Modify: `packages/*/package.json`
-- Modify: `apps/web/tsconfig.json`
+- Modify: `proma-web/web/tsconfig.json`
 - Modify: `plans.md`
 
 **Step 1: 复现 TS internal crash**
-Run: `npx tsc -p apps/web/tsconfig.json --noEmit`
+Run: `npx tsc -p proma-web/web/tsconfig.json --noEmit`
 Expected: 复现当前问题
-- [*] 已完成。仍会出现 `Debug Failure`。
+- [*] 已完成。先前的 internal crash 已被真实类型错误掩盖；修复 `packages/platform-contract/src/index.ts` 中 `import type` 与命名 `type` 混用后，当前 `tsc -p proma-web/web/tsconfig.json --noEmit` PASS。
 
 **Step 2: 最小化问题范围**
-- 分别对 `shared / platform-contract / platform-web / frontend-core / apps/web` 做独立类型检查。
-- [*] 已完成。当前仓库中仅 `apps/web/tsconfig.json` 存在可用 tsconfig；对该入口单独执行类型检查已 PASS，packages 暂无独立 tsconfig，说明问题集中在 web 入口解析链路而非各 package 独立编译。
+- 分别对 `shared / platform-contract / platform-web / frontend-core / proma-web/web` 做独立类型检查。
+- [*] 已完成。当前仓库中仅 `proma-web/web/tsconfig.json` 存在可用 tsconfig；对该入口单独执行类型检查已 PASS，packages 暂无独立 tsconfig，说明问题集中在 web 入口解析链路而非各 package 独立编译。
 
 **Step 3: 修正 exports / path alias / package resolution**
 - 去掉混用包导入与源码相对导入的模式。
-- [*] 已完成。已移除根 tsconfig 的全局包源码映射，将 alias 收敛到 `apps/web/tsconfig.json`，并将 `apps/web/src/api.ts` 改为包导入。
+- [*] 已完成。已移除根 tsconfig 的全局包源码映射，将 alias 收敛到 `proma-web/web/tsconfig.json`，并将 `proma-web/web/src/api.ts` 改为包导入。
 
 **Step 4: 重新运行类型检查**
-Run: `npx tsc -p apps/web/tsconfig.json --noEmit`
+Run: `npx tsc -p proma-web/web/tsconfig.json --noEmit`
 Expected: PASS
-- [*] 已完成。当前 `tsc -p apps/web/tsconfig.json --noEmit` PASS。
+- [*] 已完成。当前 `tsc -p proma-web/web/tsconfig.json --noEmit` PASS。
 
 **Step 5: 更新计划状态并提交**
 ```bash
-git add package.json tsconfig.json packages apps/web/tsconfig.json plans.md
+git add package.json tsconfig.json packages proma-web/web/tsconfig.json plans.md
 git commit -m "fix: stabilize web type-check pipeline"
 ```
 - [ ] 未执行。
@@ -368,14 +368,14 @@ git commit -m "fix: stabilize web type-check pipeline"
 
 **Step 1: 执行最终验证**
 Run:
-- `cd /Volumes/RC500/cib/sparky-proma/apps/server-go && go test ./...`
-- `npm --prefix apps/web run build`
-- `npx tsc -p apps/web/tsconfig.json --noEmit`
+- `cd /Volumes/RC500/cib/sparky-proma/proma-web/server-go && go test ./...`
+- `npm --prefix proma-web/web run build`
+- `npx tsc -p proma-web/web/tsconfig.json --noEmit`
 
 Expected: 前两项 PASS，TypeScript 校验当前仍因 internal crash 未通过。
 - [*] server test 已通过。
 - [*] web build 已通过。
-- [ ] web type-check 尚未通过。
+- [*] web type-check 已通过。
 
 **Step 2: 手动功能回归**
 - bootstrap
@@ -411,11 +411,11 @@ git commit -m "docs: update decoupling implementation progress"
 - [*] `packages/shared/src/index.ts` 已补 conversation / message 相关最小共享类型
 - [*] `packages/platform-contract/src/index.ts` 已补 rename / delete / pin / refresh / loadMore / edit / resend / truncate 契约
 - [*] `packages/platform-web/src/index.ts` 已补对应 HTTP 请求实现
-- [*] `apps/server-go/internal/api/server.go`、`apps/server-go/internal/api/chat.go` 与 `internal/store/*` 已补最小后端接口与存储实现
+- [*] `proma-web/server-go/internal/api/server.go`、`proma-web/server-go/internal/api/chat.go` 与 `internal/store/*` 已补最小后端接口与存储实现
 - [*] `packages/frontend-core/src/index.tsx` 已补 sidebar 会话管理与 chat 数据层最小解耦实现
-- [*] `cd /Volumes/RC500/cib/sparky-proma/apps/server-go && go test ./...` 已通过
-- [*] `npm --prefix /Volumes/RC500/cib/sparky-proma/apps/web run build` 已通过
-- [ ] `npx tsc -p apps/web/tsconfig.json --noEmit` 仍为 TypeScript internal crash，尚未处理
+- [*] `cd /Volumes/RC500/cib/sparky-proma/proma-web/server-go && go test ./...` 已通过
+- [*] `npm --prefix /Volumes/RC500/cib/sparky-proma/proma-web/web run build` 已通过
+- [*] `npx tsc -p proma-web/web/tsconfig.json --noEmit` 已通过
 - [ ] 本次仅提交 `plans.md`，其余功能代码保持未提交状态
 
 ## 已知风险与决策
@@ -423,8 +423,8 @@ git commit -m "docs: update decoupling implementation progress"
 - [ ] upstream `ChatView` 绑定了流式、附件、tool、prompt、context divider 等大量 Electron 特性，本轮只迁最小数据层，不强行一次搬完
 - [ ] 当前 `frontend-core/src/index.tsx` 状态过于集中，后续可能需要拆分组件，但只有在解耦落地后再做，避免提前抽象
 - [ ] Go server API 可能尚未完全覆盖 upstream 行为，需以 web 最小链路优先，不追求一轮对齐全部功能
-- [*] 根目录 `go test ./...` 与仓库结构不匹配，后续验证应在 `apps/server-go` 模块内执行
-- [ ] TypeScript internal crash 可能与仓库结构配置有关，需要单列为稳定性任务处理
+- [*] 根目录 `go test ./...` 与仓库结构不匹配，后续验证应在 `proma-web/server-go` 模块内执行
+- [*] TypeScript 类型检查问题已定位并修复；根因是 `packages/platform-contract/src/index.ts` 中 `import type` 语句错误地混用了命名 `type` 修饰符
 
 ## 完成定义
 
@@ -432,8 +432,8 @@ git commit -m "docs: update decoupling implementation progress"
 - [ ] sidebar 会话管理完整经由 `PlatformClient`
 - [ ] chat 最小数据层完整经由 `PlatformClient`
 - [ ] web 平台与 Go server 支撑上述所有能力
-- [ ] `apps/web` 维持薄壳
+- [ ] `proma-web/web` 维持薄壳
 - [*] web build 通过
-- [ ] web type-check 通过
+- [*] web type-check 通过
 - [*] server test / build 通过
 - [*] `plans.md` 与代码进度同步

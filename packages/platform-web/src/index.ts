@@ -1,4 +1,8 @@
 import type { PlatformClient } from '@sparky/platform-contract'
+import {
+  PlatformRequestError,
+  type PlatformRequestErrorDetails,
+} from '@sparky/shared'
 import type {
   AppSettings,
   ConversationMessagesResult,
@@ -24,7 +28,44 @@ type MessageMutationResponse = {
 }
 
 const globalImportMeta = import.meta as unknown as ImportMetaEnvShape
-const API_BASE = globalImportMeta.env?.VITE_API_BASE_URL ?? 'http://localhost:8080'
+const API_BASE = globalImportMeta.env?.VITE_API_BASE_URL ?? 'http://localhost:3010'
+
+async function parseErrorBody(response: Response): Promise<PlatformRequestErrorDetails | string | undefined> {
+  const contentType = response.headers.get('content-type') ?? ''
+
+  if (contentType.includes('application/json')) {
+    try {
+      return await response.json() as PlatformRequestErrorDetails
+    } catch {
+      return undefined
+    }
+  }
+
+  try {
+    const text = await response.text()
+    return text || undefined
+  } catch {
+    return undefined
+  }
+}
+
+function getErrorMessage(path: string, response: Response, body?: PlatformRequestErrorDetails | string): string {
+  if (typeof body === 'string' && body.trim()) {
+    return body
+  }
+
+  if (body && typeof body === 'object') {
+    if (typeof body.message === 'string' && body.message.trim()) {
+      return body.message
+    }
+    if (typeof body.error === 'string' && body.error.trim()) {
+      return body.error
+    }
+  }
+
+  const suffix = response.statusText ? ` ${response.statusText}` : ''
+  return `Request failed (${response.status}${suffix}): ${path}`
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -36,14 +77,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
-    let message = `Request failed: ${response.status}`
-    try {
-      const body = await response.json() as { error?: string }
-      if (body.error) message = body.error
-    } catch {
-      // ignore non-json error bodies
-    }
-    throw new Error(message)
+    const body = await parseErrorBody(response)
+    throw new PlatformRequestError({
+      message: getErrorMessage(path, response, body),
+      status: response.status,
+      statusText: response.statusText,
+      path,
+      body,
+    })
   }
 
   if (response.status === 204) {
@@ -61,7 +102,12 @@ function buildMessagesQuery(input?: GetMessagesInput): string {
   return query ? `?${query}` : ''
 }
 
-export function createWebPlatformClient(): PlatformClient {
+export interface WebPlatformClientOptions {
+  getUserProfile?: PlatformClient['getUserProfile']
+  getWorkspaceCapabilities?: PlatformClient['getWorkspaceCapabilities']
+}
+
+export function createWebPlatformClient(options: WebPlatformClientOptions = {}): PlatformClient {
   return {
     getRuntime: () => request<RuntimeInfo>('/api/runtime'),
     getSettings: () => request<AppSettings>('/api/settings'),
@@ -109,12 +155,12 @@ export function createWebPlatformClient(): PlatformClient {
       method: 'POST',
       body: JSON.stringify(input),
     }),
-    getUserProfile: async () => ({
+    getUserProfile: options.getUserProfile ?? (async () => ({
       displayName: 'Sparky User',
-    }),
-    getWorkspaceCapabilities: async () => ({
+    })),
+    getWorkspaceCapabilities: options.getWorkspaceCapabilities ?? (async () => ({
       mcpServerCount: 0,
       skillCount: 0,
-    }),
+    })),
   }
 }
