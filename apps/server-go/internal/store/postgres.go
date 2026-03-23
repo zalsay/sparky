@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -140,7 +142,7 @@ func (s *PostgresStore) ListConversations(ctx context.Context) ([]Conversation, 
 	if err := s.ensureSeed(ctx); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, title, COALESCE(model_id, ''), COALESCE(channel_id, ''), created_at, updated_at FROM chat_sessions ORDER BY updated_at DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, title, COALESCE(model_id, ''), COALESCE(channel_id, ''), COALESCE(pinned, FALSE), created_at, updated_at FROM chat_sessions ORDER BY pinned DESC, updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +151,7 @@ func (s *PostgresStore) ListConversations(ctx context.Context) ([]Conversation, 
 	items := []Conversation{}
 	for rows.Next() {
 		var item Conversation
-		if err := rows.Scan(&item.ID, &item.Title, &item.ModelID, &item.ChannelID, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Title, &item.ModelID, &item.ChannelID, &item.Pinned, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -164,30 +166,85 @@ func (s *PostgresStore) CreateConversation(ctx context.Context, title, modelID, 
 	const query = `
 		INSERT INTO chat_sessions (title, model_id, channel_id)
 		VALUES ($1, NULLIF($2, ''), NULLIF($3, ''))
-		RETURNING id, title, COALESCE(model_id, ''), COALESCE(channel_id, ''), created_at, updated_at`
+		RETURNING id, title, COALESCE(model_id, ''), COALESCE(channel_id, ''), COALESCE(pinned, FALSE), created_at, updated_at`
 	var item Conversation
-	if err := s.db.QueryRowContext(ctx, query, title, modelID, channelID).Scan(&item.ID, &item.Title, &item.ModelID, &item.ChannelID, &item.CreatedAt, &item.UpdatedAt); err != nil {
+	if err := s.db.QueryRowContext(ctx, query, title, modelID, channelID).Scan(&item.ID, &item.Title, &item.ModelID, &item.ChannelID, &item.Pinned, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		return Conversation{}, err
 	}
 	return item, nil
 }
 
-func (s *PostgresStore) GetConversationMessages(ctx context.Context, conversationID string, limit int) (ConversationMessagesResult, error) {
-	const countQuery = `SELECT COUNT(*) FROM chat_messages WHERE conversation_id = $1`
-	var total int
-	if err := s.db.QueryRowContext(ctx, countQuery, conversationID).Scan(&total); err != nil {
-		return ConversationMessagesResult{}, err
+func (s *PostgresStore) RenameConversation(ctx context.Context, conversationID, title string) (Conversation, error) {
+	const query = `
+		UPDATE chat_sessions
+		SET title = $2, updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, title, COALESCE(model_id, ''), COALESCE(channel_id, ''), COALESCE(pinned, FALSE), created_at, updated_at`
+	var item Conversation
+	if err := s.db.QueryRowContext(ctx, query, conversationID, strings.TrimSpace(title)).Scan(&item.ID, &item.Title, &item.ModelID, &item.ChannelID, &item.Pinned, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Conversation{}, errConversationNotFound
+		}
+		return Conversation{}, err
 	}
+	return item, nil
+}
+
+func (s *PostgresStore) DeleteConversation(ctx context.Context, conversationID string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM chat_sessions WHERE id = $1`, conversationID)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return errConversationNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) SetConversationPinned(ctx context.Context, conversationID string, pinned bool) (Conversation, error) {
+	const query = `
+		UPDATE chat_sessions
+		SET pinned = $2, updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, title, COALESCE(model_id, ''), COALESCE(channel_id, ''), COALESCE(pinned, FALSE), created_at, updated_at`
+	var item Conversation
+	if err := s.db.QueryRowContext(ctx, query, conversationID, pinned).Scan(&item.ID, &item.Title, &item.ModelID, &item.ChannelID, &item.Pinned, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Conversation{}, errConversationNotFound
+		}
+		return Conversation{}, err
+	}
+	return item, nil
+}
+
+func (s *PostgresStore) GetConversationMessages(ctx context.Context, conversationID string, limit int, beforeMessageID string) (ConversationMessagesResult, error) {
 	if limit <= 0 {
 		limit = 50
 	}
+	args := []any{conversationID}
+	countQuery := `SELECT COUNT(*) FROM chat_messages WHERE conversation_id = $1`
+	filterClause := ""
+	if beforeMessageID != "" {
+		filterClause = ` AND created_at < (SELECT created_at FROM chat_messages WHERE id = $2 AND conversation_id = $1)`
+		countQuery += filterClause
+		args = append(args, beforeMessageID)
+	}
+	var total int
+	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return ConversationMessagesResult{}, err
+	}
+	queryArgs := append([]any{}, args...)
+	queryArgs = append(queryArgs, limit, max(total-limit, 0))
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, conversation_id, role, content, created_at
 		FROM chat_messages
-		WHERE conversation_id = $1
+		WHERE conversation_id = $1`+filterClause+`
 		ORDER BY created_at ASC
-		LIMIT $2 OFFSET $3
-	`, conversationID, limit, max(total-limit, 0))
+		LIMIT $`+strconv.Itoa(len(args)+1)+` OFFSET $`+strconv.Itoa(len(args)+2), queryArgs...)
 	if err != nil {
 		return ConversationMessagesResult{}, err
 	}
@@ -247,6 +304,56 @@ func (s *PostgresStore) AppendUserAndAssistantMessage(ctx context.Context, conve
 		return nil, err
 	}
 	return created, nil
+}
+
+func (s *PostgresStore) EditMessage(ctx context.Context, conversationID, messageID, content string) ([]Message, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE chat_messages SET content = $3 WHERE conversation_id = $1 AND id = $2`, conversationID, messageID, content)
+	if err != nil {
+		return nil, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if count == 0 {
+		return nil, errMessageNotFound
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE chat_sessions SET updated_at = NOW() WHERE id = $1`, conversationID); err != nil {
+		return nil, err
+	}
+	messages, err := s.GetConversationMessages(ctx, conversationID, 50, "")
+	if err != nil {
+		return nil, err
+	}
+	return messages.Messages, nil
+}
+
+func (s *PostgresStore) ResendMessage(ctx context.Context, conversationID, messageID string) ([]Message, error) {
+	var content string
+	if err := s.db.QueryRowContext(ctx, `SELECT content FROM chat_messages WHERE conversation_id = $1 AND id = $2 AND role = 'user'`, conversationID, messageID).Scan(&content); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errMessageNotFound
+		}
+		return nil, err
+	}
+	return s.AppendUserAndAssistantMessage(ctx, conversationID, content, "这是 Go server 的最小非流式重发占位回复。")
+}
+
+func (s *PostgresStore) TruncateMessages(ctx context.Context, conversationID, messageID string) (ConversationMessagesResult, error) {
+	var createdAt time.Time
+	if err := s.db.QueryRowContext(ctx, `SELECT created_at FROM chat_messages WHERE conversation_id = $1 AND id = $2`, conversationID, messageID).Scan(&createdAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ConversationMessagesResult{}, errMessageNotFound
+		}
+		return ConversationMessagesResult{}, err
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM chat_messages WHERE conversation_id = $1 AND created_at >= $2`, conversationID, createdAt); err != nil {
+		return ConversationMessagesResult{}, err
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE chat_sessions SET updated_at = NOW() WHERE id = $1`, conversationID); err != nil {
+		return ConversationMessagesResult{}, err
+	}
+	return s.GetConversationMessages(ctx, conversationID, 50, "")
 }
 
 func max(a, b int) int {

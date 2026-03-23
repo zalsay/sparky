@@ -3,10 +3,14 @@ package store
 import (
 	"context"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+var errConversationNotFound = ErrConversationNotFound
+var errMessageNotFound = ErrMessageNotFound
 
 type MemoryStore struct {
 	settings      Settings
@@ -91,7 +95,12 @@ func (s *MemoryStore) CreateWorkspace(_ context.Context, name, rootPath string) 
 
 func (s *MemoryStore) ListConversations(context.Context) ([]Conversation, error) {
 	items := append([]Conversation(nil), s.conversations...)
-	sort.Slice(items, func(i, j int) bool { return items[i].UpdatedAt.After(items[j].UpdatedAt) })
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Pinned != items[j].Pinned {
+			return items[i].Pinned
+		}
+		return items[i].UpdatedAt.After(items[j].UpdatedAt)
+	})
 	return items, nil
 }
 
@@ -106,17 +115,70 @@ func (s *MemoryStore) CreateConversation(_ context.Context, title, modelID, chan
 	return item, nil
 }
 
-func (s *MemoryStore) GetConversationMessages(_ context.Context, conversationID string, limit int) (ConversationMessagesResult, error) {
-	items := append([]Message(nil), s.messages[conversationID]...)
-	total := len(items)
-	if limit > 0 && total > limit {
-		items = items[total-limit:]
-		return ConversationMessagesResult{Messages: items, HasMore: true, Total: total}, nil
+func (s *MemoryStore) RenameConversation(_ context.Context, conversationID, title string) (Conversation, error) {
+	for i := range s.conversations {
+		if s.conversations[i].ID == conversationID {
+			s.conversations[i].Title = strings.TrimSpace(title)
+			s.conversations[i].UpdatedAt = time.Now().UTC()
+			return s.conversations[i], nil
+		}
 	}
-	return ConversationMessagesResult{Messages: items, HasMore: false, Total: total}, nil
+	return Conversation{}, errConversationNotFound
+}
+
+func (s *MemoryStore) DeleteConversation(_ context.Context, conversationID string) error {
+	for i := range s.conversations {
+		if s.conversations[i].ID == conversationID {
+			s.conversations = append(s.conversations[:i], s.conversations[i+1:]...)
+			delete(s.messages, conversationID)
+			return nil
+		}
+	}
+	return errConversationNotFound
+}
+
+func (s *MemoryStore) SetConversationPinned(_ context.Context, conversationID string, pinned bool) (Conversation, error) {
+	for i := range s.conversations {
+		if s.conversations[i].ID == conversationID {
+			s.conversations[i].Pinned = pinned
+			s.conversations[i].UpdatedAt = time.Now().UTC()
+			return s.conversations[i], nil
+		}
+	}
+	return Conversation{}, errConversationNotFound
+}
+
+func (s *MemoryStore) GetConversationMessages(_ context.Context, conversationID string, limit int, beforeMessageID string) (ConversationMessagesResult, error) {
+	items, ok := s.messages[conversationID]
+	if !ok {
+		return ConversationMessagesResult{}, errConversationNotFound
+	}
+	filtered := append([]Message(nil), items...)
+	if beforeMessageID != "" {
+		index := -1
+		for i := range filtered {
+			if filtered[i].ID == beforeMessageID {
+				index = i
+				break
+			}
+		}
+		if index == -1 {
+			return ConversationMessagesResult{}, errMessageNotFound
+		}
+		filtered = filtered[:index]
+	}
+	total := len(filtered)
+	if limit > 0 && total > limit {
+		filtered = filtered[total-limit:]
+		return ConversationMessagesResult{Messages: filtered, HasMore: true, Total: total}, nil
+	}
+	return ConversationMessagesResult{Messages: filtered, HasMore: false, Total: total}, nil
 }
 
 func (s *MemoryStore) AppendUserAndAssistantMessage(_ context.Context, conversationID, userContent, assistantContent string) ([]Message, error) {
+	if _, ok := s.messages[conversationID]; !ok {
+		return nil, errConversationNotFound
+	}
 	now := time.Now().UTC()
 	created := []Message{
 		{ID: uuid.NewString(), ConversationID: conversationID, Role: "user", Content: userContent, CreatedAt: now},
@@ -138,4 +200,68 @@ func (s *MemoryStore) AppendUserAndAssistantMessage(_ context.Context, conversat
 		}
 	}
 	return created, nil
+}
+
+func (s *MemoryStore) EditMessage(_ context.Context, conversationID, messageID, content string) ([]Message, error) {
+	items, ok := s.messages[conversationID]
+	if !ok {
+		return nil, errConversationNotFound
+	}
+	for i := range items {
+		if items[i].ID == messageID {
+			items[i].Content = content
+			items[i].CreatedAt = time.Now().UTC()
+			s.messages[conversationID] = items
+			s.bumpConversation(conversationID)
+			return append([]Message(nil), items...), nil
+		}
+	}
+	return nil, errMessageNotFound
+}
+
+func (s *MemoryStore) ResendMessage(ctx context.Context, conversationID, messageID string) ([]Message, error) {
+	items, ok := s.messages[conversationID]
+	if !ok {
+		return nil, errConversationNotFound
+	}
+	for _, item := range items {
+		if item.ID == messageID {
+			if item.Role != "user" {
+				return nil, errMessageNotFound
+			}
+			return s.AppendUserAndAssistantMessage(ctx, conversationID, item.Content, "这是 Go server 的最小非流式重发占位回复。")
+		}
+	}
+	return nil, errMessageNotFound
+}
+
+func (s *MemoryStore) TruncateMessages(_ context.Context, conversationID, messageID string) (ConversationMessagesResult, error) {
+	items, ok := s.messages[conversationID]
+	if !ok {
+		return ConversationMessagesResult{}, errConversationNotFound
+	}
+	index := -1
+	for i := range items {
+		if items[i].ID == messageID {
+			index = i
+			break
+		}
+	}
+	if index == -1 {
+		return ConversationMessagesResult{}, errMessageNotFound
+	}
+	items = items[:index]
+	s.messages[conversationID] = items
+	s.bumpConversation(conversationID)
+	return ConversationMessagesResult{Messages: append([]Message(nil), items...), HasMore: false, Total: len(items)}, nil
+}
+
+func (s *MemoryStore) bumpConversation(conversationID string) {
+	now := time.Now().UTC()
+	for i := range s.conversations {
+		if s.conversations[i].ID == conversationID {
+			s.conversations[i].UpdatedAt = now
+			return
+		}
+	}
 }

@@ -4,14 +4,24 @@ import type {
   ConversationMessagesResult,
   ConversationMeta,
   CreateConversationInput,
+  EditMessageInput,
+  GetMessagesInput,
+  RenameConversationInput,
+  ResendMessageInput,
   RuntimeInfo,
   SendMessageInput,
+  TruncateMessagesInput,
+  UpdateConversationPinInput,
   UserProfile,
   Workspace,
   WorkspaceCapabilities,
 } from '@sparky/shared'
 
 type ImportMetaEnvShape = { env?: { VITE_API_BASE_URL?: string } }
+
+type MessageMutationResponse = {
+  messages: { id: string; role: string; content: string; createdAt: string; conversationId: string }[]
+}
 
 const globalImportMeta = import.meta as unknown as ImportMetaEnvShape
 const API_BASE = globalImportMeta.env?.VITE_API_BASE_URL ?? 'http://localhost:8080'
@@ -26,10 +36,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`)
+    let message = `Request failed: ${response.status}`
+    try {
+      const body = await response.json() as { error?: string }
+      if (body.error) message = body.error
+    } catch {
+      // ignore non-json error bodies
+    }
+    throw new Error(message)
+  }
+
+  if (response.status === 204) {
+    return undefined as T
   }
 
   return response.json() as Promise<T>
+}
+
+function buildMessagesQuery(input?: GetMessagesInput): string {
+  const params = new URLSearchParams()
+  if (input?.limit) params.set('limit', String(input.limit))
+  if (input?.before) params.set('before', input.before)
+  const query = params.toString()
+  return query ? `?${query}` : ''
 }
 
 export function createWebPlatformClient(): PlatformClient {
@@ -46,8 +75,37 @@ export function createWebPlatformClient(): PlatformClient {
       method: 'POST',
       body: JSON.stringify(input),
     }),
-    getMessages: (conversationId: string) => request<ConversationMessagesResult>(`/api/chat/sessions/${conversationId}/messages?limit=50`),
-    sendMessage: (conversationId: string, input: SendMessageInput) => request<{ messages: { id: string; role: string; content: string; createdAt: string; conversationId: string }[] }>(`/api/chat/sessions/${conversationId}/messages`, {
+    renameConversation: (conversationId: string, input: RenameConversationInput) => request<ConversationMeta>(`/api/chat/sessions/${conversationId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+    deleteConversation: (conversationId: string) => request<void>(`/api/chat/sessions/${conversationId}`, {
+      method: 'DELETE',
+    }),
+    pinConversation: (conversationId: string, input: UpdateConversationPinInput) => request<ConversationMeta>(`/api/chat/sessions/${conversationId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+    unpinConversation: (conversationId: string, input: UpdateConversationPinInput) => request<ConversationMeta>(`/api/chat/sessions/${conversationId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+    getMessages: (conversationId: string, input?: GetMessagesInput) => request<ConversationMessagesResult>(`/api/chat/sessions/${conversationId}/messages${buildMessagesQuery(input ?? { limit: 50 })}`),
+    refreshMessages: (conversationId: string, input?: GetMessagesInput) => request<ConversationMessagesResult>(`/api/chat/sessions/${conversationId}/messages${buildMessagesQuery(input ?? { limit: 50 })}`),
+    loadMoreMessages: (conversationId: string, input: GetMessagesInput) => request<ConversationMessagesResult>(`/api/chat/sessions/${conversationId}/messages${buildMessagesQuery(input)}`),
+    sendMessage: (conversationId: string, input: SendMessageInput) => request<MessageMutationResponse>(`/api/chat/sessions/${conversationId}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+    editMessage: (conversationId: string, messageId: string, input: EditMessageInput) => request<MessageMutationResponse>(`/api/chat/sessions/${conversationId}/messages/${messageId}/edit`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+    resendMessage: (conversationId: string, input: ResendMessageInput) => request<MessageMutationResponse>(`/api/chat/sessions/${conversationId}/messages/resend`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+    truncateMessages: (conversationId: string, input: TruncateMessagesInput) => request<ConversationMessagesResult>(`/api/chat/sessions/${conversationId}/messages/truncate`, {
       method: 'POST',
       body: JSON.stringify(input),
     }),

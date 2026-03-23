@@ -68,8 +68,33 @@ export interface CreateConversationInput {
   channelId?: string
 }
 
+export interface RenameConversationInput {
+  title: string
+}
+
+export interface UpdateConversationPinInput {
+  pinned: boolean
+}
+
+export interface GetMessagesInput {
+  limit?: number
+  before?: string
+}
+
 export interface SendMessageInput {
   content: string
   modelId?: string
   channelId?: string
+}
+
+export interface EditMessageInput {
+  content: string
+}
+
+export interface ResendMessageInput {
+  messageId: string
+}
+
+export interface TruncateMessagesInput {
+  messageId: string
 }
