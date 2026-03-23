@@ -3,53 +3,109 @@ use std::time::Duration;
 use axum::{
     extract::{Path, Query, State},
     response::{sse::Event, Sse},
+    routing::{delete, get, post},
     Json,
 };
-use serde::Deserialize;
 use futures_util::StreamExt;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio_stream::wrappers::BroadcastStream;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::web_server::{
-    auth::AuthSession,
-    events::ServerEvent,
-    tunnel::protocol::TunnelMessage,
-    web_ide::WebIdeEvent,
-    AppState,
+use crate::{
+    storage::{
+        db::open_db,
+        models::{self, AIProvider, AppConfig, HookRecordsResponse, WebIdeSummaryResponse},
+    },
+    web_server::{
+        auth::AuthSession,
+        events::ServerEvent,
+        tunnel::protocol::TunnelMessage,
+        web_ide::WebIdeEvent,
+        AppState,
+    },
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub fn api_routes() -> axum::Router<AppState> {
     axum::Router::new()
-        .route("/api/projects", axum::routing::get(list_projects))
-        .route("/api/projects/:id/detail", axum::routing::get(project_detail))
-        .route("/api/sessions", axum::routing::get(list_sessions))
-        .route("/api/terminal/history", axum::routing::get(terminal_history))
-        .route("/api/terminal/exec", axum::routing::post(exec_terminal))
-        .route("/api/sessions/:id/rename", axum::routing::post(rename_session))
-        .route("/api/sessions/:id/delete", axum::routing::post(delete_session))
-        .route("/api/sessions/:id/resume", axum::routing::post(resume_session))
-        .route("/api/events", axum::routing::get(event_stream))
-        .route("/api/web-ide/summary", axum::routing::get(web_ide_summary))
-        .route("/api/web-ide/events", axum::routing::get(web_ide_events))
+        .route("/api/projects", get(list_projects).post(create_project))
+        .route("/api/projects/:id", delete(delete_project_handler))
+        .route("/api/projects/:id/detail", get(project_detail))
+        .route("/api/sessions", get(list_sessions))
+        .route("/api/terminal/history", get(terminal_history))
+        .route("/api/terminal/exec", post(exec_terminal))
+        .route("/api/sessions/:id/rename", post(rename_session))
+        .route("/api/sessions/:id/delete", post(delete_session))
+        .route("/api/sessions/:id/resume", post(resume_session))
+        .route("/api/config", get(get_config).post(save_config))
+        .route("/api/providers", get(list_providers).post(save_provider))
+        .route("/api/providers/:app_type/:id", delete(delete_provider))
+        .route("/api/hooks", get(list_hook_records))
+        .route("/api/hooks/:id", delete(delete_hook_record_handler))
+        .route("/api/hooks/batch-delete", post(delete_hook_records_handler))
+        .route("/api/web-ide/summary", get(web_ide_summary))
+        .route("/api/web-ide/events", get(web_ide_events))
+        .route("/api/events", get(event_stream))
 }
 
 async fn list_projects(
-    State(state): State<AppState>,
+    _state: State<AppState>,
     auth: AuthSession,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
-    forward_request(state, auth, "projects.list", None, json!({})).await
+    let conn = open_db().map_err(internal_error)?;
+    let mut projects = models::list_projects(&conn).map_err(internal_error)?;
+    if !auth.0.allowed_projects.is_empty() {
+        projects.retain(|project| auth.0.allowed_projects.iter().any(|id| id == &project.id.to_string()));
+    }
+    Ok(Json(json!(projects)))
 }
 
-async fn project_detail(
-    State(state): State<AppState>,
+#[derive(Deserialize)]
+struct CreateProjectPayload {
+    name: String,
+    path: String,
+}
+
+async fn create_project(
+    _state: State<AppState>,
+    auth: AuthSession,
+    Json(payload): Json<CreateProjectPayload>,
+) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    if !auth.0.allowed_projects.is_empty() {
+        return Err((axum::http::StatusCode::FORBIDDEN, "Forbidden".to_string()));
+    }
+    let conn = open_db().map_err(internal_error)?;
+    let project = models::add_project(&conn, payload.name, payload.path).map_err(internal_error)?;
+    Ok(Json(json!(project)))
+}
+
+async fn delete_project_handler(
+    _state: State<AppState>,
     auth: AuthSession,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
-    forward_request(state, auth, "projects.detail", Some(id), json!({})).await
+    if !auth.0.allowed_projects.is_empty() {
+        return Err((axum::http::StatusCode::FORBIDDEN, "Forbidden".to_string()));
+    }
+    let project_id = parse_project_id(&id)?;
+    let conn = open_db().map_err(internal_error)?;
+    models::delete_project(&conn, project_id).map_err(internal_error)?;
+    Ok(Json(json!({})))
+}
+
+async fn project_detail(
+    _state: State<AppState>,
+    auth: AuthSession,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    ensure_project_allowed(&auth, &id)?;
+    let project_id = parse_project_id(&id)?;
+    let conn = open_db().map_err(internal_error)?;
+    let detail = models::get_project_detail(&conn, project_id).map_err(map_project_not_found)?;
+    Ok(Json(json!(detail)))
 }
 
 #[derive(Deserialize)]
@@ -58,33 +114,33 @@ struct ProjectQuery {
 }
 
 async fn list_sessions(
-    State(state): State<AppState>,
+    _state: State<AppState>,
     auth: AuthSession,
     Query(query): Query<ProjectQuery>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
-    forward_request(
-        state,
-        auth,
-        "sessions.list",
-        Some(query.project_id),
-        json!({}),
-    )
-    .await
+    ensure_project_allowed(&auth, &query.project_id)?;
+    let project_id = parse_project_id(&query.project_id)?;
+    let conn = open_db().map_err(internal_error)?;
+    let project_path = models::get_project_path_by_id(&conn, project_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, "PROJECT_NOT_FOUND".to_string()))?;
+    let sessions = models::list_project_sessions(&conn, &project_path).map_err(internal_error)?;
+    Ok(Json(json!(sessions)))
 }
 
 async fn terminal_history(
-    State(state): State<AppState>,
+    _state: State<AppState>,
     auth: AuthSession,
     Query(query): Query<ProjectQuery>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
-    forward_request(
-        state,
-        auth,
-        "terminal.history",
-        Some(query.project_id),
-        json!({}),
-    )
-    .await
+    ensure_project_allowed(&auth, &query.project_id)?;
+    let project_id = parse_project_id(&query.project_id)?;
+    let conn = open_db().map_err(internal_error)?;
+    let project_path = models::get_project_path_by_id(&conn, project_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, "PROJECT_NOT_FOUND".to_string()))?;
+    let history = models::list_terminal_history(&conn, &project_path).map_err(internal_error)?;
+    Ok(Json(json!(history)))
 }
 
 #[derive(Deserialize)]
@@ -116,20 +172,16 @@ struct RenamePayload {
 }
 
 async fn rename_session(
-    State(state): State<AppState>,
+    _state: State<AppState>,
     auth: AuthSession,
     Path(id): Path<String>,
     Json(payload): Json<RenamePayload>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     info!("audit session rename session_id={} project_id={}", id, payload.project_id);
-    forward_request(
-        state,
-        auth,
-        "sessions.rename",
-        Some(payload.project_id),
-        json!({ "session_id": id, "name": payload.name }),
-    )
-    .await
+    ensure_project_allowed(&auth, &payload.project_id)?;
+    let conn = open_db().map_err(internal_error)?;
+    models::update_session_name(&conn, &id, &payload.name).map_err(internal_error)?;
+    Ok(Json(json!({})))
 }
 
 #[derive(Deserialize)]
@@ -138,20 +190,16 @@ struct SessionPayload {
 }
 
 async fn delete_session(
-    State(state): State<AppState>,
+    _state: State<AppState>,
     auth: AuthSession,
     Path(id): Path<String>,
     Json(payload): Json<SessionPayload>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     info!("audit session delete session_id={} project_id={}", id, payload.project_id);
-    forward_request(
-        state,
-        auth,
-        "sessions.delete",
-        Some(payload.project_id),
-        json!({ "session_id": id }),
-    )
-    .await
+    ensure_project_allowed(&auth, &payload.project_id)?;
+    let conn = open_db().map_err(internal_error)?;
+    models::delete_session(&conn, &id).map_err(internal_error)?;
+    Ok(Json(json!({})))
 }
 
 async fn resume_session(
@@ -171,6 +219,155 @@ async fn resume_session(
     .await
 }
 
+async fn get_config(
+    _state: State<AppState>,
+    _auth: AuthSession,
+) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let conn = open_db().map_err(internal_error)?;
+    let config = models::load_app_config(&conn).map_err(internal_error)?;
+    Ok(Json(json!(config)))
+}
+
+async fn save_config(
+    _state: State<AppState>,
+    _auth: AuthSession,
+    Json(config): Json<AppConfig>,
+) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let conn = open_db().map_err(internal_error)?;
+    models::save_app_config(&conn, &config).map_err(internal_error)?;
+    Ok(Json(json!({})))
+}
+
+async fn list_providers(
+    _state: State<AppState>,
+    _auth: AuthSession,
+) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let conn = open_db().map_err(internal_error)?;
+    let providers = models::list_ai_providers(&conn).map_err(internal_error)?;
+    Ok(Json(json!(providers)))
+}
+
+async fn save_provider(
+    _state: State<AppState>,
+    _auth: AuthSession,
+    Json(provider): Json<AIProvider>,
+) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let conn = open_db().map_err(internal_error)?;
+    let id = models::upsert_ai_provider(&conn, provider).map_err(internal_error)?;
+    Ok(Json(json!({ "id": id })))
+}
+
+async fn delete_provider(
+    _state: State<AppState>,
+    _auth: AuthSession,
+    Path((app_type, id)): Path<(String, String)>,
+) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let conn = open_db().map_err(internal_error)?;
+    models::delete_ai_provider(&conn, &id, &app_type).map_err(internal_error)?;
+    Ok(Json(json!({})))
+}
+
+#[derive(Deserialize)]
+struct HookRecordsQuery {
+    project_id: String,
+    page: Option<u32>,
+    page_size: Option<u32>,
+}
+
+async fn list_hook_records(
+    _state: State<AppState>,
+    auth: AuthSession,
+    Query(query): Query<HookRecordsQuery>,
+) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    ensure_project_allowed(&auth, &query.project_id)?;
+    let project_id = parse_project_id(&query.project_id)?;
+    let conn = open_db().map_err(internal_error)?;
+    let project_path = models::get_project_path_by_id(&conn, project_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, "PROJECT_NOT_FOUND".to_string()))?;
+    let response: HookRecordsResponse = models::list_hook_records(&conn, &project_path, query.page, query.page_size)
+        .map_err(internal_error)?;
+    Ok(Json(json!(response)))
+}
+
+async fn delete_hook_record_handler(
+    _state: State<AppState>,
+    auth: AuthSession,
+    Path(id): Path<i64>,
+    Query(query): Query<ProjectQuery>,
+) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    ensure_project_allowed(&auth, &query.project_id)?;
+    let project_id = parse_project_id(&query.project_id)?;
+    let conn = open_db().map_err(internal_error)?;
+    let project_path = models::get_project_path_by_id(&conn, project_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, "PROJECT_NOT_FOUND".to_string()))?;
+    models::delete_hook_record(&conn, &project_path, id).map_err(internal_error)?;
+    Ok(Json(json!({})))
+}
+
+#[derive(Deserialize)]
+struct DeleteHooksPayload {
+    project_id: String,
+    ids: Vec<i64>,
+}
+
+async fn delete_hook_records_handler(
+    _state: State<AppState>,
+    auth: AuthSession,
+    Json(payload): Json<DeleteHooksPayload>,
+) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    ensure_project_allowed(&auth, &payload.project_id)?;
+    let project_id = parse_project_id(&payload.project_id)?;
+    let conn = open_db().map_err(internal_error)?;
+    let project_path = models::get_project_path_by_id(&conn, project_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, "PROJECT_NOT_FOUND".to_string()))?;
+    models::delete_hook_records(&conn, &project_path, &payload.ids).map_err(internal_error)?;
+    Ok(Json(json!({})))
+}
+
+async fn web_ide_summary(
+    State(state): State<AppState>,
+    auth: AuthSession,
+) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    let projects = state
+        .web_ide
+        .summary_for_agent(&auth.0.agent_id, &auth.0.allowed_projects)
+        .await;
+    Ok(Json(json!(WebIdeSummaryResponse { projects })))
+}
+
+async fn web_ide_events(
+    State(state): State<AppState>,
+    auth: AuthSession,
+) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, axum::Error>>>, (axum::http::StatusCode, String)> {
+    let receiver = state.web_ide_events.subscribe();
+    let agent_id = auth.0.agent_id.clone();
+    let allowed_projects = auth.0.allowed_projects.clone();
+    let stream = BroadcastStream::new(receiver).filter_map(move |message| {
+        let agent_id = agent_id.clone();
+        let allowed_projects = allowed_projects.clone();
+        async move {
+            match message {
+                Ok(event) if event.agent_id == agent_id => {
+                    if let Some(project) = event.project.as_ref() {
+                        if !allowed_projects.is_empty()
+                            && !allowed_projects.iter().any(|id| id == &project.project_id)
+                        {
+                            return None;
+                        }
+                    }
+                    Some(Ok(web_ide_event_to_sse(event)))
+                }
+                _ => None,
+            }
+        }
+    });
+
+    Ok(Sse::new(stream))
+}
+
 async fn event_stream(
     State(state): State<AppState>,
     auth: AuthSession,
@@ -181,99 +378,10 @@ async fn event_stream(
     }
 
     let receiver = state.events.subscribe(&query.project_id).await;
-    let stream = BroadcastStream::new(receiver).filter_map(|message| {
-        async move {
-            match message {
-                Ok(event) => Some(Ok(event_to_sse(event))),
-                Err(_) => None,
-            }
-        }
-    });
-
-    Ok(Sse::new(stream))
-}
-
-async fn web_ide_summary(
-    State(state): State<AppState>,
-    auth: AuthSession,
-) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
-    info!(
-        "web_ide_summary agent_id={} allowed_projects={}",
-        auth.0.agent_id,
-        auth.0.allowed_projects.len()
-    );
-    let mut projects = state
-        .web_ide_state
-        .summary_for_agent(&auth.0.agent_id, &auth.0.allowed_projects)
-        .await;
-    if projects.is_empty() {
-        let online = state.registry.get(&auth.0.agent_id).await.is_some();
-        if online {
-            info!("web_ide_summary online agent placeholder agent_id={}", auth.0.agent_id);
-            projects.push(crate::web_server::web_ide::WebIdeProjectStatus {
-                project_id: String::new(),
-                project_path: String::new(),
-                project_name: String::new(),
-                active_pty_count: 0,
-                agent_id: auth.0.agent_id.clone(),
-            });
-        }
-    }
-    info!(
-        "web_ide_summary result agent_id={} projects={}",
-        auth.0.agent_id,
-        projects.len()
-    );
-    Ok(Json(json!({ "projects": projects })))
-}
-
-async fn web_ide_events(
-    State(state): State<AppState>,
-    auth: AuthSession,
-) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, axum::Error>>>, (axum::http::StatusCode, String)> {
-    info!(
-        "web_ide_events subscribe agent_id={} allowed_projects={}",
-        auth.0.agent_id,
-        auth.0.allowed_projects.len()
-    );
-    let receiver = state.web_ide_events.subscribe();
-    let allowed_projects = auth.0.allowed_projects.clone();
-    let agent_id = auth.0.agent_id.clone();
-    let stream = BroadcastStream::new(receiver).filter_map(move |message| {
-        let allowed_projects = allowed_projects.clone();
-        let agent_id = agent_id.clone();
-        async move {
-            match message {
-                Ok(event) => {
-                    if event.agent_id != agent_id {
-                        info!(
-                            "web_ide_events skip agent_mismatch expected={} got={}",
-                            agent_id,
-                            event.agent_id
-                        );
-                        return None;
-                    }
-                    if let Some(project) = event.project.as_ref() {
-                        if !allowed_projects.is_empty()
-                            && !allowed_projects.iter().any(|p| p == &project.project_id)
-                        {
-                            info!(
-                                "web_ide_events skip project_not_allowed agent_id={} project_id={}",
-                                agent_id,
-                                project.project_id
-                            );
-                            return None;
-                        }
-                    }
-                    info!(
-                        "web_ide_events emit agent_id={} event_type={}",
-                        event.agent_id,
-                        event.event_type
-                    );
-                    Some(Ok(web_ide_event_to_sse(event)))
-                }
-                Err(_) => None,
-            }
+    let stream = BroadcastStream::new(receiver).filter_map(|message| async move {
+        match message {
+            Ok(event) => Some(Ok(event_to_sse(event))),
+            Err(_) => None,
         }
     });
 
@@ -302,10 +410,7 @@ async fn forward_request(
     let start = std::time::Instant::now();
     info!(
         "forward_request start req_id={} op={} agent_id={} project_id={:?}",
-        req_id,
-        op,
-        agent_id,
-        project_id
+        req_id, op, agent_id, project_id
     );
     let response = agent
         .send_request(
@@ -320,10 +425,7 @@ async fn forward_request(
         .map_err(|err| {
             warn!(
                 "forward_request failed req_id={} op={} agent_id={} err={}",
-                req_id,
-                op,
-                agent_id,
-                err
+                req_id, op, agent_id, err
             );
             match err.as_str() {
                 "AGENT_TIMEOUT" => (axum::http::StatusCode::GATEWAY_TIMEOUT, err.to_string()),
@@ -362,11 +464,39 @@ async fn forward_request(
     }
 }
 
+fn parse_project_id(project_id: &str) -> Result<i64, (axum::http::StatusCode, String)> {
+    project_id
+        .parse::<i64>()
+        .map_err(|_| (axum::http::StatusCode::BAD_REQUEST, "INVALID_PROJECT_ID".to_string()))
+}
+
+fn ensure_project_allowed(
+    auth: &AuthSession,
+    project_id: &str,
+) -> Result<(), (axum::http::StatusCode, String)> {
+    if !is_authorized_project(&auth.0.allowed_projects, project_id) {
+        return Err((axum::http::StatusCode::FORBIDDEN, "Forbidden".to_string()));
+    }
+    Ok(())
+}
+
 fn is_authorized_project(allowed_projects: &[String], project_id: &str) -> bool {
     if allowed_projects.is_empty() {
         return true;
     }
     allowed_projects.iter().any(|p| p == project_id)
+}
+
+fn internal_error(err: String) -> (axum::http::StatusCode, String) {
+    (axum::http::StatusCode::INTERNAL_SERVER_ERROR, err)
+}
+
+fn map_project_not_found(err: String) -> (axum::http::StatusCode, String) {
+    if err == "PROJECT_NOT_FOUND" {
+        (axum::http::StatusCode::NOT_FOUND, err)
+    } else {
+        internal_error(err)
+    }
 }
 
 fn event_to_sse(event: ServerEvent) -> Event {

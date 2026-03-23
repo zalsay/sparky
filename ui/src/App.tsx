@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import type { ReactNode } from 'react';
 import { Form, Input, Button, Card, Divider, Tag, Table, Empty, List, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select, Badge } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined, PushpinOutlined, PushpinFilled, DesktopOutlined } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined, PushpinOutlined, PushpinFilled, LogoutOutlined, UserOutlined } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -13,6 +14,9 @@ import codeIcon from './assets/Code.svg';
 import claudeIcon from './assets/Claude.svg';
 import claudeDeactiveIcon from './assets/claude-deactive.svg';
 import feishuIcon from './assets/飞书.svg';
+import AppWeb from './web/AppWeb';
+import AuthPage from './features/auth/components/AuthPage';
+import { AuthProvider, useAuth } from './features/auth';
 import './App.css';
 
 interface IDEPlugin {
@@ -20,24 +24,6 @@ interface IDEPlugin {
   name: string;
   desc: string;
   created_at?: number | null;
-}
-
-interface WebIdeProjectStatus {
-  project_id: string;
-  project_path: string;
-  project_name: string;
-  active_pty_count: number;
-  agent_id: string;
-}
-
-interface WebIdeSummaryResponse {
-  projects: WebIdeProjectStatus[];
-}
-
-interface WebIdeEvent {
-  event_type: 'agent_connected' | 'agent_disconnected' | 'pty_active_changed';
-  agent_id: string;
-  project?: WebIdeProjectStatus;
 }
 
 interface AppConfig {
@@ -130,7 +116,6 @@ const LAST_ACTIVE_MENU_STORAGE_KEY = 'sparky-last-active-menu';
 const LAST_SELECTED_PROJECT_PATH_STORAGE_KEY = 'sparky-last-selected-project-path';
 const TERMINAL_TABS_STORAGE_KEY = 'sparky-terminal-tabs';
 const ACTIVE_TERMINAL_ID_STORAGE_KEY = 'sparky-active-terminal-id';
-const WEB_API_KEY_STORAGE_KEY = 'sparky-web-api-key';
 
 const ModelListInput = ({ value = [], onChange }: { value?: string[], onChange?: (val: string[]) => void }) => {
   const [inputValue, setInputValue] = useState('');
@@ -172,9 +157,11 @@ const ModelListInput = ({ value = [], onChange }: { value?: string[], onChange?:
 };
 
 function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsDarkMode: (v: boolean) => void }) {
+  const { user, logout } = useAuth();
   const { message: messageApi, modal: modalApi, notification: notificationApi } = AntApp.useApp();
   const [form] = Form.useForm();
   const [providerForm] = Form.useForm();
+  const tauriAvailable = isTauri();
   const [loading, setLoading] = useState(false);
   const [testingConnection, setTestingConnection] = useState(false);
   const [activeMenu, setActiveMenu] = useState<string>('project');
@@ -249,21 +236,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [hookDetailOpen, setHookDetailOpen] = useState(false);
   const [hookDetailRecord, setHookDetailRecord] = useState<HookRecord | null>(null);
 
-  const [webApiKey, setWebApiKey] = useState<string>(() => {
-    try {
-      return localStorage.getItem(WEB_API_KEY_STORAGE_KEY) || '';
-    } catch {
-      return '';
-    }
-  });
-  const [webApiKeyModalOpen, setWebApiKeyModalOpen] = useState(false);
-  const [webApiKeyInput, setWebApiKeyInput] = useState('');
-  const [webApiKeyMissing, setWebApiKeyMissing] = useState(false);
-  const [webIdeProjects, setWebIdeProjects] = useState<WebIdeProjectStatus[]>([]);
-  const webIdeSseAbortRef = useRef<AbortController | null>(null);
-  const webIdeSseReconnectTimerRef = useRef<number | null>(null);
-  const webIdeSseBackoffRef = useRef<number>(1000);
-
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingSessionName, setEditingSessionName] = useState('');
 
@@ -273,17 +245,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const watchedFontSize = Form.useWatch('terminal_font_size', form);
   const watchedModelIds = Form.useWatch('model_ids', providerForm);
 
-  const tauriAvailable = isTauri();
   const terminalRefs = useRef<Record<string, { scrollToBottom: () => void }>>({});
   const inputBufferRef = useRef<Record<string, string>>({});
   const [lastCommand, setLastCommand] = useState<Record<string, string>>({});
   const [wsConnected, setWsConnected] = useState(false);
   const [activeProjects, setActiveProjects] = useState<string[]>([]);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
-  const webApiKeyRef = useRef<string>(webApiKey);
-  const webSseAbortRef = useRef<AbortController | null>(null);
-  const webSseReconnectTimerRef = useRef<number | null>(null);
-  const webSseBackoffRef = useRef<number>(1000);
   const appConfigRef = useRef<AppConfig | null>(null);
   const hasRestoredSelectionRef = useRef(false);
   const hasRestoredTerminalStateRef = useRef(false);
@@ -298,16 +265,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const recentUrlsForProject = selectedProject ? (recentProjectUrls[selectedProject.path] || []) : [];
 
   useEffect(() => {
-    webApiKeyRef.current = webApiKey;
-  }, [webApiKey]);
-
-  useEffect(() => {
-    if (tauriAvailable) {
-      invoke<AIProvider[]>('get_ai_providers').then(res => {
-        setProviders(res);
-      }).catch(e => console.error('Failed to fetch AI providers:', e));
-    }
-  }, [tauriAvailable]);
+    invoke<AIProvider[]>('get_ai_providers').then(res => {
+      setProviders(res);
+    }).catch(e => console.error('Failed to fetch AI providers:', e));
+  }, []);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -535,18 +496,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   }, [isDarkMode]);
 
   useEffect(() => {
+    if (tauriAvailable) {
+      loadConfig();
+    }
+    fetchProjects();
+
     if (!tauriAvailable) {
-      if (!webApiKeyRef.current) {
-        setWebApiKeyMissing(true);
-        setWebApiKeyInput(webApiKeyRef.current);
-        setWebApiKeyModalOpen(true);
-        return;
-      }
-      fetchProjects();
       return;
     }
-    loadConfig();
-    fetchProjects();
 
     const unlistenPromise = listen<{ projectPath: string; terminalId: string }>('pty-exit', (event) => {
       const { projectPath, terminalId } = event.payload;
@@ -572,6 +529,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       unlistenPromise.then(unlisten => unlisten());
     };
   }, []);
+
 
   // Sync active terminal ID to backend for HTTP endpoint (extension -> terminal)
   useEffect(() => {
@@ -647,7 +605,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
   // Check code-server connection when entering project detail or when marked as disconnected
   useEffect(() => {
-    if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject || codeServerConnected === true) {
+    if (activeMenu !== 'project-detail') {
+      setCodeServerConnected(null);
+      return;
+    }
+
+    if (!selectedProject) {
       return;
     }
 
@@ -661,9 +624,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
           if (ideRestarting) {
             setIdeRestarting(false);
           }
+        } else {
+          setCodeServerConnected(false);
         }
       } catch (err) {
         console.error('Failed to check code-server connection:', err);
+        setCodeServerConnected(false);
       }
     };
 
@@ -673,13 +639,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     return () => {
       if (intervalId) clearInterval(intervalId);
     };
-  }, [activeMenu, selectedProject, tauriAvailable, codeServerConnected, ideRestarting]);
-
-  useEffect(() => {
-    if (!tauriAvailable && activeMenu === 'project-detail') {
-      setCodeServerConnected(true);
-    }
-  }, [tauriAvailable, activeMenu]);
+  }, [activeMenu, selectedProject, codeServerConnected, ideRestarting]);
 
   const handleRestartIDE = async () => {
     if (!tauriAvailable) {
@@ -703,10 +663,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const handleOpenIdeInNewWindow = async () => {
     if (!selectedProject) return;
     const url = `http://localhost:${codeServerPort}/?folder=${encodeURIComponent(selectedProject.path)}`;
-    if (!tauriAvailable) {
-      window.open(url, '_blank', 'noopener');
-      return;
-    }
     try {
       const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
       const label = `ide-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -730,10 +686,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const handleOpenIdeInBrowser = async () => {
     if (!selectedProject) return;
     const url = `http://localhost:${codeServerPort}/?folder=${encodeURIComponent(selectedProject.path)}`;
-    if (!tauriAvailable) {
-      window.open(url, '_blank', 'noopener');
-      return;
-    }
     try {
       const { open: shellOpen } = await import('@tauri-apps/plugin-shell');
       await shellOpen(url);
@@ -745,13 +697,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const fetchRecentProjectUrls = async (projectPath: string) => {
-    if (!tauriAvailable) {
-      setRecentProjectUrls(prev => ({
-        ...prev,
-        [projectPath]: prev[projectPath] || []
-      }));
-      return;
-    }
     try {
       const urls = await invoke<string[]>('get_recent_project_urls', { project_path: projectPath });
       setRecentProjectUrls(prev => ({
@@ -768,7 +713,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const recordRecentProjectUrl = async (projectPath: string, url: string) => {
-    if (!tauriAvailable) return;
     try {
       await invoke('record_recent_project_url', { project_path: projectPath, url });
     } catch (err) {
@@ -819,17 +763,16 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const toggleAlwaysOnTop = async () => {
-    if (!tauriAvailable || alwaysOnTopLoading) return;
+    if (!tauriAvailable) return;
     setAlwaysOnTopLoading(true);
     try {
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      const nextValue = !alwaysOnTop;
-      await getCurrentWindow().setAlwaysOnTop(nextValue);
-      setAlwaysOnTop(nextValue);
-      messageApi.success(nextValue ? '窗口已置顶' : '已取消置顶');
+      const next = !alwaysOnTop;
+      await getCurrentWindow().setAlwaysOnTop(next);
+      setAlwaysOnTop(next);
     } catch (err) {
       console.error('Failed to toggle always-on-top:', err);
-      messageApi.error(`窗口置顶失败: ${err}`);
+      messageApi.error(`窗口置顶切换失败: ${err}`);
     } finally {
       setAlwaysOnTopLoading(false);
     }
@@ -890,135 +833,11 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     inputBufferRef.current[currentTerminal] = buffer;
   };
 
-  const ensureWebApiKey = useCallback(() => {
-    if (tauriAvailable) return true;
-    if (webApiKeyRef.current) return true;
-    setWebApiKeyMissing(true);
-    setWebApiKeyModalOpen(true);
-    return false;
-  }, [tauriAvailable]);
-
-  const buildWebHeaders = useCallback(() => ({
-    'x-api-key': webApiKeyRef.current,
-    'content-type': 'application/json'
-  }), []);
-
-  const handleWebApiError = useCallback((status: number) => {
-    if (status === 401 || status === 403) {
-      setWebApiKeyMissing(true);
-      setWebApiKeyInput(webApiKeyRef.current);
-      setWebApiKeyModalOpen(true);
-    }
-  }, []);
-
-  const fetchProjectDetailWeb = useCallback(async (projectId: number) => {
-    if (!ensureWebApiKey()) return;
-    const response = await fetch(`/api/projects/${projectId}/detail`, {
-      headers: buildWebHeaders()
-    });
-    if (!response.ok) {
-      handleWebApiError(response.status);
-      return;
-    }
-    const data = await response.json();
-    const project = data?.project as Project | undefined;
-    if (!project) return;
-
-    setSelectedProject(project);
-    setActiveMenu('project-detail');
-    setActiveProjects(prev => prev.includes(project.path) ? prev : [...prev, project.path]);
-    setSessions((data?.sessions as SessionInfo[]) || []);
-    setTerminalHistory(prev => ({
-      ...prev,
-      [project.path]: (data?.terminal_history as string[]) || []
-    }));
-
-    setProjectTerminals(prev => {
-      if (prev[project.path]) return prev;
-      const defaultId = `web-${project.id}`;
-      return {
-        ...prev,
-        [project.path]: [{
-          id: defaultId,
-          title: 'Web Terminal'
-        }]
-      };
-    });
-
-    setActiveTerminalId(prev => ({
-      ...prev,
-      [project.path]: prev[project.path] || `web-${project.id}`
-    }));
-
-    setTerminalStateReady(true);
-  }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
-
-  useEffect(() => {
-    if (tauriAvailable) return;
-    const onPopState = () => {
-      const match = window.location.pathname.match(/^\/project\/(\d+)\/detail$/);
-      if (match) {
-        const projectId = Number(match[1]);
-        if (Number.isFinite(projectId)) {
-          fetchProjectDetailWeb(projectId);
-          return;
-        }
-      }
-      setActiveMenu('project');
-      setSelectedProject(null);
-    };
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
-  }, [tauriAvailable, fetchProjectDetailWeb]);
-
-  const fetchSessionsWeb = useCallback(async (projectId: number, _projectPath: string, projectName?: string | null) => {
-    if (!ensureWebApiKey()) return;
-    const response = await fetch(`/api/sessions?project_id=${projectId}`, {
-      headers: buildWebHeaders()
-    });
-    if (!response.ok) {
-      handleWebApiError(response.status);
-      setSessions([]);
-      return;
-    }
-    const data = await response.json();
-    const result = (data as SessionInfo[]) || [];
-    const filteredResult = result.filter(s => {
-      if (!s.project_name) return true;
-      return !projectName || s.project_name === projectName;
-    });
-    const uniqueSessions = Array.from(new Map(filteredResult.map(s => [s.session_id, s])).values());
-    setSessions(uniqueSessions);
-  }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
-
-  const fetchTerminalHistoryWeb = useCallback(async (projectId: number, projectPath: string) => {
-    if (!ensureWebApiKey()) return;
-    const response = await fetch(`/api/terminal/history?project_id=${projectId}`, {
-      headers: buildWebHeaders()
-    });
-    if (!response.ok) {
-      handleWebApiError(response.status);
-      setTerminalHistory(prev => ({ ...prev, [projectPath]: [] }));
-      return;
-    }
-    const data = await response.json();
-    setTerminalHistory(prev => ({
-      ...prev,
-      [projectPath]: (data as string[]) || []
-    }));
-  }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
-
   useEffect(() => {
     if (activeMenu !== 'project-detail' || !selectedProject) {
       return;
     }
 
-    if (!tauriAvailable) {
-      fetchTerminalHistoryWeb(selectedProject.id, selectedProject.path);
-      return;
-    }
-
-    // load history
     invoke<string[]>('get_terminal_history', { project_path: selectedProject.path })
       .then((history) => {
         setTerminalHistory(prev => ({ ...prev, [selectedProject.path]: history }));
@@ -1026,28 +845,24 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       .catch(() => {
         setTerminalHistory(prev => ({ ...prev, [selectedProject.path]: [] }));
       });
-  }, [activeMenu, selectedProject, tauriAvailable, fetchTerminalHistoryWeb]);
+  }, [activeMenu, selectedProject]);
 
-  const executeTerminalWeb = useCallback(async (projectId: number, command: string) => {
-    if (!ensureWebApiKey()) return;
-    const response = await fetch('/api/terminal/exec', {
-      method: 'POST',
-      headers: buildWebHeaders(),
-      body: JSON.stringify({ project_id: projectId, command })
-    });
-    if (!response.ok) {
-      handleWebApiError(response.status);
+  const fetchTerminalHistory = useCallback(async (projectPath: string) => {
+    try {
+      const history = await invoke<string[]>('get_terminal_history', { project_path: projectPath });
+      setTerminalHistory(prev => ({ ...prev, [projectPath]: history }));
+    } catch {
+      setTerminalHistory(prev => ({ ...prev, [projectPath]: [] }));
     }
-  }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
+  }, []);
 
   useEffect(() => {
-    if (!tauriAvailable || activeMenu !== 'project-detail' || !selectedProject) return;
+    if (activeMenu !== 'project-detail' || !selectedProject) return;
 
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === 'SEND_TO_TERMINAL' && event.data.code) {
         const activeTid = activeTerminalId[selectedProject.path];
         if (!activeTid) return;
-        // Remove newlines and carriage returns to prevent immediate execution of multi-line strings
         const safeData = event.data.code.replace(/[\r\n]+/g, ' ');
         invoke('pty_write', { terminal_id: activeTid, data: safeData })
           .catch(err => console.error('Failed to write to terminal:', err));
@@ -1056,313 +871,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [activeMenu, selectedProject, activeTerminalId, tauriAvailable]);
-
-  const fetchWebIdeSummary = useCallback(async () => {
-    if (!ensureWebApiKey()) return;
-    const response = await fetch('/api/web-ide/summary', {
-      headers: buildWebHeaders()
-    });
-    if (!response.ok) {
-      handleWebApiError(response.status);
-      return;
-    }
-    const data = (await response.json()) as WebIdeSummaryResponse;
-    const projects = data?.projects || [];
-    if (projects.length > 0) {
-      setWebIdeProjects(projects);
-      return;
-    }
-    const agentId = webApiKeyRef.current ? webApiKeyRef.current.trim() : '';
-    setWebIdeProjects([
-      {
-        project_id: '',
-        project_path: '',
-        project_name: '',
-        active_pty_count: 0,
-        agent_id: agentId || 'online'
-      }
-    ]);
-  }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
-
-  const startWebIdeSse = useCallback(() => {
-    if (tauriAvailable) return;
-    if (!ensureWebApiKey()) return;
-    webIdeSseAbortRef.current?.abort();
-    if (webIdeSseReconnectTimerRef.current) {
-      window.clearTimeout(webIdeSseReconnectTimerRef.current);
-      webIdeSseReconnectTimerRef.current = null;
-    }
-    const controller = new AbortController();
-    webIdeSseAbortRef.current = controller;
-
-    const connect = async () => {
-      try {
-        const response = await fetch('/api/web-ide/events', {
-          headers: { 'x-api-key': webApiKeyRef.current },
-          signal: controller.signal
-        });
-        if (!response.ok) {
-          handleWebApiError(response.status);
-          throw new Error(`WebIDE SSE failed: ${response.status}`);
-        }
-        webIdeSseBackoffRef.current = 1000;
-        const reader = response.body?.getReader();
-        if (!reader) return;
-        const decoder = new TextDecoder('utf-8');
-        let buffer = '';
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let sepIndex = buffer.indexOf('\n\n');
-          while (sepIndex !== -1) {
-            const chunk = buffer.slice(0, sepIndex).trim();
-            buffer = buffer.slice(sepIndex + 2);
-            const eventLines = chunk.split('\n');
-            let dataPayload = '';
-            for (const line of eventLines) {
-              if (line.startsWith('data:')) {
-                dataPayload += line.slice(5).trim();
-              }
-            }
-            if (dataPayload) {
-              try {
-                const event = JSON.parse(dataPayload) as WebIdeEvent;
-                if (event.event_type === 'agent_connected') {
-                  setWebIdeProjects(prev => {
-                    if (prev.some(item => item.agent_id === event.agent_id)) {
-                      return prev;
-                    }
-                    return [
-                      ...prev,
-                      {
-                        project_id: '',
-                        project_path: '',
-                        project_name: '',
-                        active_pty_count: 0,
-                        agent_id: event.agent_id
-                      }
-                    ];
-                  });
-                } else if (event.event_type === 'agent_disconnected') {
-                  setWebIdeProjects(prev => prev.filter(item => item.agent_id !== event.agent_id));
-                } else if (event.project) {
-                  const project = event.project;
-                  setWebIdeProjects(prev => {
-                    const next = prev.filter(item => !(item.project_id === project.project_id && item.agent_id === event.agent_id));
-                    next.push(project);
-                    return next;
-                  });
-                }
-              } catch (err) {
-                console.warn('Failed to parse WebIDE SSE event', err);
-              }
-            }
-            sepIndex = buffer.indexOf('\n\n');
-          }
-        }
-      } catch (err) {
-        if (controller.signal.aborted) return;
-        const nextDelay = Math.min(webIdeSseBackoffRef.current * 2, 5000);
-        webIdeSseBackoffRef.current = nextDelay;
-        webIdeSseReconnectTimerRef.current = window.setTimeout(() => connect(), nextDelay);
-      }
-    };
-
-    connect();
-  }, [ensureWebApiKey, handleWebApiError, tauriAvailable]);
-
-  useEffect(() => {
-    if (tauriAvailable || activeMenu !== 'web-ide') {
-      return;
-    }
-    fetchWebIdeSummary();
-    startWebIdeSse();
-    return () => {
-      webIdeSseAbortRef.current?.abort();
-      if (webIdeSseReconnectTimerRef.current) {
-        window.clearTimeout(webIdeSseReconnectTimerRef.current);
-        webIdeSseReconnectTimerRef.current = null;
-      }
-    };
-  }, [activeMenu, tauriAvailable, fetchWebIdeSummary, startWebIdeSse]);
-
-  const renameSessionWeb = useCallback(async (projectId: number, sessionId: string, name: string) => {
-    if (!ensureWebApiKey()) return;
-    const response = await fetch(`/api/sessions/${sessionId}/rename`, {
-      method: 'POST',
-      headers: buildWebHeaders(),
-      body: JSON.stringify({ project_id: String(projectId), name })
-    });
-    if (!response.ok) {
-      handleWebApiError(response.status);
-    }
-  }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
-
-  const deleteSessionWeb = useCallback(async (projectId: number, sessionId: string) => {
-    if (!ensureWebApiKey()) return;
-    const response = await fetch(`/api/sessions/${sessionId}/delete`, {
-      method: 'POST',
-      headers: buildWebHeaders(),
-      body: JSON.stringify({ project_id: String(projectId) })
-    });
-    if (!response.ok) {
-      handleWebApiError(response.status);
-    }
-  }, [buildWebHeaders, ensureWebApiKey, handleWebApiError]);
-
-  const startWebSse = useCallback((projectId: number) => {
-    if (tauriAvailable) return;
-    if (!ensureWebApiKey()) return;
-    webSseAbortRef.current?.abort();
-    if (webSseReconnectTimerRef.current) {
-      window.clearTimeout(webSseReconnectTimerRef.current);
-      webSseReconnectTimerRef.current = null;
-    }
-    const controller = new AbortController();
-    webSseAbortRef.current = controller;
-
-    const connect = async () => {
-      try {
-        const response = await fetch(`/api/events?project_id=${projectId}`, {
-          headers: { 'x-api-key': webApiKeyRef.current },
-          signal: controller.signal
-        });
-        if (!response.ok) {
-          handleWebApiError(response.status);
-          throw new Error(`SSE failed: ${response.status}`);
-        }
-        webSseBackoffRef.current = 1000;
-        const reader = response.body?.getReader();
-        if (!reader) return;
-        const decoder = new TextDecoder('utf-8');
-        let buffer = '';
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let sepIndex = buffer.indexOf('\n\n');
-          while (sepIndex !== -1) {
-            const chunk = buffer.slice(0, sepIndex).trim();
-            buffer = buffer.slice(sepIndex + 2);
-            const eventLines = chunk.split('\n');
-            let eventName = '';
-            let dataPayload = '';
-            for (const line of eventLines) {
-              if (line.startsWith('event:')) {
-                eventName = line.slice(6).trim();
-              } else if (line.startsWith('data:')) {
-                dataPayload += line.slice(5).trim();
-              }
-            }
-            if (eventName === 'project_event' && dataPayload) {
-              try {
-                const event = JSON.parse(dataPayload);
-                if (event.event_type === 'terminal_output_chunk') {
-                  const terminalId = event.payload?.terminal_id || `web-${projectId}`;
-                  const output = event.payload?.data || '';
-                  if ((window as any).__terminalWrite) {
-                    (window as any).__terminalWrite(terminalId, output);
-                  }
-                } else if (event.event_type === 'terminal_exit') {
-                  const terminalId = event.payload?.terminal_id || `web-${projectId}`;
-                  setTerminalStatus(prev => ({ ...prev, [terminalId]: 'offline' }));
-                }
-              } catch (err) {
-                console.warn('Failed to parse SSE event', err);
-              }
-            }
-            sepIndex = buffer.indexOf('\n\n');
-          }
-        }
-      } catch (err) {
-        if (controller.signal.aborted) return;
-        const nextDelay = Math.min(webSseBackoffRef.current * 2, 5000);
-        webSseBackoffRef.current = nextDelay;
-        webSseReconnectTimerRef.current = window.setTimeout(() => connect(), nextDelay);
-      }
-    };
-
-    connect();
-  }, [ensureWebApiKey, handleWebApiError, tauriAvailable]);
-
-  useEffect(() => {
-    if (tauriAvailable || !selectedProject || activeMenu !== 'project-detail') {
-      return;
-    }
-    (window as any).__terminalExecImpl = async (data: string) => {
-      await executeTerminalWeb(selectedProject.id, data);
-    };
-    startWebSse(selectedProject.id);
-    return () => {
-      if ((window as any).__terminalExecImpl) {
-        delete (window as any).__terminalExecImpl;
-      }
-      webSseAbortRef.current?.abort();
-      if (webSseReconnectTimerRef.current) {
-        window.clearTimeout(webSseReconnectTimerRef.current);
-        webSseReconnectTimerRef.current = null;
-      }
-    };
-  }, [tauriAvailable, selectedProject, activeMenu, executeTerminalWeb, handleTerminalInput, startWebSse]);
-
-  const handleEnterProject = (project: Project, options?: { updateUrl?: boolean }) => {
-    console.info('[IDE] handleEnterProject:', project.path);
-    const shouldUpdateUrl = options?.updateUrl !== false;
-
-    if (!tauriAvailable) {
-      if (shouldUpdateUrl) {
-        const nextPath = `/project/${project.id}/detail`;
-        if (window.location.pathname !== nextPath) {
-          window.history.pushState({ projectId: project.id }, '', nextPath);
-        }
-      }
-      fetchProjectDetailWeb(project.id);
-      return;
-    }
-
-    setSelectedProject(project);
-    setActiveMenu('project-detail');
-    setCodeServerConnected(false); // Reset connection status to trigger polling and loading UI
-    // Immediately show project as "running" without waiting for the next poll
-    setActiveProjects(prev =>
-      prev.includes(project.path) ? prev : [...prev, project.path]
-    );
-
-    // ========== IDE 标签页初始化 ==========
-    setIdeTabs(prev => {
-      if (prev[project.path]) return prev;
-      const defaultTab: IDETab = {
-        id: 'code-server',
-        title: 'Code IDE',
-        url: `http://localhost:${codeServerPort}/?folder=${encodeURIComponent(project.path)}`,
-        type: 'code-server',
-        closable: false
-      };
-      return { ...prev, [project.path]: [defaultTab] };
-    });
-    setActiveIdeTabId(prev => (prev[project.path] ? prev : { ...prev, [project.path]: 'code-server' }));
-  };
+  }, [activeMenu, selectedProject, activeTerminalId]);
 
   useEffect(() => {
     if (hasRestoredSelectionRef.current) return;
-
-    if (!tauriAvailable) {
-      const path = window.location.pathname;
-      const match = path.match(/^\/project\/(\d+)\/detail$/);
-      if (match) {
-        const projectId = Number(match[1]);
-        if (Number.isFinite(projectId)) {
-          fetchProjectDetailWeb(projectId).finally(() => {
-            hasRestoredSelectionRef.current = true;
-          });
-          return;
-        }
-      }
-      hasRestoredSelectionRef.current = true;
-      return;
-    }
 
     if (selectedProject || activeMenu === 'project-detail') {
       hasRestoredSelectionRef.current = true;
@@ -1384,11 +896,36 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     const project = projects.find(p => p.path === lastProjectPath);
     if (project) {
       console.info('[IDE] restore project detail:', project.path);
-      handleEnterProject(project);
+      setSelectedProject(project);
+      setActiveMenu('project-detail');
+      setActiveProjects(prev => prev.includes(project.path) ? prev : [...prev, project.path]);
+
+      void Promise.all([
+        invoke<SessionInfo[]>('get_project_sessions', { project_path: project.path })
+          .then((result) => {
+            const filteredResult = result.filter((session) => {
+              if (!session.project_name) return true;
+              return session.project_name === project.name;
+            });
+            const uniqueSessions = Array.from(new Map(filteredResult.map((session) => [session.session_id, session])).values());
+            setSessions(uniqueSessions);
+          })
+          .catch((error) => {
+            console.error('Failed to fetch sessions:', error);
+            setSessions([]);
+          }),
+        invoke<string[]>('get_terminal_history', { project_path: project.path })
+          .then((history) => {
+            setTerminalHistory(prev => ({ ...prev, [project.path]: history }));
+          })
+          .catch(() => {
+            setTerminalHistory(prev => ({ ...prev, [project.path]: [] }));
+          }),
+      ]);
     }
 
     hasRestoredSelectionRef.current = true;
-  }, [projects, selectedProject, activeMenu, tauriAvailable, fetchProjectDetailWeb]);
+  }, [activeMenu, projects, selectedProject]);
 
   useEffect(() => {
     if (hasRestoredTerminalStateRef.current) return;
@@ -1548,9 +1085,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       setActiveProjects(activeProjects.filter(p => p !== selectedProject.path));
       setActiveMenu('project');
       setSelectedProject(null);
-      if (!tauriAvailable) {
-        window.history.pushState({}, '', '/');
-      }
     } catch (e) {
       messageApi.error(`关闭终端失败: ${e} `);
     }
@@ -1558,9 +1092,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
 
   const loadConfig = async () => {
-    if (!tauriAvailable) {
-      return;
-    }
     try {
       const config = await invoke<AppConfig>('get_config');
       form.setFieldsValue(config);
@@ -1574,31 +1105,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const fetchProjects = async () => {
     setProjectsLoaded(false);
     try {
-      if (!tauriAvailable) {
-        if (!webApiKeyRef.current) {
-          setWebApiKeyMissing(true);
-          setWebApiKeyInput(webApiKeyRef.current);
-          setWebApiKeyModalOpen(true);
-          setProjects([]);
-          return;
-        }
-        const response = await fetch('/api/projects', {
-          headers: {
-            'x-api-key': webApiKeyRef.current
-          }
-        });
-        if (response.status === 401 || response.status === 403) {
-          setWebApiKeyMissing(true);
-          setWebApiKeyInput(webApiKeyRef.current);
-          setWebApiKeyModalOpen(true);
-          setProjects([]);
-          return;
-        }
-        const data = await response.json();
-        setProjects(data as Project[]);
-        return;
-      }
-
       const projectsData = await invoke<Project[]>('get_projects');
       setProjects(projectsData);
     } catch (error) {
@@ -1610,7 +1116,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const fetchHookRecords = async (page: number) => {
-    if (!tauriAvailable || !selectedProject) {
+    if (!selectedProject) {
       setHookRecords([]);
       setHookRecordsTotal(0);
       setHookRecordsPage(1);
@@ -1638,15 +1144,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
   const fetchSessions = async (projectPath: string) => {
     if (!selectedProject) return;
-    if (!tauriAvailable) {
-      await fetchSessionsWeb(selectedProject.id, projectPath, selectedProject.name);
-      return;
-    }
     try {
       const result = await invoke<SessionInfo[]>('get_project_sessions', { project_path: projectPath });
-      // Deduplicate sessions by ID and filter by project name if present
       const filteredResult = result.filter(s => {
-        if (!s.project_name) return true; // Keep old sessions without project_name
+        if (!s.project_name) return true;
         return s.project_name === selectedProject.name;
       });
       const uniqueSessions = Array.from(new Map(filteredResult.map(s => [s.session_id, s])).values());
@@ -1660,13 +1161,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const handleUpdateSessionName = async (session_id: string, newName: string) => {
     if (!selectedProject) return;
     try {
-      if (!tauriAvailable) {
-        await renameSessionWeb(selectedProject.id, session_id, newName);
-        messageApi.success('会话名称更新成功');
-        setEditingSessionId(null);
-        fetchSessions(selectedProject.path);
-        return;
-      }
       await invoke('update_session_name', { session_id, name: newName });
       messageApi.success('会话名称更新成功');
       setEditingSessionId(null);
@@ -1678,8 +1172,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const handleDeleteHookRecord = async (id: number) => {
-    if (!tauriAvailable || !selectedProject) {
-      messageApi.warning('请在桌面应用中删除记录');
+    if (!selectedProject) {
+      messageApi.warning('请先选择项目');
       return;
     }
     modalApi.confirm({
@@ -1699,8 +1193,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const handleDeleteHookRecords = async () => {
-    if (!tauriAvailable || !selectedProject) {
-      messageApi.warning('请在桌面应用中删除记录');
+    if (!selectedProject) {
+      messageApi.warning('请先选择项目');
       return;
     }
     if (hookRecordSelection.length === 0) {
@@ -1722,14 +1216,20 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     });
   };
 
-  const handleSetDefaultProvider = async (id: string, app_type: string) => {
+  const saveConfigState = useCallback(async (nextConfig: AppConfig) => {
+    await invoke('save_config', { config: nextConfig });
+    setAppConfig(nextConfig);
+    appConfigRef.current = nextConfig;
+    form.setFieldsValue(nextConfig);
+    return true;
+  }, [form]);
+
+  const handleSetDefaultProvider = useCallback(async (id: string, app_type: string) => {
     if (!appConfig) return;
-    // 在我们的 AppConfig 里暂存这个 ID (由于 AppConfig 的 default_provider_id 是 i64，这里需要考虑兼容性，临时改为 string 或者映射, 修改为 ${app_type}::${id})
     const newConfig = { ...appConfig, default_provider_id: `${app_type}::${id}` } as AppConfig;
     try {
-      await invoke('save_config', { config: newConfig });
-      setAppConfig(newConfig);
-      form.setFieldsValue(newConfig);
+      const saved = await saveConfigState(newConfig);
+      if (!saved) return;
       notificationApi.success({
         message: '设置成功',
         description: '已更新默认 AI Provider',
@@ -1744,7 +1244,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
         duration: 4,
       });
     }
-  };
+  }, [appConfig, notificationApi, saveConfigState]);
 
   const buildClaudeCmd = async (terminalId: string, extraArgs: string = ''): Promise<string> => {
     let settingsFlag = '';
@@ -1758,10 +1258,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const handleSave = async (values: any) => {
-    if (!tauriAvailable) {
-      messageApi.warning('请在桌面应用中保存配置');
-      return;
-    }
     setLoading(true);
     try {
       const configToSave = {
@@ -1770,8 +1266,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
         terminal_fg_color: typeof values.terminal_fg_color === 'string' ? values.terminal_fg_color : values.terminal_fg_color?.toHexString(),
         terminal_font_size: values.terminal_font_size ?? 13,
       };
-      await invoke('save_config', { config: configToSave });
-      setAppConfig(configToSave);
+      const saved = await saveConfigState(configToSave);
+      if (!saved) return;
       notificationApi.success({
         message: '保存成功',
         description: '您的配置已成功同步到系统',
@@ -1824,6 +1320,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const handleImportFromCCSwitch = async () => {
+    if (!tauriAvailable) {
+      messageApi.warning('请在桌面应用中使用 cc-switch 导入');
+      return;
+    }
     setImporting(true);
     try {
       const imported = await invoke<AIProvider[]>('import_from_ccswitch');
@@ -1887,10 +1387,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const handleAddProject = async () => {
-    if (!tauriAvailable) {
-      messageApi.warning('请在桌面应用中添加项目');
-      return;
-    }
     const selected = await open({
       directory: true,
       multiple: false,
@@ -1908,11 +1404,17 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     }
   };
 
+  const handleEnterProject = useCallback(async (project: Project) => {
+    setSelectedProject(project);
+    setActiveMenu('project-detail');
+    setActiveProjects(prev => prev.includes(project.path) ? prev : [...prev, project.path]);
+
+    await Promise.all([
+      fetchSessions(project.path),
+      fetchTerminalHistory(project.path),
+    ]);
+  }, [fetchSessions, fetchTerminalHistory]);
   const handleDeleteProject = (id: number) => {
-    if (!tauriAvailable) {
-      messageApi.warning('请在桌面应用中删除项目');
-      return;
-    }
     modalApi.confirm({
       title: '确认删除',
       content: '确定要删除这个项目吗？',
@@ -1968,34 +1470,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       messageApi.success(`项目 ${project.name} 的 Sub agents 已${nextValue ? '开启' : '关闭'} `);
     } catch (error) {
       messageApi.error(`操作失败: ${error} `);
-    }
-  };
-
-  const handleSaveWebApiKey = () => {
-    const nextKey = webApiKeyInput.trim();
-    setWebApiKey(nextKey);
-    webApiKeyRef.current = nextKey;
-    try {
-      if (nextKey) {
-        localStorage.setItem(WEB_API_KEY_STORAGE_KEY, nextKey);
-      } else {
-        localStorage.removeItem(WEB_API_KEY_STORAGE_KEY);
-      }
-    } catch {
-      // ignore storage errors
-    }
-    setWebApiKeyModalOpen(false);
-    setWebApiKeyInput('');
-    setWebApiKeyMissing(false);
-    fetchProjects();
-    if (!tauriAvailable) {
-      const match = window.location.pathname.match(/^\/project\/(\d+)\/detail$/);
-      if (match) {
-        const projectId = Number(match[1]);
-        if (Number.isFinite(projectId)) {
-          fetchProjectDetailWeb(projectId);
-        }
-      }
     }
   };
 
@@ -2136,6 +1610,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                   />
                 </Tooltip>
               )}
+              <Tag icon={<UserOutlined />} style={{ margin: 0 }}>
+                {user?.display_name || user?.username || '已登录用户'}
+              </Tag>
+              <Button size="small" icon={<LogoutOutlined />} onClick={() => void logout()}>
+                退出登录
+              </Button>
               <Switch
                 className="theme-switch"
                 checked={isDarkMode}
@@ -2158,7 +1638,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                 style={{ height: '100%', borderRight: 0 }}
                 items={[
                   { key: 'project', icon: <ProjectOutlined />, label: '项目' },
-                  { key: 'web-ide', icon: <DesktopOutlined />, label: 'WebIDE' },
                   { key: 'ai-models', icon: <ThunderboltOutlined />, label: 'AI模型' },
                   { key: 'ide-plugins', icon: <AppstoreAddOutlined />, label: 'IDE 插件' },
                   { key: 'settings', icon: <SettingOutlined />, label: '设置' },
@@ -2235,13 +1714,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                             width: 180,
                             render: (_: any, record: Project) => (
                               <Space>
-                                <Button size="small" type="primary" onClick={() => {
-                                  if (!tauriAvailable) {
-                                    fetchProjectDetailWeb(record.id);
-                                    return;
-                                  }
-                                  handleEnterProject(record);
-                                }}>
+                                <Button size="small" type="primary" onClick={() => handleEnterProject(record)}>
                                   Go <img src={codeIcon} alt="Go" style={{ marginLeft: 4, width: 14, height: 14 }} />
                                 </Button>
                                 {!record.hooks_installed && (
@@ -2253,59 +1726,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                               </Space>
                             ),
                           },
-                        ]}
-                      />
-                    )}
-                  </Card>
-                </div>
-              )}
-
-              {activeMenu === 'web-ide' && (
-                <div className="project-page">
-                  <Card className="projects-card" variant="borderless">
-                    <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        <DesktopOutlined className="card-icon" />
-                        <h2>WebIDE</h2>
-                      </div>
-                      <Button size="small" onClick={fetchWebIdeSummary}>刷新</Button>
-                    </div>
-                    <p className="card-description">仅显示当前在线的 Agent 项目与活跃 PTY 数</p>
-                    <Divider />
-                    {webIdeProjects.length === 0 ? (
-                      <Empty description="暂无在线 WebIDE 项目" />
-                    ) : (
-                      <Table
-                        dataSource={webIdeProjects}
-                        rowKey={(record) => `${record.agent_id}-${record.project_id}`}
-                        pagination={false}
-                        columns={[
-                          {
-                            title: '项目名称',
-                            dataIndex: 'project_name',
-                            key: 'project_name',
-                            render: (name: string) => <span style={{ fontWeight: 500 }}>{name}</span>
-                          },
-                          {
-                            title: '路径',
-                            dataIndex: 'project_path',
-                            key: 'project_path',
-                            render: (path: string) => <span style={{ fontSize: 12, color: 'var(--text-secondary)', wordBreak: 'break-all' }}>{path}</span>
-                          },
-                          {
-                            title: 'Agent',
-                            dataIndex: 'agent_id',
-                            key: 'agent_id',
-                            width: 160,
-                            render: (text: string) => <Tag color="blue">{text}</Tag>
-                          },
-                          {
-                            title: '活跃 PTY',
-                            dataIndex: 'active_pty_count',
-                            key: 'active_pty_count',
-                            width: 120,
-                            render: (count: number) => <Tag color={count > 0 ? 'green' : 'default'}>{count}</Tag>
-                          }
                         ]}
                       />
                     )}
@@ -2959,11 +2379,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                           const tid = activeTerminalId[selectedProject.path];
                                           if (!tid) return;
                                           const isFullAuth = fullAuth[selectedProject.path] || false;
-                                          if (!tauriAvailable && selectedProject) {
-                                            await executeTerminalWeb(selectedProject.id, `claude ${isFullAuth ? '--dangerously-skip-permissions ' : ''}--resume ${record.session_id}\n`);
-                                            setSessionModalOpen(false);
-                                            return;
-                                          }
                                           const args = isFullAuth
                                             ? `--dangerously-skip-permissions --resume ${record.session_id}`
                                             : `--resume ${record.session_id}`;
@@ -2978,12 +2393,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         title="确定要删除该会话记录吗？"
                                         onConfirm={async () => {
                                           try {
-                                            if (!tauriAvailable) {
-                                              await deleteSessionWeb(selectedProject.id, record.session_id);
-                                              await fetchSessions(selectedProject.path);
-                                              messageApi.success('已删除');
-                                              return;
-                                            }
                                             await invoke('delete_session', { session_id: record.session_id });
                                             await fetchSessions(selectedProject.path);
                                             messageApi.success('已删除');
@@ -3161,10 +2570,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                                 }, 1000);
                                               }
 
-                                              if (!tauriAvailable && selectedProject) {
-                                                await executeTerminalWeb(selectedProject.id, cmd);
-                                                return;
-                                              }
                                               await invoke('pty_write', { terminal_id: targetTerminalId, data: cmd });
                                             } catch (err) {
                                               messageApi.error(`启动会话失败: ${err}`);
@@ -3390,10 +2795,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         const tid = activeTerminalId[selectedProject.path];
                                         if (!tid) return;
                                         const isFullAuth = fullAuth[selectedProject.path] || false;
-                                        if (!tauriAvailable && selectedProject) {
-                                          await executeTerminalWeb(selectedProject.id, `claude${isFullAuth ? ' --dangerously-skip-permissions' : ''}\n`);
-                                          return;
-                                        }
                                         const cmd = await buildClaudeCmd(tid, isFullAuth ? '--dangerously-skip-permissions' : '');
                                         invoke('pty_write', { terminal_id: tid, data: cmd });
                                       }} />
@@ -3402,11 +2803,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                     <Button size="small" type="text"
                                       disabled={!activeTerminalId[selectedProject.path] || activeTerminalId[selectedProject.path] === 'detail'}
                                       onClick={async () => {
-                                        if (!tauriAvailable && selectedProject) {
-                                          await fetchSessionsWeb(selectedProject.id, selectedProject.path, selectedProject.name);
-                                          setSessionModalOpen(true);
-                                          return;
-                                        }
                                         await fetchSessions(selectedProject.path);
                                         setSessionModalOpen(true);
                                       }} icon={<HistoryOutlined />} />
@@ -3425,10 +2821,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                     <Button size="small" type="text" onClick={() => {
                                       const tid = activeTerminalId[selectedProject.path];
                                       if (!tid) return;
-                                      if (!tauriAvailable) {
-                                        messageApi.info('Web 端暂不支持清空当前输入');
-                                        return;
-                                      }
                                       // \x05 (Ctrl+E) moves to end of line, \x15 (Ctrl+U) clears line
                                       invoke('pty_write', { terminal_id: tid, data: '\x05\x15' });
                                     }} icon={<ClearOutlined />} />
@@ -3443,10 +2835,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                           onClick: () => {
                                             const tid = activeTerminalId[selectedProject.path];
                                             if (!tid) return;
-                                            if (!tauriAvailable && selectedProject) {
-                                              executeTerminalWeb(selectedProject.id, 'claude update\n');
-                                              return;
-                                            }
                                             invoke('pty_write', { terminal_id: tid, data: 'claude update\n' });
                                           }
                                         },
@@ -3472,11 +2860,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                           onClick: () => {
                                             const tid = activeTerminalId[selectedProject.path];
                                             if (!tid) return;
-                                            if (!tauriAvailable && selectedProject) {
-                                              executeTerminalWeb(selectedProject.id, '/compact\n');
-                                              window.dispatchEvent(new CustomEvent('claude-context-reset', { detail: selectedProject.path }));
-                                              return;
-                                            }
                                             invoke('pty_write', { terminal_id: tid, data: '/compact\n' });
                                             window.dispatchEvent(new CustomEvent('claude-context-reset', { detail: selectedProject.path }));
                                           }
@@ -3488,10 +2871,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                           onClick: () => {
                                             const tid = activeTerminalId[selectedProject.path];
                                             if (!tid) return;
-                                            if (!tauriAvailable && selectedProject) {
-                                              executeTerminalWeb(selectedProject.id, '/clear\n');
-                                              return;
-                                            }
                                             invoke('pty_write', { terminal_id: tid, data: '/clear\n' });
                                           }
                                         },
@@ -3502,10 +2881,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                           onClick: () => {
                                             const tid = activeTerminalId[selectedProject.path];
                                             if (!tid) return;
-                                            if (!tauriAvailable && selectedProject) {
-                                              executeTerminalWeb(selectedProject.id, '/undo\n');
-                                              return;
-                                            }
                                             invoke('pty_write', { terminal_id: tid, data: '/undo\n' });
                                           }
                                         },
@@ -3516,10 +2891,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                           onClick: () => {
                                             const tid = activeTerminalId[selectedProject.path];
                                             if (!tid) return;
-                                            if (!tauriAvailable && selectedProject) {
-                                              executeTerminalWeb(selectedProject.id, '/files\n');
-                                              return;
-                                            }
                                             invoke('pty_write', { terminal_id: tid, data: '/files\n' });
                                           }
                                         },
@@ -3538,6 +2909,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                     placement="bottomRight"
                                     trigger={['click']}
                                   >
+
                                     <Button
                                       type="text"
                                       size="small"
@@ -4344,34 +3716,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
         </Modal>
 
         <Modal
-          title={(
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <ApiOutlined style={{ color: '#1677ff', fontSize: '18px' }} />
-              <span>输入 Web API Key</span>
-            </div>
-          )}
-          open={webApiKeyModalOpen}
-          onCancel={() => setWebApiKeyModalOpen(false)}
-          okText="保存"
-          cancelText="取消"
-          onOk={handleSaveWebApiKey}
-        >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <Input
-              placeholder="请输入 x-api-key"
-              value={webApiKeyInput}
-              onChange={(e) => setWebApiKeyInput(e.target.value)}
-              onPressEnter={handleSaveWebApiKey}
-            />
-            {webApiKeyMissing && (
-              <div style={{ fontSize: 12, color: '#faad14' }}>
-                API Key 缺失或无权限，请重新输入。
-              </div>
-            )}
-          </div>
-        </Modal>
-
-        <Modal
           title={editingProvider?.id ? '编辑 AI模型' : '添加 AI模型'}
           open={providerModalOpen}
           onCancel={() => setProviderModalOpen(false)}
@@ -4522,23 +3866,13 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   );
 }
 
-function App() {
-  const [isDarkMode, setIsDarkMode] = useState(() => {
-    const saved = localStorage.getItem('theme');
-    if (saved === 'dark') return true;
-    if (saved === 'light') return false;
-    return window.matchMedia('(prefers-color-scheme: dark)').matches;
-  });
-
-  useEffect(() => {
-    localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
-    if (isDarkMode) {
-      document.body.classList.add('dark-mode');
-    } else {
-      document.body.classList.remove('dark-mode');
-    }
-  }, [isDarkMode]);
-
+function AppShell({
+  isDarkMode,
+  children,
+}: {
+  isDarkMode: boolean;
+  children: ReactNode;
+}) {
   return (
     <ConfigProvider
       theme={{
@@ -4557,15 +3891,130 @@ function App() {
             itemColor: isDarkMode ? '#a0a0a0' : '#000000',
             itemSelectedColor: isDarkMode ? '#ffffff' : '#ffffff',
             itemHoverColor: isDarkMode ? '#ffffff' : '#000000',
-          }
-        }
+          },
+        },
       }}
     >
-      <AntApp>
-        <AppContent isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} />
-      </AntApp>
+      <AntApp>{children}</AntApp>
     </ConfigProvider>
   );
 }
 
+function AppGate({
+  isDarkMode,
+  setIsDarkMode,
+}: {
+  isDarkMode: boolean;
+  setIsDarkMode: (value: boolean) => void;
+}) {
+  const { initialized, isAuthenticated } = useAuth();
+  const tauriAvailable = isTauri();
+  const [authMode, setAuthMode] = useState<'login' | 'register'>(() =>
+    window.location.pathname === '/register' ? 'register' : 'login',
+  );
+
+  useEffect(() => {
+    if (!initialized) {
+      return;
+    }
+
+    const pathname = window.location.pathname;
+    if (isAuthenticated) {
+      if (pathname === '/login' || pathname === '/register') {
+        window.history.replaceState({}, '', '/');
+      }
+      return;
+    }
+
+    const nextMode = pathname === '/register' ? 'register' : 'login';
+    setAuthMode(nextMode);
+    if (pathname !== '/login' && pathname !== '/register') {
+      window.history.replaceState({}, '', '/login');
+      setAuthMode('login');
+    }
+  }, [initialized, isAuthenticated]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const pathname = window.location.pathname;
+      if (pathname === '/register') {
+        setAuthMode('register');
+      } else if (pathname === '/login') {
+        setAuthMode('login');
+      }
+    };
+
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  const handleAuthModeChange = useCallback((mode: 'login' | 'register') => {
+    setAuthMode(mode);
+    const target = mode === 'register' ? '/register' : '/login';
+    if (window.location.pathname !== target) {
+      window.history.pushState({}, '', target);
+    }
+  }, []);
+
+  if (!initialized) {
+    return (
+      <div className={`app-container ${isDarkMode ? 'dark-mode' : ''}`}>
+        <main className="app-main" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Typography.Text type="secondary">正在恢复登录状态...</Typography.Text>
+        </main>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <AuthPage
+        mode={authMode}
+        onModeChange={handleAuthModeChange}
+        isDarkMode={isDarkMode}
+        onThemeChange={setIsDarkMode}
+        title={tauriAvailable ? '登录 Sparky 桌面端' : '登录 Sparky Web'}
+        description={
+          tauriAvailable
+            ? '桌面端会共用同一套账号体系。登录成功后继续进入现有本地 Tauri 主界面。'
+            : 'Web 端会使用服务端认证接口恢复会话，并统一通过 Bearer token 访问业务 API。'
+        }
+      />
+    );
+  }
+
+  return tauriAvailable ? (
+    <AppContent isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} />
+  ) : (
+    <AppWeb isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} />
+  );
+}
+
+function App() {
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const saved = localStorage.getItem('theme');
+    if (saved === 'dark') return true;
+    if (saved === 'light') return false;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
+    if (isDarkMode) {
+      document.body.classList.add('dark-mode');
+    } else {
+      document.body.classList.remove('dark-mode');
+    }
+  }, [isDarkMode]);
+
+  return (
+    <AppShell isDarkMode={isDarkMode}>
+      <AuthProvider>
+        <AppGate isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} />
+      </AuthProvider>
+    </AppShell>
+  );
+}
+
 export default App;
+

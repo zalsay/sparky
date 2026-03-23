@@ -10,12 +10,6 @@ export default defineConfig({
     headers: {
       'Permissions-Policy': 'clipboard-read=*, clipboard-write=*, display-capture=*',
     },
-    proxy: {
-      '/api': {
-        target: 'http://localhost:8010',
-        changeOrigin: true,
-      },
-    },
   },
   envPrefix: ['VITE_', 'TAURI_'],
   build: {

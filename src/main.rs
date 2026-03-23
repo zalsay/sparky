@@ -8,9 +8,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use rusqlite::{params, Connection};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::io::{Write, Read, Seek, SeekFrom};
-use std::fs::File;
-use std::path::PathBuf;
+use std::io::Write;
 
 #[derive(Parser)]
 #[command(name = "claude-monitor")]
@@ -367,24 +365,12 @@ async fn run_hook_with_input(config: &config::Config, hook_input: hooks::HookInp
         content.push_str("\n\n**权限请求**\n");
         content.push_str(&permission_summary);
 
-        // 尝试从终端日志中捕获提示
-        let mut prompt_captured = false;
-        if let Some(project_path) = config.project_path.as_ref() {
-            if let Some(prompt) = read_terminal_prompt(project_path) {
-                content.push_str("\n\n❓ **Terminal Output**\n");
-                content.push_str("```\n");
-                content.push_str(&prompt);
-                content.push_str("\n```");
-                prompt_captured = true;
-            }
-        }
-
         if let Some(code) = &req_code {
             content.push_str(&format!("\n\n🔑 **配对码: {}**\n", code));
             content.push_str(&format!("❯ 回复 `{}-1` 允许\n", code));
             content.push_str(&format!("  回复 `{}-2` 始终允许\n", code));
             content.push_str(&format!("  回复 `{}-3` 拒绝", code));
-        } else if !prompt_captured {
+        } else {
             content.push_str("\n\n❓ **Do you want to proceed?**\n");
             content.push_str("❯ 1. Yes\n");
             content.push_str("  2. Yes, and always allow access\n");
@@ -1151,37 +1137,3 @@ async fn tail_hook_log() -> Result<()> {
     }
 }
 
-fn get_pty_log_path(project_path: &str) -> PathBuf {
-    let home = dirs::home_dir().expect("Failed to get home dir");
-    let safe_name = project_path.replace("/", "_").replace(":", "_");
-    home.join("sparky/pty_logs").join(format!("{}.log", safe_name))
-}
-
-fn read_terminal_prompt(project_path: &str) -> Option<String> {
-    let log_path = get_pty_log_path(project_path);
-    let mut file = File::open(log_path).ok()?;
-    let metadata = file.metadata().ok()?;
-    let len = metadata.len();
-    
-    // Read last 4KB to be safe
-    let read_len = if len > 4096 { 4096 } else { len };
-    let mut buf = vec![0; read_len as usize];
-    
-    if len > 4096 {
-        file.seek(SeekFrom::End(-4096)).ok()?;
-    }
-    file.read_exact(&mut buf).ok()?;
-    
-    let content = String::from_utf8_lossy(&buf);
-    
-    // Look for "Do you want to proceed?"
-    if let Some(pos) = content.rfind("Do you want to proceed?") {
-        let prompt_part = &content[pos..];
-        // Only take lines up to some reasonable limit or until next prompt?
-        // Prompt ends with user input.
-        // Assuming we just want to show the prompt and options.
-        return Some(prompt_part.trim().to_string());
-    }
-    
-    None
-}
