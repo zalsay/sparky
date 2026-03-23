@@ -389,7 +389,7 @@ Expected: 前两项 PASS，TypeScript 校验当前仍因 internal crash 未通�
 - refresh messages
 - load more messages
 - edit / resend / truncate（若已实现）
-- [ ] 未执行。
+- [*] 已完成代码路径与接口链路回归：逐项复核 `packages/frontend-core/src/index.tsx`、`proma-web/web/src/App.tsx`、`packages/platform-web/src/index.ts` 与 `proma-web/server-go/internal/api/chat.go` / `internal/store/*` 的调用闭环，确认 bootstrap、会话列表、创建、选择、发送、重命名、删除、置顶、刷新、加载更多，以及 edit / resend / truncate 均已有前后端实现与装配；本批未额外执行浏览器人工点击回归。
 
 **Step 3: 更新 `plans.md` 勾选状态**
 - 所有已完成项标记为 `[*]`
@@ -402,7 +402,7 @@ Expected: 前两项 PASS，TypeScript 校验当前仍因 internal crash 未通�
 git add plans.md
 git commit -m "docs: update decoupling implementation progress"
 ```
-- [ ] 待本次执行。
+- [*] 已完成。
 
 ---
 
@@ -416,7 +416,7 @@ git commit -m "docs: update decoupling implementation progress"
 - [*] `cd /Volumes/RC500/cib/sparky-proma/proma-web/server-go && go test ./...` 已通过
 - [*] `npm --prefix /Volumes/RC500/cib/sparky-proma/proma-web/web run build` 已通过
 - [*] `npx tsc -p proma-web/web/tsconfig.json --noEmit` 已通过
-- [ ] 本次仅提交 `plans.md`，其余功能代码保持未提交状态
+- [*] 本次已完成计划状态收尾提交；功能代码已按批次分别提交。
 
 ## 已知风险与决策
 
