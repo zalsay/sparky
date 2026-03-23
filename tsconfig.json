@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": false,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "baseUrl": ".",
+    "paths": {
+      "@sparky/shared": ["packages/shared/src/index.ts"],
+      "@sparky/platform-contract": ["packages/platform-contract/src/index.ts"],
+      "@sparky/platform-web": ["packages/platform-web/src/index.ts"],
+      "@sparky/frontend-core": ["packages/frontend-core/src/index.ts"]
+    }
+  }
+}
