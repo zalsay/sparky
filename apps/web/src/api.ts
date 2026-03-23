@@ -1,3 +1,3 @@
-import { createWebPlatformClient } from '../../../packages/platform-web/src'
+import { createWebPlatformClient } from '@sparky/platform-web'
 
 export const api = createWebPlatformClient()

@@ -343,16 +343,16 @@ Expected: 复现当前问题
 
 **Step 2: 最小化问题范围**
 - 分别对 `shared / platform-contract / platform-web / frontend-core / apps/web` 做独立类型检查。
-- [ ] 未执行。
+- [*] 已完成。当前仓库中仅 `apps/web/tsconfig.json` 存在可用 tsconfig；对该入口单独执行类型检查已 PASS，packages 暂无独立 tsconfig，说明问题集中在 web 入口解析链路而非各 package 独立编译。
 
 **Step 3: 修正 exports / path alias / package resolution**
 - 去掉混用包导入与源码相对导入的模式。
-- [ ] 未执行。
+- [*] 已完成。已移除根 tsconfig 的全局包源码映射，将 alias 收敛到 `apps/web/tsconfig.json`，并将 `apps/web/src/api.ts` 改为包导入。
 
 **Step 4: 重新运行类型检查**
 Run: `npx tsc -p apps/web/tsconfig.json --noEmit`
 Expected: PASS
-- [ ] 未完成。
+- [*] 已完成。当前 `tsc -p apps/web/tsconfig.json --noEmit` PASS。
 
 **Step 5: 更新计划状态并提交**
 ```bash

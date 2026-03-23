@@ -2,14 +2,15 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "types": ["vite/client"],
-    "rootDir": "../..",
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "strict": true,
+    "baseUrl": ".",
+    "paths": {
+      "@sparky/shared": ["../../packages/shared/src/index.ts"],
+      "@sparky/platform-contract": ["../../packages/platform-contract/src/index.ts"],
+      "@sparky/platform-web": ["../../packages/platform-web/src/index.ts"],
+      "@sparky/frontend-core": ["../../packages/frontend-core/src/index.tsx"]
+    }
   },
-  "include": [
-    "src",
-    "../../packages/frontend-core/src/**/*.tsx",
-    "../../packages/platform-web/src/**/*.ts",
-    "../../packages/platform-contract/src/**/*.ts",
-    "../../packages/shared/src/**/*.ts"
-  ]
+  "include": ["src"]
 }
