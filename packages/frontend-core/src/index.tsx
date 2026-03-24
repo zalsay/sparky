@@ -1,10 +1,13 @@
-import React from 'react'
+import * as React from 'react'
 import type { PlatformClient } from '@sparky/platform-contract'
 import { PlatformRequestError } from '@sparky/shared'
 import type {
+  Attachment,
+  AttachmentInput,
   ChatMessage,
   ConversationMeta,
   RuntimeInfo,
+  StreamingEvent,
   UserProfile,
   Workspace,
   WorkspaceCapabilities,
@@ -38,6 +41,10 @@ interface ChatState {
   refreshingMessages: boolean
   loadingMoreMessages: boolean
   sending: boolean
+  streaming: boolean
+  streamingMessageId: string | null
+  streamingError: string | null
+  pendingAttachments: Attachment[]
   chatError: string | null
   hasMoreMessages: boolean
 }
@@ -126,6 +133,52 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim() ? error.message : fallback
 }
 
+function createPendingAttachment(file: File): Attachment {
+  return {
+    id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${file.name}`,
+    name: file.name,
+    mimeType: file.type || 'application/octet-stream',
+    size: file.size,
+    status: 'pending',
+  }
+}
+
+function toAttachmentInput(items: Attachment[]): AttachmentInput[] {
+  return items.map((item) => ({
+    id: item.id,
+    name: item.name,
+    mimeType: item.mimeType,
+    size: item.size,
+    url: item.url,
+  }))
+}
+
+function upsertMessage(messages: ChatMessage[], next: ChatMessage): ChatMessage[] {
+  const index = messages.findIndex((item) => item.id === next.id)
+  if (index === -1) return [...messages, next]
+  const copy = [...messages]
+  copy[index] = next
+  return copy
+}
+
+function applyStreamingEvent(messages: ChatMessage[], event: StreamingEvent): ChatMessage[] {
+  if (event.type === 'start' && event.message) {
+    return upsertMessage(messages, event.message)
+  }
+
+  if (event.type === 'delta' && event.delta) {
+    return messages.map((message) => message.id === event.delta?.messageId
+      ? { ...message, content: `${message.content}${event.delta.content}`, status: event.delta.status }
+      : message)
+  }
+
+  if (event.type === 'done' && event.message) {
+    return upsertMessage(messages, event.message)
+  }
+
+  return messages
+}
+
 async function loadBootstrapData(client: PlatformClient, refreshWorkspaceCapabilities: (workspaceItems: Workspace[]) => Promise<void>): Promise<BootstrapData> {
   const [runtimeResult, workspaceResult, profileResult] = await Promise.allSettled([
     client.getRuntime(),
@@ -177,6 +230,10 @@ function useChatState(): [ChatState, React.Dispatch<React.SetStateAction<ChatSta
     refreshingMessages: false,
     loadingMoreMessages: false,
     sending: false,
+    streaming: false,
+    streamingMessageId: null,
+    streamingError: null,
+    pendingAttachments: [],
     chatError: null,
     hasMoreMessages: false,
   })
@@ -210,6 +267,9 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
     refreshingMessages,
     loadingMoreMessages,
     sending,
+    streaming,
+    streamingError,
+    pendingAttachments,
     chatError,
     hasMoreMessages,
   } = chatState
@@ -404,20 +464,76 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
     await loadMessages(currentConversationId, { append: true, before: messages[0]?.id })
   }
 
+  const handleAddAttachments = (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    const next = Array.from(files).map(createPendingAttachment)
+    setChatState((prev) => ({ ...prev, pendingAttachments: [...prev.pendingAttachments, ...next] }))
+  }
+
+  const handleRemoveAttachment = (attachmentId: string) => {
+    setChatState((prev) => ({
+      ...prev,
+      pendingAttachments: prev.pendingAttachments.filter((item) => item.id !== attachmentId),
+    }))
+  }
+
+  const handleStreamingEvent = React.useCallback((event: StreamingEvent) => {
+    setChatState((prev) => {
+      const nextMessages = applyStreamingEvent(prev.messages, event)
+      return {
+        ...prev,
+        messages: nextMessages,
+        streamingMessageId: event.type === 'start' ? event.message?.id ?? prev.streamingMessageId : prev.streamingMessageId,
+        streaming: event.type === 'done' || event.type === 'error' ? false : true,
+        streamingError: event.type === 'error' ? event.error ?? 'Streaming 失败' : prev.streamingError,
+      }
+    })
+  }, [setChatState])
+
   const handleSend = async (event: React.FormEvent) => {
     event.preventDefault()
     if (!currentConversationId || !input.trim()) return
 
-    setChatState((prev) => ({ ...prev, sending: true, chatError: null }))
+    const trimmedInput = input.trim()
+    const attachments = pendingAttachments.map((item) => ({ ...item, status: 'ready' as const }))
+    const optimisticUserMessage: ChatMessage = {
+      id: `local-user-${Date.now()}`,
+      conversationId: currentConversationId,
+      role: 'user',
+      content: trimmedInput,
+      createdAt: new Date().toISOString(),
+      status: 'done',
+      attachments,
+    }
+
+    setChatState((prev) => ({
+      ...prev,
+      sending: true,
+      streaming: true,
+      streamingError: null,
+      chatError: null,
+      input: '',
+      pendingAttachments: [],
+      messages: [...prev.messages, optimisticUserMessage],
+    }))
+
     try {
-      await client.sendMessage(currentConversationId, { content: input.trim() })
-      setChatState((prev) => ({ ...prev, input: '' }))
+      await client.streamMessage(currentConversationId, {
+        content: trimmedInput,
+        attachments: toAttachmentInput(attachments),
+      }, {
+        onEvent: handleStreamingEvent,
+      })
       await loadMessages(currentConversationId, { refresh: true })
       await refreshConversations()
     } catch (err) {
-      setChatState((prev) => ({ ...prev, chatError: getErrorMessage(err, '发送失败') }))
+      setChatState((prev) => ({
+        ...prev,
+        chatError: getErrorMessage(err, '发送失败'),
+        streamingError: getErrorMessage(err, 'Streaming 失败'),
+      }))
     } finally {
-      setChatState((prev) => ({ ...prev, sending: false }))
+      setChatState((prev) => ({ ...prev, sending: false, streaming: false, streamingMessageId: null }))
     }
   }
 
@@ -425,21 +541,36 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
     setChatState((prev) => ({
       ...prev,
       editingMessageId: message.id,
-      editingMessageContent: message.content,
+      editingMessageContent: message.kind === 'context_divider'
+        ? message.contextDivider?.content ?? message.content
+        : message.content,
     }))
   }
 
-  const handleEditMessage = async (messageId: string) => {
+  const handleEditMessage = async (message: ChatMessage) => {
     if (!currentConversationId || !editingMessageContent.trim()) return
     setChatState((prev) => ({ ...prev, chatError: null }))
     try {
-      const result = await client.editMessage(currentConversationId, messageId, { content: editingMessageContent.trim() })
-      setChatState((prev) => ({
-        ...prev,
-        messages: result.messages as ChatMessage[],
-        editingMessageId: null,
-        editingMessageContent: '',
-      }))
+      if (message.kind === 'context_divider') {
+        const updated = await client.updateContextDivider(currentConversationId, message.id, {
+          title: message.contextDivider?.title ?? 'Context divider',
+          content: editingMessageContent.trim(),
+        })
+        setChatState((prev) => ({
+          ...prev,
+          messages: prev.messages.map((item) => item.id === updated.id ? updated : item),
+          editingMessageId: null,
+          editingMessageContent: '',
+        }))
+      } else {
+        const result = await client.editMessage(currentConversationId, message.id, { content: editingMessageContent.trim() })
+        setChatState((prev) => ({
+          ...prev,
+          messages: result.messages as ChatMessage[],
+          editingMessageId: null,
+          editingMessageContent: '',
+        }))
+      }
       await refreshConversations()
     } catch (err) {
       setChatState((prev) => ({ ...prev, chatError: getErrorMessage(err, '编辑消息失败') }))
@@ -591,19 +722,24 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
         </header>
 
         {chatError ? <div className="error">{chatError}</div> : null}
+        {streamingError ? <div className="error">{streamingError}</div> : null}
 
         {!currentConversationId && !messagesLoading ? (
           <div className="empty-state">请选择一个对话，或先创建一个新对话。</div>
         ) : null}
 
         {messagesLoading ? <div className="muted">正在加载消息...</div> : null}
+        {streaming ? <div className="muted">正在接收流式回复...</div> : null}
 
         <div className="messages">
           {currentConversationId && !messagesLoading && messages.length === 0 ? <div className="empty-state">当前对话还没有消息。</div> : null}
           {messages.map((message: ChatMessage) => (
-            <article key={message.id} className={`message ${message.role}`}>
+            <article key={message.id} className={`message ${message.role} ${message.kind ?? 'text'}`}>
               <div className="message-header">
-                <div className="role">{message.role}</div>
+                <div>
+                  <div className="role">{message.kind === 'tool_result' ? 'tool' : message.kind === 'context_divider' ? 'divider' : message.role}</div>
+                  {message.status ? <div className="muted">{message.status}</div> : null}
+                </div>
                 <div className="message-actions">
                   <button className="ghost" onClick={() => handleTruncateMessages(message.id)}>截断</button>
                   {message.role === 'user' ? <button className="ghost" onClick={() => handleResendMessage(message.id)}>重发</button> : null}
@@ -618,27 +754,77 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
                     rows={4}
                   />
                   <div className="toolbar">
-                    <button className="primary" type="button" onClick={() => void handleEditMessage(message.id)}>保存</button>
+                    <button className="primary" type="button" onClick={() => void handleEditMessage(message)}>保存</button>
                     <button className="ghost" type="button" onClick={() => setChatState((prev) => ({ ...prev, editingMessageId: null }))}>取消</button>
                   </div>
                 </div>
+              ) : message.kind === 'tool_result' ? (
+                <div className="card tool-card">
+                  <strong>{message.toolResult?.name ?? message.toolInvocation?.name ?? 'Tool result'}</strong>
+                  <div className="muted">{message.toolResult?.status ?? message.toolInvocation?.status}</div>
+                  <div>{message.toolResult?.output ?? message.content}</div>
+                </div>
+              ) : message.kind === 'context_divider' ? (
+                <div className="divider-card">
+                  <strong>{message.contextDivider?.title ?? 'Context divider'}</strong>
+                  <div>{message.contextDivider?.content ?? message.content}</div>
+                </div>
               ) : (
-                <div>{message.content}</div>
+                <>
+                  <div>{message.content}</div>
+                  {message.attachments?.length ? (
+                    <div className="attachment-list">
+                      {message.attachments.map((attachment) => (
+                        <div key={attachment.id} className="attachment-item">
+                          <strong>{attachment.name}</strong>
+                          <span className="muted">{attachment.mimeType} · {attachment.size} bytes</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </>
               )}
             </article>
           ))}
         </div>
 
         <form className="composer" onSubmit={handleSend}>
+          {pendingAttachments.length > 0 ? (
+            <div className="attachment-list">
+              {pendingAttachments.map((attachment) => (
+                <div key={attachment.id} className="attachment-item">
+                  <div>
+                    <strong>{attachment.name}</strong>
+                    <div className="muted">{attachment.mimeType} · {attachment.size} bytes · {attachment.status}</div>
+                  </div>
+                  <button className="ghost" type="button" onClick={() => handleRemoveAttachment(attachment.id)}>移除</button>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <textarea
             value={input}
             onChange={(event) => setChatState((prev) => ({ ...prev, input: event.target.value }))}
             placeholder="输入一条消息，验证 frontend-core -> platform-web -> Go server"
             rows={4}
           />
-          <button className="primary" type="submit" disabled={!currentConversationId || sending}>
-            {sending ? '发送中...' : currentConversationId ? '发送' : '请先选择对话'}
-          </button>
+          <div className="toolbar">
+            <label className="ghost upload-button">
+              添加附件
+              <input
+                hidden
+                type="file"
+                multiple
+                onChange={(event) => {
+                  handleAddAttachments(event.target.files)
+                  event.currentTarget.value = ''
+                }}
+              />
+            </label>
+            <button className="primary" type="submit" disabled={!currentConversationId || sending}>
+              {sending ? '发送中...' : currentConversationId ? '发送' : '请先选择对话'}
+            </button>
+          </div>
         </form>
       </main>
     </div>

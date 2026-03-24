@@ -9,11 +9,14 @@ import type {
   ResendMessageInput,
   RuntimeInfo,
   SendMessageInput,
+  StreamMessageHandlers,
   TruncateMessagesInput,
+  UpdateContextDividerInput,
   UpdateConversationPinInput,
   UserProfile,
   Workspace,
   WorkspaceCapabilities,
+  ChatMessage,
 } from '@sparky/shared'
 import { PlatformRequestError } from '@sparky/shared'
 import type { PlatformRequestErrorDetails } from '@sparky/shared'
@@ -32,10 +35,12 @@ export interface PlatformClient {
   getMessages(conversationId: string, input?: GetMessagesInput): Promise<ConversationMessagesResult>
   refreshMessages(conversationId: string, input?: GetMessagesInput): Promise<ConversationMessagesResult>
   loadMoreMessages(conversationId: string, input: GetMessagesInput): Promise<ConversationMessagesResult>
-  sendMessage(conversationId: string, input: SendMessageInput): Promise<{ messages: { id: string; role: string; content: string; createdAt: string; conversationId: string }[] }>
-  editMessage(conversationId: string, messageId: string, input: EditMessageInput): Promise<{ messages: { id: string; role: string; content: string; createdAt: string; conversationId: string }[] }>
-  resendMessage(conversationId: string, input: ResendMessageInput): Promise<{ messages: { id: string; role: string; content: string; createdAt: string; conversationId: string }[] }>
+  sendMessage(conversationId: string, input: SendMessageInput): Promise<{ messages: ChatMessage[] }>
+  streamMessage(conversationId: string, input: SendMessageInput, handlers?: StreamMessageHandlers): Promise<void>
+  editMessage(conversationId: string, messageId: string, input: EditMessageInput): Promise<{ messages: ChatMessage[] }>
+  resendMessage(conversationId: string, input: ResendMessageInput): Promise<{ messages: ChatMessage[] }>
   truncateMessages(conversationId: string, input: TruncateMessagesInput): Promise<ConversationMessagesResult>
+  updateContextDivider(conversationId: string, messageId: string, input: UpdateContextDividerInput): Promise<ChatMessage>
   getUserProfile(): Promise<UserProfile>
   getWorkspaceCapabilities(workspaceId: string): Promise<WorkspaceCapabilities>
 }

@@ -104,23 +104,25 @@
 ### Task 2: 设计并实现流式消息最小链路
 
 **Files:**
+- Modify: `packages/shared/src/index.ts`
 - Modify: `packages/platform-contract/src/index.ts`
 - Modify: `packages/platform-web/src/index.ts`
 - Modify: `packages/frontend-core/src/index.tsx`
 - Modify: `proma-web/server-go/internal/api/*.go`
+- Modify: `proma-web/server-go/internal/store/*.go`
 - Modify: `proma-web-plans/plans-p2.md`
 
 **Step 1: 定义 streaming 契约**
-- [ ] 补齐最小共享类型与接口
+- [x] 补齐最小共享类型与接口
 
 **Step 2: 实现 web / server 最小链路**
-- [ ] 先跑通一条真实 streaming 消息链路
+- [x] 先跑通一条真实 streaming 消息链路
 
 **Step 3: 接入 frontend-core**
-- [ ] 增加 streaming 状态与 UI 更新逻辑
+- [x] 增加 streaming 状态与 UI 更新逻辑
 
 **Step 4: 验证并提交**
-- [ ] 执行 build / type-check / server test / 手动回归
+- [x] 执行 build / type-check / server test / 手动回归
 
 ### Task 3: 设计并实现附件最小链路
 
@@ -130,19 +132,20 @@
 - Modify: `packages/platform-web/src/index.ts`
 - Modify: `packages/frontend-core/src/index.tsx`
 - Modify: `proma-web/server-go/internal/api/*.go`
+- Modify: `proma-web/server-go/internal/store/*.go`
 - Modify: `proma-web-plans/plans-p2.md`
 
 **Step 1: 定义附件模型**
-- [ ] 补齐 message attachment 共享类型
+- [x] 补齐 message attachment 共享类型
 
 **Step 2: 实现上传/引用最小闭环**
-- [ ] 跑通服务端与前端最小流程
+- [x] 跑通服务端与前端最小流程
 
 **Step 3: 接入 chat UI**
-- [ ] 支持附件展示与发送前状态
+- [x] 支持附件展示与发送前状态
 
 **Step 4: 验证并提交**
-- [ ] 执行 build / type-check / server test / 手动回归
+- [x] 执行 build / type-check / server test / 手动回归
 
 ### Task 4: 设计并实现 tool / divider 最小支持
 
@@ -152,19 +155,20 @@
 - Modify: `packages/platform-web/src/index.ts`
 - Modify: `packages/frontend-core/src/index.tsx`
 - Modify: `proma-web/server-go/internal/api/*.go`
+- Modify: `proma-web/server-go/internal/store/*.go`
 - Modify: `proma-web-plans/plans-p2.md`
 
 **Step 1: 定义共享模型**
-- [ ] 补齐 tool result 与 context divider 所需类型
+- [x] 补齐 tool result 与 context divider 所需类型
 
 **Step 2: 接入最小读取/展示能力**
-- [ ] 先实现能正确展示与刷新
+- [x] 先实现能正确展示与刷新
 
 **Step 3: 再补编辑能力**
-- [ ] 仅补最小必要操作，不扩散范围
+- [x] 仅补最小必要操作，不扩散范围
 
 **Step 4: 验证并提交**
-- [ ] 执行 build / type-check / server test / 手动回归
+- [x] 执行 build / type-check / server test / 手动回归
 
 ### Task 5: Go server 行为对齐与回归体系补强
 
@@ -175,29 +179,29 @@
 - Modify: `proma-web-plans/plans-p2.md`
 
 **Step 1: 梳理差异语义**
-- [ ] 列出当前与 upstream 的剩余行为差异
+- [x] 列出当前与 upstream 的剩余行为差异
 
 **Step 2: 增加关键链路测试**
-- [ ] conversation / message / edit / resend / truncate / pin / rename
+- [x] conversation / message / edit / resend / truncate / pin / rename
 
 **Step 3: 增加新能力测试**
-- [ ] streaming / attachment / tool / divider 的最小回归用例
+- [x] streaming / attachment / tool / divider 的最小回归用例
 
 **Step 4: 收尾与提交**
-- [ ] 更新计划状态、记录限制并提交
+- [x] 更新计划状态、记录限制并提交
 
 ---
 
 ## 已知风险与决策
 
-- [ ] streaming 方案选型会影响前后端契约，需先收敛最小实现方式
-- [ ] 附件能力可能牵涉存储、鉴权、清理策略，需避免在本阶段扩成完整文件系统方案
-- [ ] tool / divider 更接近上游复杂交互，需坚持“先最小展示，再补编辑”原则
-- [ ] Go server 行为对齐应优先补测试，再补复杂语义，避免回归不可见
+- [x] streaming 方案选型会影响前后端契约，需先收敛最小实现方式（当前采用 SSE，assistant 内容仍为占位流式回复）
+- [x] 附件能力可能牵涉存储、鉴权、清理策略，需避免在本阶段扩成完整文件系统方案（当前仅覆盖附件元数据闭环）
+- [x] tool / divider 更接近上游复杂交互，需坚持“先最小展示，再补编辑”原则（当前 tool 仅展示历史结果，divider 仅支持最小文本更新）
+- [x] Go server 行为对齐应优先补测试，再补复杂语义，避免回归不可见（已补 MemoryStore、PostgresStore 与 API 层回归测试）
 
 ## 完成定义
 
-- [ ] 新增能力仍经由 `PlatformClient` 暴露，不回退到平台直连
-- [ ] `frontend-core` 承载新增共享逻辑，`proma-web/web` 仍保持薄壳
-- [ ] 每个新能力块都有最小端到端链路与明确验证结果
-- [ ] `plans-p2.md` 与代码进度保持同步
+- [x] 新增能力仍经由 `PlatformClient` 暴露，不回退到平台直连
+- [x] `frontend-core` 承载新增共享逻辑，`proma-web/web` 仍保持薄壳
+- [x] 每个新能力块都有最小端到端链路与明确验证结果
+- [x] `plans-p2.md` 与代码进度保持同步

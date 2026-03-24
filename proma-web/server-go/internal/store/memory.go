@@ -23,14 +23,36 @@ func NewMemoryStore() *MemoryStore {
 	now := time.Now().UTC()
 	workspaceID := uuid.NewString()
 	conversationID := uuid.NewString()
+	dividerID := uuid.NewString()
+	toolMessageID := uuid.NewString()
 
 	welcomeMessages := []Message{
+		{
+			ID:             dividerID,
+			ConversationID: conversationID,
+			Role:           "system",
+			Content:        "欢迎进入 Proma Web 对话上下文。",
+			CreatedAt:      now,
+			Kind:           "context_divider",
+			ContextDivider: &ContextDivider{ID: dividerID, Title: "会话开始", Content: "欢迎进入 Proma Web 对话上下文。"},
+		},
+		{
+			ID:             toolMessageID,
+			ConversationID: conversationID,
+			Role:           "system",
+			Content:        "已完成初始化检查。",
+			CreatedAt:      now.Add(time.Millisecond),
+			Kind:           "tool_result",
+			ToolInvocation: &ToolInvocation{ID: uuid.NewString(), Name: "bootstrap-check", Status: "success", Input: "runtime"},
+			ToolResult:     &ToolResult{InvocationID: "", Name: "bootstrap-check", Status: "success", Output: "已完成初始化检查。"},
+		},
 		{
 			ID:             uuid.NewString(),
 			ConversationID: conversationID,
 			Role:           "assistant",
 			Content:        "Sparky Web 已连接到 Go server。下一步可以逐步替换为真实 PostgreSQL 数据。",
-			CreatedAt:      now,
+			CreatedAt:      now.Add(2 * time.Millisecond),
+			Status:         "done",
 		},
 	}
 
@@ -41,26 +63,20 @@ func NewMemoryStore() *MemoryStore {
 			EnvironmentCheckSkipped: false,
 			NotificationsEnabled:    true,
 		},
-		workspaces: []Workspace{
-			{
-				ID:        workspaceID,
-				Name:      "Proma",
-				RootPath:  "/Volumes/RC500/cib/Proma",
-				CreatedAt: now,
-				UpdatedAt: now,
-			},
-		},
-		conversations: []Conversation{
-			{
-				ID:        conversationID,
-				Title:     "欢迎使用 Sparky Web",
-				CreatedAt: now,
-				UpdatedAt: now,
-			},
-		},
-		messages: map[string][]Message{
-			conversationID: welcomeMessages,
-		},
+		workspaces: []Workspace{{
+			ID:        workspaceID,
+			Name:      "Proma",
+			RootPath:  "/Volumes/RC500/cib/Proma",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}},
+		conversations: []Conversation{{
+			ID:        conversationID,
+			Title:     "欢迎使用 Sparky Web",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}},
+		messages: map[string][]Message{conversationID: welcomeMessages},
 	}
 }
 
@@ -175,30 +191,23 @@ func (s *MemoryStore) GetConversationMessages(_ context.Context, conversationID 
 	return ConversationMessagesResult{Messages: filtered, HasMore: false, Total: total}, nil
 }
 
-func (s *MemoryStore) AppendUserAndAssistantMessage(_ context.Context, conversationID, userContent, assistantContent string) ([]Message, error) {
+func (s *MemoryStore) AppendUserAndAssistantMessage(ctx context.Context, conversationID, userContent, assistantContent string) ([]Message, error) {
+	return s.AppendMessagePair(ctx, conversationID,
+		MessageCreateInput{Role: "user", Content: userContent, Status: "done"},
+		MessageCreateInput{Role: "assistant", Content: assistantContent, Status: "done"},
+	)
+}
+
+func (s *MemoryStore) AppendMessagePair(_ context.Context, conversationID string, userInput MessageCreateInput, assistantInput MessageCreateInput) ([]Message, error) {
 	if _, ok := s.messages[conversationID]; !ok {
 		return nil, errConversationNotFound
 	}
 	now := time.Now().UTC()
-	created := []Message{
-		{ID: uuid.NewString(), ConversationID: conversationID, Role: "user", Content: userContent, CreatedAt: now},
-		{ID: uuid.NewString(), ConversationID: conversationID, Role: "assistant", Content: assistantContent, CreatedAt: now.Add(time.Millisecond)},
-	}
+	user := makeMessage(conversationID, userInput, now)
+	assistant := makeMessage(conversationID, assistantInput, now.Add(time.Millisecond))
+	created := []Message{user, assistant}
 	s.messages[conversationID] = append(s.messages[conversationID], created...)
-	for i := range s.conversations {
-		if s.conversations[i].ID == conversationID {
-			s.conversations[i].UpdatedAt = now
-			if s.conversations[i].Title == "新对话" && userContent != "" {
-				r := []rune(userContent)
-				if len(r) > 20 {
-					s.conversations[i].Title = string(r[:20])
-				} else {
-					s.conversations[i].Title = userContent
-				}
-			}
-			break
-		}
-	}
+	s.bumpConversationTitle(conversationID, user.Content, now)
 	return created, nil
 }
 
@@ -211,6 +220,9 @@ func (s *MemoryStore) EditMessage(_ context.Context, conversationID, messageID, 
 		if items[i].ID == messageID {
 			items[i].Content = content
 			items[i].CreatedAt = time.Now().UTC()
+			if items[i].Kind == "context_divider" && items[i].ContextDivider != nil {
+				items[i].ContextDivider.Content = content
+			}
 			s.messages[conversationID] = items
 			s.bumpConversation(conversationID)
 			return append([]Message(nil), items...), nil
@@ -256,11 +268,127 @@ func (s *MemoryStore) TruncateMessages(_ context.Context, conversationID, messag
 	return ConversationMessagesResult{Messages: append([]Message(nil), items...), HasMore: false, Total: len(items)}, nil
 }
 
+func (s *MemoryStore) UpdateContextDivider(_ context.Context, conversationID, messageID, title, content string) (Message, error) {
+	items, ok := s.messages[conversationID]
+	if !ok {
+		return Message{}, errConversationNotFound
+	}
+	for i := range items {
+		if items[i].ID == messageID && items[i].Kind == "context_divider" {
+			items[i].Content = content
+			if items[i].ContextDivider == nil {
+				items[i].ContextDivider = &ContextDivider{ID: messageID}
+			}
+			items[i].ContextDivider.Title = title
+			items[i].ContextDivider.Content = content
+			s.messages[conversationID] = items
+			s.bumpConversation(conversationID)
+			return items[i], nil
+		}
+	}
+	return Message{}, errMessageNotFound
+}
+
+func (s *MemoryStore) BuildStreamingReply(_ context.Context, conversationID, userContent string) ([]StreamChunk, error) {
+	if _, ok := s.messages[conversationID]; !ok {
+		return nil, errConversationNotFound
+	}
+	trimmed := strings.TrimSpace(userContent)
+	if trimmed == "" {
+		trimmed = "空消息"
+	}
+	chunks := []string{
+		"正在通过 Go server streaming 返回占位回复。",
+		"\n\n",
+		"你发送的是：",
+		trimmed,
+	}
+	result := make([]StreamChunk, 0, len(chunks))
+	for i, chunk := range chunks {
+		status := "partial"
+		if i == len(chunks)-1 {
+			status = "done"
+		}
+		result = append(result, StreamChunk{Content: chunk, Status: status})
+	}
+	return result, nil
+}
+
+func makeMessage(conversationID string, input MessageCreateInput, createdAt time.Time) Message {
+	status := input.Status
+	if status == "" {
+		status = "done"
+	}
+	return Message{
+		ID:             uuid.NewString(),
+		ConversationID: conversationID,
+		Role:           input.Role,
+		Content:        input.Content,
+		CreatedAt:      createdAt,
+		Status:         status,
+		Kind:           input.Kind,
+		Attachments:    cloneAttachments(input.Attachments),
+		ToolInvocation: cloneToolInvocation(input.ToolInvocation),
+		ToolResult:     cloneToolResult(input.ToolResult),
+		ContextDivider: cloneContextDivider(input.ContextDivider),
+	}
+}
+
+func cloneAttachments(items []Attachment) []Attachment {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]Attachment, len(items))
+	copy(out, items)
+	return out
+}
+
+func cloneToolInvocation(item *ToolInvocation) *ToolInvocation {
+	if item == nil {
+		return nil
+	}
+	clone := *item
+	return &clone
+}
+
+func cloneToolResult(item *ToolResult) *ToolResult {
+	if item == nil {
+		return nil
+	}
+	clone := *item
+	return &clone
+}
+
+func cloneContextDivider(item *ContextDivider) *ContextDivider {
+	if item == nil {
+		return nil
+	}
+	clone := *item
+	return &clone
+}
+
 func (s *MemoryStore) bumpConversation(conversationID string) {
 	now := time.Now().UTC()
 	for i := range s.conversations {
 		if s.conversations[i].ID == conversationID {
 			s.conversations[i].UpdatedAt = now
+			return
+		}
+	}
+}
+
+func (s *MemoryStore) bumpConversationTitle(conversationID, userContent string, now time.Time) {
+	for i := range s.conversations {
+		if s.conversations[i].ID == conversationID {
+			s.conversations[i].UpdatedAt = now
+			if s.conversations[i].Title == "新对话" && userContent != "" {
+				r := []rune(userContent)
+				if len(r) > 20 {
+					s.conversations[i].Title = string(r[:20])
+				} else {
+					s.conversations[i].Title = userContent
+				}
+			}
 			return
 		}
 	}

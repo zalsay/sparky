@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -21,11 +22,19 @@ func NewPostgresStore(db *sql.DB) *PostgresStore {
 }
 
 func (s *PostgresStore) ensureSchema(ctx context.Context) error {
-	const addPinnedColumn = `
-		ALTER TABLE chat_sessions
-		ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE`
-	if _, err := s.db.ExecContext(ctx, addPinnedColumn); err != nil {
-		return err
+	statements := []string{
+		`ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS status TEXT`,
+		`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS kind TEXT`,
+		`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'::jsonb`,
+		`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS tool_invocation JSONB`,
+		`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS tool_result JSONB`,
+		`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS context_divider JSONB`,
+	}
+	for _, statement := range statements {
+		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -64,7 +73,17 @@ func (s *PostgresStore) ensureSeed(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, `INSERT INTO chat_sessions (id, title) VALUES ($1, $2)`, conversationID, "欢迎使用 Sparky Web"); err != nil {
 			return err
 		}
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO chat_messages (conversation_id, role, content) VALUES ($1, $2, $3)`, conversationID, "assistant", "Sparky Web 已连接到 PostgreSQL-backed Go server。"); err != nil {
+		dividerID := uuid.NewString()
+		divider, _ := json.Marshal(ContextDivider{ID: dividerID, Title: "会话开始", Content: "欢迎进入 Proma Web 对话上下文。"})
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO chat_messages (id, conversation_id, role, content, kind, context_divider, status) VALUES ($1, $2, $3, $4, $5, $6, $7)`, dividerID, conversationID, "system", "欢迎进入 Proma Web 对话上下文。", "context_divider", divider, "done"); err != nil {
+			return err
+		}
+		toolInvocation, _ := json.Marshal(ToolInvocation{ID: uuid.NewString(), Name: "bootstrap-check", Status: "success", Input: "runtime"})
+		toolResult, _ := json.Marshal(ToolResult{Name: "bootstrap-check", Status: "success", Output: "已完成初始化检查。"})
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO chat_messages (conversation_id, role, content, kind, tool_invocation, tool_result, status) VALUES ($1, $2, $3, $4, $5, $6, $7)`, conversationID, "system", "已完成初始化检查。", "tool_result", toolInvocation, toolResult, "done"); err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO chat_messages (conversation_id, role, content, status) VALUES ($1, $2, $3, $4)`, conversationID, "assistant", "Sparky Web 已连接到 PostgreSQL-backed Go server。", "done"); err != nil {
 			return err
 		}
 	}
@@ -239,6 +258,9 @@ func (s *PostgresStore) GetConversationMessages(ctx context.Context, conversatio
 	if limit <= 0 {
 		limit = 50
 	}
+	if err := s.ensureSeed(ctx); err != nil {
+		return ConversationMessagesResult{}, err
+	}
 	args := []any{conversationID}
 	countQuery := `SELECT COUNT(*) FROM chat_messages WHERE conversation_id = $1`
 	filterClause := ""
@@ -254,7 +276,7 @@ func (s *PostgresStore) GetConversationMessages(ctx context.Context, conversatio
 	queryArgs := append([]any{}, args...)
 	queryArgs = append(queryArgs, limit, max(total-limit, 0))
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, conversation_id, role, content, created_at
+		SELECT id, conversation_id, role, content, created_at, COALESCE(status, ''), COALESCE(kind, ''), attachments, tool_invocation, tool_result, context_divider
 		FROM chat_messages
 		WHERE conversation_id = $1`+filterClause+`
 		ORDER BY created_at ASC
@@ -266,8 +288,8 @@ func (s *PostgresStore) GetConversationMessages(ctx context.Context, conversatio
 
 	items := []Message{}
 	for rows.Next() {
-		var item Message
-		if err := rows.Scan(&item.ID, &item.ConversationID, &item.Role, &item.Content, &item.CreatedAt); err != nil {
+		item, err := scanMessage(rows)
+		if err != nil {
 			return ConversationMessagesResult{}, err
 		}
 		items = append(items, item)
@@ -276,6 +298,13 @@ func (s *PostgresStore) GetConversationMessages(ctx context.Context, conversatio
 }
 
 func (s *PostgresStore) AppendUserAndAssistantMessage(ctx context.Context, conversationID, userContent, assistantContent string) ([]Message, error) {
+	return s.AppendMessagePair(ctx, conversationID,
+		MessageCreateInput{Role: "user", Content: userContent, Status: "done"},
+		MessageCreateInput{Role: "assistant", Content: assistantContent, Status: "done"},
+	)
+}
+
+func (s *PostgresStore) AppendMessagePair(ctx context.Context, conversationID string, userInput MessageCreateInput, assistantInput MessageCreateInput) ([]Message, error) {
 	transaction, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -284,36 +313,20 @@ func (s *PostgresStore) AppendUserAndAssistantMessage(ctx context.Context, conve
 
 	now := time.Now().UTC()
 	created := []Message{
-		{ID: uuid.NewString(), ConversationID: conversationID, Role: "user", Content: userContent, CreatedAt: now},
-		{ID: uuid.NewString(), ConversationID: conversationID, Role: "assistant", Content: assistantContent, CreatedAt: now.Add(time.Millisecond)},
+		makeMessage(conversationID, userInput, now),
+		makeMessage(conversationID, assistantInput, now.Add(time.Millisecond)),
 	}
-
 	for _, item := range created {
-		if _, err := transaction.ExecContext(ctx, `INSERT INTO chat_messages (id, conversation_id, role, content, created_at) VALUES ($1, $2, $3, $4, $5)`, item.ID, item.ConversationID, item.Role, item.Content, item.CreatedAt); err != nil {
+		if err := insertMessage(ctx, transaction, item); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, errConversationNotFound
+			}
 			return nil, err
 		}
 	}
-
-	title := ""
-	if strings.TrimSpace(userContent) != "" {
-		r := []rune(strings.TrimSpace(userContent))
-		if len(r) > 20 {
-			title = string(r[:20])
-		} else {
-			title = string(r)
-		}
-	}
-
-	updateQuery := `UPDATE chat_sessions SET updated_at = $2 WHERE id = $1`
-	args := []any{conversationID, now}
-	if title != "" {
-		updateQuery = `UPDATE chat_sessions SET updated_at = $2, title = CASE WHEN title = '新对话' THEN $3 ELSE title END WHERE id = $1`
-		args = append(args, title)
-	}
-	if _, err := transaction.ExecContext(ctx, updateQuery, args...); err != nil {
+	if err := updateConversationMetadata(ctx, transaction, conversationID, created[0].Content, now); err != nil {
 		return nil, err
 	}
-
 	if err := transaction.Commit(); err != nil {
 		return nil, err
 	}
@@ -321,7 +334,7 @@ func (s *PostgresStore) AppendUserAndAssistantMessage(ctx context.Context, conve
 }
 
 func (s *PostgresStore) EditMessage(ctx context.Context, conversationID, messageID, content string) ([]Message, error) {
-	result, err := s.db.ExecContext(ctx, `UPDATE chat_messages SET content = $3 WHERE conversation_id = $1 AND id = $2`, conversationID, messageID, content)
+	result, err := s.db.ExecContext(ctx, `UPDATE chat_messages SET content = $3, context_divider = CASE WHEN kind = 'context_divider' THEN jsonb_set(COALESCE(context_divider, '{}'::jsonb), '{content}', to_jsonb($3::text), true) ELSE context_divider END WHERE conversation_id = $1 AND id = $2`, conversationID, messageID, content)
 	if err != nil {
 		return nil, err
 	}
@@ -368,6 +381,154 @@ func (s *PostgresStore) TruncateMessages(ctx context.Context, conversationID, me
 		return ConversationMessagesResult{}, err
 	}
 	return s.GetConversationMessages(ctx, conversationID, 50, "")
+}
+
+func (s *PostgresStore) UpdateContextDivider(ctx context.Context, conversationID, messageID, title, content string) (Message, error) {
+	payload, err := json.Marshal(ContextDivider{ID: messageID, Title: title, Content: content})
+	if err != nil {
+		return Message{}, err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE chat_messages SET content = $4, context_divider = $5, kind = 'context_divider' WHERE conversation_id = $1 AND id = $2 AND kind = 'context_divider'`, conversationID, messageID, title, content, payload)
+	if err != nil {
+		return Message{}, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return Message{}, err
+	}
+	if count == 0 {
+		return Message{}, errMessageNotFound
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE chat_sessions SET updated_at = NOW() WHERE id = $1`, conversationID); err != nil {
+		return Message{}, err
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT id, conversation_id, role, content, created_at, COALESCE(status, ''), COALESCE(kind, ''), attachments, tool_invocation, tool_result, context_divider FROM chat_messages WHERE conversation_id = $1 AND id = $2`, conversationID, messageID)
+	return scanMessage(row)
+}
+
+func (s *PostgresStore) BuildStreamingReply(ctx context.Context, conversationID, userContent string) ([]StreamChunk, error) {
+	if err := s.ensureSeed(ctx); err != nil {
+		return nil, err
+	}
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE id = $1)`, conversationID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, errConversationNotFound
+	}
+	trimmed := strings.TrimSpace(userContent)
+	if trimmed == "" {
+		trimmed = "空消息"
+	}
+	chunks := []string{"正在通过 Go server streaming 返回占位回复。", "\n\n", "你发送的是：", trimmed}
+	result := make([]StreamChunk, 0, len(chunks))
+	for i, chunk := range chunks {
+		status := "partial"
+		if i == len(chunks)-1 {
+			status = "done"
+		}
+		result = append(result, StreamChunk{Content: chunk, Status: status})
+	}
+	return result, nil
+}
+
+func insertMessage(ctx context.Context, tx *sql.Tx, item Message) error {
+	attachmentsJSON, err := json.Marshal(item.Attachments)
+	if err != nil {
+		return err
+	}
+	toolInvocationJSON, err := nullableJSON(item.ToolInvocation)
+	if err != nil {
+		return err
+	}
+	toolResultJSON, err := nullableJSON(item.ToolResult)
+	if err != nil {
+		return err
+	}
+	contextDividerJSON, err := nullableJSON(item.ContextDivider)
+	if err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO chat_messages (id, conversation_id, role, content, created_at, status, kind, attachments, tool_invocation, tool_result, context_divider) VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), $8, $9, $10, $11)`, item.ID, item.ConversationID, item.Role, item.Content, item.CreatedAt, item.Status, item.Kind, attachmentsJSON, toolInvocationJSON, toolResultJSON, contextDividerJSON)
+	if err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func updateConversationMetadata(ctx context.Context, tx *sql.Tx, conversationID, userContent string, now time.Time) error {
+	title := ""
+	if strings.TrimSpace(userContent) != "" {
+		r := []rune(strings.TrimSpace(userContent))
+		if len(r) > 20 {
+			title = string(r[:20])
+		} else {
+			title = string(r)
+		}
+	}
+	updateQuery := `UPDATE chat_sessions SET updated_at = $2 WHERE id = $1`
+	args := []any{conversationID, now}
+	if title != "" {
+		updateQuery = `UPDATE chat_sessions SET updated_at = $2, title = CASE WHEN title = '新对话' THEN $3 ELSE title END WHERE id = $1`
+		args = append(args, title)
+	}
+	result, err := tx.ExecContext(ctx, updateQuery, args...)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return errConversationNotFound
+	}
+	return nil
+}
+
+func nullableJSON(value any) ([]byte, error) {
+	if value == nil {
+		return nil, nil
+	}
+	return json.Marshal(value)
+}
+
+type messageScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanMessage(scanner messageScanner) (Message, error) {
+	var item Message
+	var attachmentsJSON []byte
+	var toolInvocationJSON []byte
+	var toolResultJSON []byte
+	var contextDividerJSON []byte
+	if err := scanner.Scan(&item.ID, &item.ConversationID, &item.Role, &item.Content, &item.CreatedAt, &item.Status, &item.Kind, &attachmentsJSON, &toolInvocationJSON, &toolResultJSON, &contextDividerJSON); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Message{}, errMessageNotFound
+		}
+		return Message{}, err
+	}
+	if len(attachmentsJSON) > 0 {
+		_ = json.Unmarshal(attachmentsJSON, &item.Attachments)
+	}
+	if len(toolInvocationJSON) > 0 {
+		item.ToolInvocation = &ToolInvocation{}
+		_ = json.Unmarshal(toolInvocationJSON, item.ToolInvocation)
+	}
+	if len(toolResultJSON) > 0 {
+		item.ToolResult = &ToolResult{}
+		_ = json.Unmarshal(toolResultJSON, item.ToolResult)
+	}
+	if len(contextDividerJSON) > 0 {
+		item.ContextDivider = &ContextDivider{}
+		_ = json.Unmarshal(contextDividerJSON, item.ContextDivider)
+	}
+	return item, nil
 }
 
 func max(a, b int) int {

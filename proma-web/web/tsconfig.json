@@ -1,7 +1,7 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "types": ["vite/client"],
+    "types": ["vite/client", "react", "react-dom"],
     "jsx": "react-jsx",
     "strict": true,
     "baseUrl": ".",
@@ -9,8 +9,16 @@
       "@sparky/shared": ["../../packages/shared/src/index.ts"],
       "@sparky/platform-contract": ["../../packages/platform-contract/src/index.ts"],
       "@sparky/platform-web": ["../../packages/platform-web/src/index.ts"],
-      "@sparky/frontend-core": ["../../packages/frontend-core/src/index.tsx"]
+      "@sparky/frontend-core": ["../../packages/frontend-core/src/index.tsx"],
+      "react": ["./node_modules/@types/react/index.d.ts"],
+      "react/jsx-runtime": ["./node_modules/@types/react/jsx-runtime.d.ts"]
     }
   },
-  "include": ["src"]
+  "include": [
+    "src",
+    "../../packages/shared/src",
+    "../../packages/platform-contract/src",
+    "../../packages/platform-web/src",
+    "../../packages/frontend-core/src"
+  ]
 }

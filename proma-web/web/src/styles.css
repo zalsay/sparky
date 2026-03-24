@@ -16,7 +16,8 @@ body {
 }
 
 button,
-textarea {
+textarea,
+input {
   font: inherit;
 }
 
@@ -111,7 +112,6 @@ textarea {
   color: #94a3b8;
 }
 
-
 h1,
 h2,
 p {
@@ -140,7 +140,9 @@ p {
 .conversation,
 .message,
 textarea,
-.error {
+.error,
+.divider-card,
+.attachment-item {
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(15, 23, 42, 0.6);
@@ -192,11 +194,21 @@ textarea,
   background: rgba(37, 99, 235, 0.18);
 }
 
+.message.tool_result,
+.tool-card {
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.message.context_divider,
+.divider-card {
+  background: rgba(168, 85, 247, 0.12);
+}
+
 .role {
   font-size: 12px;
   text-transform: uppercase;
   color: #93c5fd;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 
 .composer {
@@ -216,4 +228,28 @@ textarea {
 .error {
   padding: 12px 14px;
   color: #fca5a5;
+}
+
+.attachment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.attachment-item {
+  padding: 10px 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.upload-button {
+  display: inline-flex;
+  align-items: center;
+}
+
+.divider-card,
+.tool-card {
+  padding: 12px;
 }

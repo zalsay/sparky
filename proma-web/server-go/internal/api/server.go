@@ -59,6 +59,10 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
+func marshalJSON(value any) ([]byte, error) {
+	return json.Marshal(value)
+}
+
 func decodeJSON(r *http.Request, target any) error {
 	return json.NewDecoder(r.Body).Decode(target)
 }

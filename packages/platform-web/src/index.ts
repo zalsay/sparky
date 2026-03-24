@@ -5,6 +5,8 @@ import {
 } from '@sparky/shared'
 import type {
   AppSettings,
+  AttachmentInput,
+  ChatMessage,
   ConversationMessagesResult,
   ConversationMeta,
   CreateConversationInput,
@@ -14,7 +16,9 @@ import type {
   ResendMessageInput,
   RuntimeInfo,
   SendMessageInput,
+  StreamingEvent,
   TruncateMessagesInput,
+  UpdateContextDividerInput,
   UpdateConversationPinInput,
   UserProfile,
   Workspace,
@@ -24,7 +28,7 @@ import type {
 type ImportMetaEnvShape = { env?: { VITE_API_BASE_URL?: string } }
 
 type MessageMutationResponse = {
-  messages: { id: string; role: string; content: string; createdAt: string; conversationId: string }[]
+  messages: ChatMessage[]
 }
 
 const globalImportMeta = import.meta as unknown as ImportMetaEnvShape
@@ -102,6 +106,73 @@ function buildMessagesQuery(input?: GetMessagesInput): string {
   return query ? `?${query}` : ''
 }
 
+function normalizeAttachmentInput(items?: AttachmentInput[]): AttachmentInput[] | undefined {
+  if (!items?.length) return undefined
+  return items.map((item) => ({ ...item }))
+}
+
+async function streamRequest(path: string, body: unknown, onEvent?: (event: StreamingEvent) => void): Promise<void> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: {
+      Accept: 'text/event-stream',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+
+  if (!response.ok) {
+    const errorBody = await parseErrorBody(response)
+    throw new PlatformRequestError({
+      message: getErrorMessage(path, response, errorBody),
+      status: response.status,
+      statusText: response.statusText,
+      path,
+      body: errorBody,
+    })
+  }
+
+  if (!response.body) {
+    throw new Error('Streaming response body is unavailable')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  const flushEvent = (block: string) => {
+    const lines = block.split('\n')
+    let eventName = 'message'
+    const dataLines: string[] = []
+    for (const line of lines) {
+      if (line.startsWith('event:')) eventName = line.slice(6).trim()
+      if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
+    }
+    if (eventName !== 'message' || dataLines.length === 0) return
+    try {
+      const payload = JSON.parse(dataLines.join('\n')) as StreamingEvent
+      onEvent?.(payload)
+    } catch {
+      // ignore malformed events
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let boundaryIndex = buffer.indexOf('\n\n')
+    while (boundaryIndex >= 0) {
+      const block = buffer.slice(0, boundaryIndex)
+      buffer = buffer.slice(boundaryIndex + 2)
+      flushEvent(block)
+      boundaryIndex = buffer.indexOf('\n\n')
+    }
+  }
+
+  if (buffer.trim()) flushEvent(buffer)
+}
+
 export interface WebPlatformClientOptions {
   getUserProfile?: PlatformClient['getUserProfile']
   getWorkspaceCapabilities?: PlatformClient['getWorkspaceCapabilities']
@@ -141,8 +212,13 @@ export function createWebPlatformClient(options: WebPlatformClientOptions = {}):
     loadMoreMessages: (conversationId: string, input: GetMessagesInput) => request<ConversationMessagesResult>(`/api/chat/sessions/${conversationId}/messages${buildMessagesQuery(input)}`),
     sendMessage: (conversationId: string, input: SendMessageInput) => request<MessageMutationResponse>(`/api/chat/sessions/${conversationId}/messages`, {
       method: 'POST',
-      body: JSON.stringify(input),
+      body: JSON.stringify({ ...input, attachments: normalizeAttachmentInput(input.attachments) }),
     }),
+    streamMessage: (conversationId: string, input: SendMessageInput, handlers) => streamRequest(
+      `/api/chat/sessions/${conversationId}/messages/stream`,
+      { ...input, attachments: normalizeAttachmentInput(input.attachments) },
+      handlers?.onEvent,
+    ),
     editMessage: (conversationId: string, messageId: string, input: EditMessageInput) => request<MessageMutationResponse>(`/api/chat/sessions/${conversationId}/messages/${messageId}/edit`, {
       method: 'PUT',
       body: JSON.stringify(input),
@@ -153,6 +229,10 @@ export function createWebPlatformClient(options: WebPlatformClientOptions = {}):
     }),
     truncateMessages: (conversationId: string, input: TruncateMessagesInput) => request<ConversationMessagesResult>(`/api/chat/sessions/${conversationId}/messages/truncate`, {
       method: 'POST',
+      body: JSON.stringify(input),
+    }),
+    updateContextDivider: (conversationId: string, messageId: string, input: UpdateContextDividerInput) => request<ChatMessage>(`/api/chat/sessions/${conversationId}/messages/${messageId}/divider`, {
+      method: 'PUT',
       body: JSON.stringify(input),
     }),
     getUserProfile: options.getUserProfile ?? (async () => ({

@@ -83,12 +83,77 @@ export interface WorkspaceCapabilities {
   skillCount: number
 }
 
+export type ChatMessageRole = 'user' | 'assistant' | 'system'
+export type ChatMessageStatus = 'loading' | 'partial' | 'done' | 'error'
+export type ChatMessageKind = 'text' | 'tool_result' | 'context_divider'
+
+export interface Attachment {
+  id: string
+  name: string
+  mimeType: string
+  size: number
+  url?: string
+  status?: 'pending' | 'ready' | 'error'
+}
+
+export interface AttachmentInput {
+  id?: string
+  name: string
+  mimeType: string
+  size: number
+  url?: string
+}
+
+export interface ToolInvocation {
+  id: string
+  name: string
+  status?: 'pending' | 'running' | 'success' | 'error'
+  input?: string
+}
+
+export interface ToolResult {
+  invocationId?: string
+  name: string
+  status: 'success' | 'error'
+  output: string
+}
+
+export interface ContextDivider {
+  id: string
+  title: string
+  content?: string
+}
+
 export interface ChatMessage {
   id: string
   conversationId: string
-  role: 'user' | 'assistant' | 'system'
+  role: ChatMessageRole
   content: string
   createdAt: string
+  status?: ChatMessageStatus
+  kind?: ChatMessageKind
+  attachments?: Attachment[]
+  toolInvocation?: ToolInvocation
+  toolResult?: ToolResult
+  contextDivider?: ContextDivider
+}
+
+export interface StreamingMessageDelta {
+  messageId: string
+  content: string
+  status: ChatMessageStatus
+}
+
+export interface StreamingEvent {
+  type: 'start' | 'delta' | 'done' | 'error'
+  conversationId: string
+  message?: ChatMessage
+  delta?: StreamingMessageDelta
+  error?: string
+}
+
+export interface StreamMessageHandlers {
+  onEvent?: (event: StreamingEvent) => void
 }
 
 export interface ConversationMessagesResult {
@@ -120,6 +185,7 @@ export interface SendMessageInput {
   content: string
   modelId?: string
   channelId?: string
+  attachments?: AttachmentInput[]
 }
 
 export interface EditMessageInput {
@@ -132,4 +198,9 @@ export interface ResendMessageInput {
 
 export interface TruncateMessagesInput {
   messageId: string
+}
+
+export interface UpdateContextDividerInput {
+  title: string
+  content?: string
 }
