@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,6 +33,39 @@ func createConversationViaAPI(t *testing.T, handler http.Handler) string {
 		t.Fatalf("decode conversation: %v", err)
 	}
 	return conversation.ID
+}
+
+func TestUploadAttachmentEndpoint(t *testing.T) {
+	server, _ := newTestServer()
+	handler := server.Handler()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "spec.txt")
+	if err != nil {
+		t.Fatalf("CreateFormFile failed: %v", err)
+	}
+	if _, err := part.Write([]byte("spec")); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("writer.Close failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/attachments", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("upload status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var attachment store.Attachment
+	if err := json.Unmarshal(rec.Body.Bytes(), &attachment); err != nil {
+		t.Fatalf("decode attachment: %v", err)
+	}
+	if attachment.Name != "spec.txt" || attachment.Status != "ready" || attachment.URL == "" || attachment.Size != 4 {
+		t.Fatalf("unexpected attachment: %+v", attachment)
+	}
 }
 
 func TestChatConversationLifecycleEndpoints(t *testing.T) {

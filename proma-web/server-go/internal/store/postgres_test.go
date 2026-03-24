@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql/driver"
 	"encoding/json"
@@ -81,6 +82,19 @@ func TestPostgresStoreConversationLifecycle(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 	now := time.Now().UTC()
+
+	uploaded, err := store.SaveUploadedAttachment(ctx, UploadedFile{
+		Name:     "spec.txt",
+		MimeType: "text/plain",
+		Size:     4,
+		Reader:   bytes.NewBufferString("spec"),
+	})
+	if err != nil {
+		t.Fatalf("SaveUploadedAttachment failed: %v", err)
+	}
+	if uploaded.Status != "ready" || uploaded.URL == "" {
+		t.Fatalf("unexpected uploaded attachment: %+v", uploaded)
+	}
 
 	mock.ExpectQuery(regexp.QuoteMeta(`
 		INSERT INTO chat_sessions (title, model_id, channel_id)

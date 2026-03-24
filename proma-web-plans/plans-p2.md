@@ -194,10 +194,11 @@
 
 ## 已知风险与决策
 
-- [x] streaming 方案选型会影响前后端契约，需先收敛最小实现方式（当前采用 SSE，assistant 内容仍为占位流式回复）
-- [x] 附件能力可能牵涉存储、鉴权、清理策略，需避免在本阶段扩成完整文件系统方案（当前仅覆盖附件元数据闭环）
-- [x] tool / divider 更接近上游复杂交互，需坚持“先最小展示，再补编辑”原则（当前 tool 仅展示历史结果，divider 仅支持最小文本更新）
+- [x] streaming 方案选型会影响前后端契约，需先收敛最小实现方式（当前采用 SSE，assistant 内容仍为占位流式回复；P3 将收敛 start/delta/done/error 事件语义与前端状态落态）
+- [x] 附件能力可能牵涉存储、鉴权、清理策略，需避免在本阶段扩成完整文件系统方案（当前仅覆盖附件元数据闭环；P3 将补本地 uploads 落盘与 upload API）
+- [x] tool / divider 更接近上游复杂交互，需坚持“先最小展示，再补编辑”原则（当前 tool 仅展示历史结果，divider 仅支持最小文本更新；P3 只增强渲染与编辑边界，不扩成执行引擎/完整 prompt 管理器）
 - [x] Go server 行为对齐应优先补测试，再补复杂语义，避免回归不可见（已补 MemoryStore、PostgresStore 与 API 层回归测试）
+- [x] `frontend-core` 当前仍缺自动化测试基线，P3 将补最小 vitest/jsdom 回归，避免继续只靠 build + 手测
 
 ## 完成定义
 

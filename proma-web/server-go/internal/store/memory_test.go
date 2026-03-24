@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -128,6 +129,19 @@ func TestMemoryStoreStreamingAttachmentToolAndDivider(t *testing.T) {
 	ctx := context.Background()
 	conversation := createTestConversation(t, s, "Advanced")
 
+	uploaded, err := s.SaveUploadedAttachment(ctx, UploadedFile{
+		Name:     "spec.txt",
+		MimeType: "text/plain",
+		Size:     4,
+		Reader:   bytes.NewBufferString("spec"),
+	})
+	if err != nil {
+		t.Fatalf("SaveUploadedAttachment failed: %v", err)
+	}
+	if uploaded.Status != "ready" || uploaded.URL == "" {
+		t.Fatalf("unexpected uploaded attachment: %+v", uploaded)
+	}
+
 	toolMessage := MessageCreateInput{
 		Role:    "system",
 		Content: "tool output",
@@ -145,7 +159,7 @@ func TestMemoryStoreStreamingAttachmentToolAndDivider(t *testing.T) {
 		ContextDivider: &ContextDivider{ID: "divider-1", Title: "Before", Content: "divider body"},
 		CreatedAt:      dividerTime,
 	}
-	_, err := s.AppendMessagePair(ctx, conversation.ID,
+	_, err = s.AppendMessagePair(ctx, conversation.ID,
 		MessageCreateInput{Role: "user", Content: "ask", Status: "done"},
 		toolMessage,
 	)

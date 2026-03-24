@@ -17,6 +17,7 @@ import type {
   Workspace,
   WorkspaceCapabilities,
   ChatMessage,
+  UploadedAttachment,
 } from '@sparky/shared'
 import { PlatformRequestError } from '@sparky/shared'
 import type { PlatformRequestErrorDetails } from '@sparky/shared'
@@ -36,6 +37,7 @@ export interface PlatformClient {
   refreshMessages(conversationId: string, input?: GetMessagesInput): Promise<ConversationMessagesResult>
   loadMoreMessages(conversationId: string, input: GetMessagesInput): Promise<ConversationMessagesResult>
   sendMessage(conversationId: string, input: SendMessageInput): Promise<{ messages: ChatMessage[] }>
+  uploadAttachment(file: File): Promise<UploadedAttachment>
   streamMessage(conversationId: string, input: SendMessageInput, handlers?: StreamMessageHandlers): Promise<void>
   editMessage(conversationId: string, messageId: string, input: EditMessageInput): Promise<{ messages: ChatMessage[] }>
   resendMessage(conversationId: string, input: ResendMessageInput): Promise<{ messages: ChatMessage[] }>

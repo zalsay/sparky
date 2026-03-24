@@ -96,6 +96,11 @@ export interface Attachment {
   status?: 'pending' | 'ready' | 'error'
 }
 
+export interface UploadedAttachment extends Attachment {
+  url: string
+  status: 'ready'
+}
+
 export interface AttachmentInput {
   id?: string
   name: string
@@ -144,13 +149,11 @@ export interface StreamingMessageDelta {
   status: ChatMessageStatus
 }
 
-export interface StreamingEvent {
-  type: 'start' | 'delta' | 'done' | 'error'
-  conversationId: string
-  message?: ChatMessage
-  delta?: StreamingMessageDelta
-  error?: string
-}
+export type StreamingEvent =
+  | { type: 'start'; conversationId: string; message: ChatMessage }
+  | { type: 'delta'; conversationId: string; delta: StreamingMessageDelta }
+  | { type: 'done'; conversationId: string; message: ChatMessage }
+  | { type: 'error'; conversationId: string; error: string }
 
 export interface StreamMessageHandlers {
   onEvent?: (event: StreamingEvent) => void

@@ -1,7 +1,7 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "types": ["vite/client", "react", "react-dom"],
+    "types": ["vite/client", "vitest/globals", "react", "react-dom"],
     "jsx": "react-jsx",
     "strict": true,
     "baseUrl": ".",

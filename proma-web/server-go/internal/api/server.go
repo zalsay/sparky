@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -12,13 +13,15 @@ import (
 )
 
 type Server struct {
-	config config.Config
-	db     *db.DB
-	store  store.Store
+	config     config.Config
+	db         *db.DB
+	store      store.Store
+	uploadsDir string
 }
 
 func NewServer(cfg config.Config, database *db.DB, st store.Store) *Server {
-	return &Server{config: cfg, db: database, store: st}
+	uploadsDir := filepath.Join(".", "uploads")
+	return &Server{config: cfg, db: database, store: st, uploadsDir: uploadsDir}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -31,6 +34,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/workspaces", s.handleListWorkspaces)
 	mux.HandleFunc("POST /api/workspaces", s.handleCreateWorkspace)
 	mux.HandleFunc("GET /api/chat/sessions", s.handleListConversations)
+	mux.HandleFunc("POST /api/chat/attachments", s.handleUploadAttachment)
+	mux.Handle("GET /uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.uploadsDir))))
 	mux.HandleFunc("POST /api/chat/sessions", s.handleCreateConversation)
 	mux.HandleFunc("PATCH /api/chat/sessions/", s.handleConversation)
 	mux.HandleFunc("DELETE /api/chat/sessions/", s.handleConversation)

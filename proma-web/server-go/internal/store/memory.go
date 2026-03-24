@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -312,6 +313,19 @@ func (s *MemoryStore) BuildStreamingReply(_ context.Context, conversationID, use
 		result = append(result, StreamChunk{Content: chunk, Status: status})
 	}
 	return result, nil
+}
+
+func (s *MemoryStore) SaveUploadedAttachment(_ context.Context, file UploadedFile) (Attachment, error) {
+	_, _ = io.Copy(io.Discard, file.Reader)
+	id := uuid.NewString()
+	return Attachment{
+		ID:       id,
+		Name:     file.Name,
+		MimeType: file.MimeType,
+		Size:     file.Size,
+		URL:      "/uploads/" + id + "-" + file.Name,
+		Status:   "ready",
+	}, nil
 }
 
 func makeMessage(conversationID string, input MessageCreateInput, createdAt time.Time) Message {

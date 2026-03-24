@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"io"
 	"time"
 )
 
@@ -97,6 +98,13 @@ type StreamChunk struct {
 	Status  string `json:"status"`
 }
 
+type UploadedFile struct {
+	Name     string
+	MimeType string
+	Size     int64
+	Reader   io.Reader
+}
+
 type ConversationMessagesResult struct {
 	Messages []Message `json:"messages"`
 	HasMore  bool      `json:"hasMore"`
@@ -120,5 +128,6 @@ type Store interface {
 	ResendMessage(ctx context.Context, conversationID, messageID string) ([]Message, error)
 	TruncateMessages(ctx context.Context, conversationID, messageID string) (ConversationMessagesResult, error)
 	UpdateContextDivider(ctx context.Context, conversationID, messageID, title, content string) (Message, error)
+	SaveUploadedAttachment(ctx context.Context, file UploadedFile) (Attachment, error)
 	BuildStreamingReply(ctx context.Context, conversationID, userContent string) ([]StreamChunk, error)
 }

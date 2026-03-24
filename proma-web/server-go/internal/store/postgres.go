@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -431,6 +432,19 @@ func (s *PostgresStore) BuildStreamingReply(ctx context.Context, conversationID,
 		result = append(result, StreamChunk{Content: chunk, Status: status})
 	}
 	return result, nil
+}
+
+func (s *PostgresStore) SaveUploadedAttachment(_ context.Context, file UploadedFile) (Attachment, error) {
+	_, _ = io.Copy(io.Discard, file.Reader)
+	id := uuid.NewString()
+	return Attachment{
+		ID:       id,
+		Name:     file.Name,
+		MimeType: file.MimeType,
+		Size:     file.Size,
+		URL:      "/uploads/" + id + "-" + file.Name,
+		Status:   "ready",
+	}, nil
 }
 
 func insertMessage(ctx context.Context, tx *sql.Tx, item Message) error {

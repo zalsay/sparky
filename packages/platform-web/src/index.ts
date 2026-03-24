@@ -20,6 +20,7 @@ import type {
   TruncateMessagesInput,
   UpdateContextDividerInput,
   UpdateConversationPinInput,
+  UploadedAttachment,
   UserProfile,
   Workspace,
   WorkspaceCapabilities,
@@ -96,6 +97,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return response.json() as Promise<T>
+}
+
+async function uploadAttachment(file: File): Promise<UploadedAttachment> {
+  const form = new FormData()
+  form.append('file', file)
+
+  const response = await fetch(`${API_BASE}/api/chat/attachments`, {
+    method: 'POST',
+    body: form,
+  })
+
+  if (!response.ok) {
+    const body = await parseErrorBody(response)
+    throw new PlatformRequestError({
+      message: getErrorMessage('/api/chat/attachments', response, body),
+      status: response.status,
+      statusText: response.statusText,
+      path: '/api/chat/attachments',
+      body,
+    })
+  }
+
+  return response.json() as Promise<UploadedAttachment>
 }
 
 function buildMessagesQuery(input?: GetMessagesInput): string {
@@ -214,6 +238,7 @@ export function createWebPlatformClient(options: WebPlatformClientOptions = {}):
       method: 'POST',
       body: JSON.stringify({ ...input, attachments: normalizeAttachmentInput(input.attachments) }),
     }),
+    uploadAttachment,
     streamMessage: (conversationId: string, input: SendMessageInput, handlers) => streamRequest(
       `/api/chat/sessions/${conversationId}/messages/stream`,
       { ...input, attachments: normalizeAttachmentInput(input.attachments) },

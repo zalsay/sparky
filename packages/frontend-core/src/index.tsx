@@ -143,7 +143,7 @@ function createPendingAttachment(file: File): Attachment {
   }
 }
 
-function toAttachmentInput(items: Attachment[]): AttachmentInput[] {
+export function toAttachmentInput(items: Attachment[]): AttachmentInput[] {
   return items.map((item) => ({
     id: item.id,
     name: item.name,
@@ -161,22 +161,45 @@ function upsertMessage(messages: ChatMessage[], next: ChatMessage): ChatMessage[
   return copy
 }
 
-function applyStreamingEvent(messages: ChatMessage[], event: StreamingEvent): ChatMessage[] {
-  if (event.type === 'start' && event.message) {
+export function applyStreamingEvent(messages: ChatMessage[], event: StreamingEvent): ChatMessage[] {
+  if (event.type === 'start') {
     return upsertMessage(messages, event.message)
   }
 
-  if (event.type === 'delta' && event.delta) {
-    return messages.map((message) => message.id === event.delta?.messageId
+  if (event.type === 'delta') {
+    return messages.map((message) => message.id === event.delta.messageId
       ? { ...message, content: `${message.content}${event.delta.content}`, status: event.delta.status }
       : message)
   }
 
-  if (event.type === 'done' && event.message) {
+  if (event.type === 'done') {
     return upsertMessage(messages, event.message)
   }
 
   return messages
+}
+
+function renderToolStatusLabel(status?: string): string {
+  if (status === 'success') return 'success'
+  if (status === 'error') return 'error'
+  if (status === 'running') return 'running'
+  if (status === 'pending') return 'pending'
+  return 'unknown'
+}
+
+function renderToolOutput(message: ChatMessage): string {
+  const output = message.toolResult?.output?.trim()
+  if (output) return output
+  const fallback = message.content.trim()
+  return fallback || '暂无输出'
+}
+
+function renderDividerTitle(message: ChatMessage): string {
+  return message.contextDivider?.title?.trim() || 'Context divider'
+}
+
+function renderDividerContent(message: ChatMessage): string {
+  return message.contextDivider?.content ?? message.content
 }
 
 async function loadBootstrapData(client: PlatformClient, refreshWorkspaceCapabilities: (workspaceItems: Workspace[]) => Promise<void>): Promise<BootstrapData> {
@@ -464,10 +487,27 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
     await loadMessages(currentConversationId, { append: true, before: messages[0]?.id })
   }
 
-  const handleAddAttachments = (files: FileList | null) => {
+  const handleAddAttachments = async (files: FileList | null) => {
     if (!files || files.length === 0) return
-    const next = Array.from(files).map(createPendingAttachment)
-    setChatState((prev) => ({ ...prev, pendingAttachments: [...prev.pendingAttachments, ...next] }))
+    const pending = Array.from(files).map(createPendingAttachment)
+    setChatState((prev) => ({ ...prev, pendingAttachments: [...prev.pendingAttachments, ...pending], chatError: null }))
+
+    await Promise.all(pending.map(async (attachment, index) => {
+      const file = files[index]
+      try {
+        const uploaded = await client.uploadAttachment(file)
+        setChatState((prev) => ({
+          ...prev,
+          pendingAttachments: prev.pendingAttachments.map((item) => item.id === attachment.id ? uploaded : item),
+        }))
+      } catch (err) {
+        setChatState((prev) => ({
+          ...prev,
+          chatError: getErrorMessage(err, '附件上传失败'),
+          pendingAttachments: prev.pendingAttachments.map((item) => item.id === attachment.id ? { ...item, status: 'error' } : item),
+        }))
+      }
+    }))
   }
 
   const handleRemoveAttachment = (attachmentId: string) => {
@@ -483,9 +523,13 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
       return {
         ...prev,
         messages: nextMessages,
-        streamingMessageId: event.type === 'start' ? event.message?.id ?? prev.streamingMessageId : prev.streamingMessageId,
+        streamingMessageId: event.type === 'start'
+          ? event.message.id
+          : event.type === 'done' || event.type === 'error'
+            ? null
+            : prev.streamingMessageId,
         streaming: event.type === 'done' || event.type === 'error' ? false : true,
-        streamingError: event.type === 'error' ? event.error ?? 'Streaming 失败' : prev.streamingError,
+        streamingError: event.type === 'error' ? event.error : prev.streamingError,
       }
     })
   }, [setChatState])
@@ -495,7 +539,7 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
     if (!currentConversationId || !input.trim()) return
 
     const trimmedInput = input.trim()
-    const attachments = pendingAttachments.map((item) => ({ ...item, status: 'ready' as const }))
+    const attachments = pendingAttachments.filter((item) => item.status === 'ready')
     const optimisticUserMessage: ChatMessage = {
       id: `local-user-${Date.now()}`,
       conversationId: currentConversationId,
@@ -755,19 +799,23 @@ export function SparkyApp({ client }: SparkyAppProps): React.ReactElement {
                   />
                   <div className="toolbar">
                     <button className="primary" type="button" onClick={() => void handleEditMessage(message)}>保存</button>
-                    <button className="ghost" type="button" onClick={() => setChatState((prev) => ({ ...prev, editingMessageId: null }))}>取消</button>
+                    <button className="ghost" type="button" onClick={() => setChatState((prev) => ({
+                      ...prev,
+                      editingMessageId: null,
+                      editingMessageContent: '',
+                    }))}>取消</button>
                   </div>
                 </div>
               ) : message.kind === 'tool_result' ? (
                 <div className="card tool-card">
                   <strong>{message.toolResult?.name ?? message.toolInvocation?.name ?? 'Tool result'}</strong>
-                  <div className="muted">{message.toolResult?.status ?? message.toolInvocation?.status}</div>
-                  <div>{message.toolResult?.output ?? message.content}</div>
+                  <div className="muted">{renderToolStatusLabel(message.toolResult?.status ?? message.toolInvocation?.status)}</div>
+                  <div>{renderToolOutput(message)}</div>
                 </div>
               ) : message.kind === 'context_divider' ? (
                 <div className="divider-card">
-                  <strong>{message.contextDivider?.title ?? 'Context divider'}</strong>
-                  <div>{message.contextDivider?.content ?? message.content}</div>
+                  <strong>{renderDividerTitle(message)}</strong>
+                  <div>{renderDividerContent(message)}</div>
                 </div>
               ) : (
                 <>

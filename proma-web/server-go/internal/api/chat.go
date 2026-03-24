@@ -3,7 +3,9 @@ package api
 import (
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -56,6 +58,8 @@ type updateDividerRequest struct {
 	Title   string `json:"title"`
 	Content string `json:"content"`
 }
+
+const maxUploadSize = 10 << 20
 
 func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request) {
 	items, err := s.store.ListConversations(r.Context())
@@ -227,6 +231,50 @@ func (s *Server) handleConversationMessages(w http.ResponseWriter, r *http.Reque
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
+}
+
+func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid multipart form"})
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing file"})
+		return
+	}
+	defer file.Close()
+	if header.Size <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty file"})
+		return
+	}
+	if header.Size > maxUploadSize {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file too large"})
+		return
+	}
+	name := filepath.Base(header.Filename)
+	if name == "." || name == string(filepath.Separator) || strings.TrimSpace(name) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid file name"})
+		return
+	}
+	mimeType := header.Header.Get("Content-Type")
+	if mimeType == "" {
+		mimeType = mime.TypeByExtension(filepath.Ext(name))
+	}
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	attachment, err := s.store.SaveUploadedAttachment(r.Context(), store.UploadedFile{
+		Name:     name,
+		MimeType: mimeType,
+		Size:     header.Size,
+		Reader:   file,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, attachment)
 }
 
 func (s *Server) handleStreamMessage(w http.ResponseWriter, r *http.Request, conversationID string) {
