@@ -9,6 +9,7 @@ import (
 
 var ErrConversationNotFound = errors.New("conversation not found")
 var ErrMessageNotFound = errors.New("message not found")
+var ErrChannelNotFound = errors.New("channel not found")
 
 type Settings struct {
 	ThemeMode               string `json:"themeMode"`
@@ -17,6 +18,43 @@ type Settings struct {
 	NotificationsEnabled    bool   `json:"notificationsEnabled"`
 	AgentChannelID          string `json:"agentChannelId,omitempty"`
 	AgentModelID            string `json:"agentModelId,omitempty"`
+}
+
+type ChannelModel struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
+type Channel struct {
+	ID              string         `json:"id"`
+	Name            string         `json:"name"`
+	Provider        string         `json:"provider"`
+	BaseURL         string         `json:"baseUrl"`
+	APIKey          string         `json:"apiKey,omitempty"`
+	EncryptedAPIKey string         `json:"-"`
+	Models          []ChannelModel `json:"models"`
+	Enabled         bool           `json:"enabled"`
+	CreatedAt       time.Time      `json:"createdAt"`
+	UpdatedAt       time.Time      `json:"updatedAt"`
+}
+
+type ChannelCreateInput struct {
+	Name     string
+	Provider string
+	BaseURL  string
+	APIKey   string
+	Models   []ChannelModel
+	Enabled  bool
+}
+
+type ChannelUpdateInput struct {
+	Name     *string
+	Provider *string
+	BaseURL  *string
+	APIKey   *string
+	Models   []ChannelModel
+	Enabled  *bool
 }
 
 type Workspace struct {
@@ -114,6 +152,11 @@ type ConversationMessagesResult struct {
 type Store interface {
 	GetSettings(ctx context.Context) (Settings, error)
 	UpdateSettings(ctx context.Context, updates Settings) (Settings, error)
+	ListChannels(ctx context.Context) ([]Channel, error)
+	CreateChannel(ctx context.Context, input ChannelCreateInput) (Channel, error)
+	UpdateChannel(ctx context.Context, channelID string, input ChannelUpdateInput) (Channel, error)
+	DeleteChannel(ctx context.Context, channelID string) error
+	GetChannelRuntime(ctx context.Context, channelID string) (Channel, error)
 	ListWorkspaces(ctx context.Context) ([]Workspace, error)
 	CreateWorkspace(ctx context.Context, name, rootPath string) (Workspace, error)
 	ListConversations(ctx context.Context) ([]Conversation, error)

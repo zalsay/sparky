@@ -3,7 +3,12 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { SparkyApp } from '../index'
 import type { PlatformClient } from '@sparky/platform-contract'
 import type {
+  AgentRunnerInfo,
+  AgentSession,
+  AgentSessionActionResult,
+  AgentSessionListResult,
   AppSettings,
+  Channel,
   ChatMessage,
   ConversationMessagesResult,
   ConversationMeta,
@@ -27,15 +32,50 @@ function createPlatformClient(overrides: Partial<PlatformClient> = {}): Platform
     version: 'test',
     environment: 'test',
     database: { configured: false, status: 'disconnected' },
+    agentControlPlane: { enabled: true, runnerCount: 1, defaultRunnerStatus: 'healthy' },
   }
   const profile: UserProfile = { displayName: 'Tester' }
+  const channels: Channel[] = [{
+    id: 'channel-1',
+    name: 'Anthropic',
+    provider: 'anthropic',
+    enabled: true,
+    createdAt: '2026-03-24T00:00:00.000Z',
+    updatedAt: '2026-03-24T00:00:00.000Z',
+    models: [{
+      id: 'claude-opus-4-6',
+      name: 'Claude Opus 4.6',
+      enabled: true,
+      createdAt: '2026-03-24T00:00:00.000Z',
+      updatedAt: '2026-03-24T00:00:00.000Z',
+    }],
+  }]
   const conversation: ConversationMeta = {
     id: 'conv-1',
     title: '测试会话',
+    channelId: 'channel-1',
+    modelId: 'claude-opus-4-6',
     createdAt: '2026-03-24T00:00:00.000Z',
     updatedAt: '2026-03-24T00:00:00.000Z',
   }
   const emptyMessages: ConversationMessagesResult = { messages: [], hasMore: false, total: 0 }
+  const agentSession: AgentSession = {
+    id: 'agent-1',
+    workspaceId: 'workspace-1',
+    name: 'Agent 1',
+    status: 'running',
+    runnerId: 'default',
+    transport: 'http',
+    createdAt: '2026-03-24T00:00:00.000Z',
+    updatedAt: '2026-03-24T00:00:00.000Z',
+  }
+  const runner: AgentRunnerInfo = {
+    id: 'default',
+    baseUrl: 'http://runner',
+    status: 'healthy',
+  }
+  const actionResult: AgentSessionActionResult = { session: agentSession }
+  const sessionList: AgentSessionListResult = { sessions: [agentSession], activeSessionId: 'agent-1' }
 
   return {
     getRuntime: async () => runtime,
@@ -46,7 +86,29 @@ function createPlatformClient(overrides: Partial<PlatformClient> = {}): Platform
       notificationsEnabled: true,
     } as AppSettings),
     updateSettings: async (input: AppSettings) => input,
-    listWorkspaces: async () => [] as Workspace[],
+    listChannels: async () => channels,
+    listWorkspaces: async () => [{
+      id: 'workspace-1',
+      name: 'Workspace 1',
+      rootPath: '/tmp/workspace-1',
+      createdAt: '2026-03-24T00:00:00.000Z',
+      updatedAt: '2026-03-24T00:00:00.000Z',
+    }] as Workspace[],
+    listAgentRunners: async () => [runner],
+    getAgentRunner: async () => runner,
+    listAgentSessions: async () => sessionList,
+    createAgentSession: async () => actionResult,
+    getAgentSession: async () => agentSession,
+    connectAgentSession: async () => ({
+      session: agentSession,
+      connection: {
+        sessionId: agentSession.id,
+        conversationId: 'conv-1',
+        connectedAt: '2026-03-24T00:00:00.000Z',
+      },
+    }),
+    closeAgentSession: async () => actionResult,
+    restartAgentSession: async () => actionResult,
     listConversations: async () => [conversation],
     createConversation: async (input: CreateConversationInput) => ({
       ...conversation,
@@ -154,30 +216,27 @@ describe('SparkyApp streaming', () => {
     })
   })
 
-  it('keeps no loading residue after error', async () => {
+  it('disables send before agent session is connected', async () => {
+    const disconnectedSession: AgentSession = {
+      id: 'agent-2',
+      workspaceId: 'workspace-1',
+      name: 'Agent 2',
+      status: 'running',
+      runnerId: 'default',
+      transport: 'http',
+      createdAt: '2026-03-24T00:00:00.000Z',
+      updatedAt: '2026-03-24T00:00:00.000Z',
+    }
+
     const client = createPlatformClient({
-      streamMessage: async (_conversationId: string, _input: SendMessageInput, handlers?: StreamMessageHandlers) => {
-        handlers?.onEvent?.({
-          type: 'start',
-          conversationId: 'conv-1',
-          message: {
-            id: 'assistant-err',
-            conversationId: 'conv-1',
-            role: 'assistant',
-            content: '',
-            createdAt: '2026-03-24T00:00:01.000Z',
-            status: 'loading',
-          },
-        })
-        handlers?.onEvent?.({ type: 'error', conversationId: 'conv-1', error: 'boom' })
-      },
+      listAgentSessions: async () => ({ sessions: [disconnectedSession], activeSessionId: undefined }),
     })
 
     render(<SparkyApp client={client} />)
-    await submitMessage('hi')
 
     await waitFor(() => {
-      expect(screen.getByText('boom')).toBeTruthy()
+      expect(screen.getAllByText('请先连接一个 Agent Session').length).toBeGreaterThan(0)
     })
+    expect(screen.getByRole('button', { name: '请先连接一个 Agent Session' }).hasAttribute('disabled')).toBe(true)
   })
 })

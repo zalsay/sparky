@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
 	"regexp"
@@ -22,6 +23,21 @@ func newPostgresMockStore(t *testing.T) (*PostgresStore, sqlmock.Sqlmock, func()
 }
 
 func expectEnsureSeed(mock sqlmock.Sqlmock) {
+	mock.ExpectExec(regexp.QuoteMeta(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS agent_channel_id TEXT`)).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS agent_model_id TEXT`)).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta(`CREATE TABLE IF NOT EXISTS channels (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			base_url TEXT NOT NULL,
+			encrypted_api_key TEXT NOT NULL DEFAULT '',
+			models JSONB NOT NULL DEFAULT '[]'::jsonb,
+			enabled BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`)).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta(`ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS model_id TEXT`)).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta(`ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS channel_id TEXT`)).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE`)).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS status TEXT`)).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS kind TEXT`)).WillReturnResult(sqlmock.NewResult(0, 0))
@@ -33,6 +49,7 @@ func expectEnsureSeed(mock sqlmock.Sqlmock) {
 		INSERT INTO settings (id, theme_mode, onboarding_completed, environment_check_skipped, notifications_enabled)
 		VALUES (TRUE, 'system', TRUE, FALSE, TRUE)
 		ON CONFLICT (id) DO NOTHING`)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM channels`)).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM workspaces`)).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM chat_sessions`)).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 }
@@ -77,7 +94,142 @@ func contextDividerJSON(t *testing.T, value *ContextDivider) driver.Value {
 	return payload
 }
 
-func TestPostgresStoreConversationLifecycle(t *testing.T) {
+func TestPostgresStoreChannelLifecycle(t *testing.T) {
+	store, mock, cleanup := newPostgresMockStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	models := []ChannelModel{{ID: "claude-opus-4-6", Name: "Claude Opus 4.6", Enabled: true}}
+	modelsJSON, err := json.Marshal(models)
+	if err != nil {
+		t.Fatalf("marshal models: %v", err)
+	}
+
+	expectEnsureSeed(mock)
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		INSERT INTO channels (id, name, provider, base_url, encrypted_api_key, models, enabled)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, name, provider, base_url, models, enabled, created_at, updated_at`)).
+		WithArgs(sqlmock.AnyArg(), "Test Anthropic", "anthropic", "https://api.anthropic.com", encryptAPIKey("secret-key"), modelsJSON, true).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "provider", "base_url", "models", "enabled", "created_at", "updated_at"}).
+			AddRow("channel-1", "Test Anthropic", "anthropic", "https://api.anthropic.com", modelsJSON, true, now, now))
+
+	created, err := store.CreateChannel(ctx, ChannelCreateInput{
+		Name:     "Test Anthropic",
+		Provider: "anthropic",
+		BaseURL:  "https://api.anthropic.com",
+		APIKey:   "secret-key",
+		Models:   models,
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel failed: %v", err)
+	}
+	if created.APIKey != "" || created.EncryptedAPIKey != "" {
+		t.Fatalf("expected sanitized created channel, got %+v", created)
+	}
+
+	expectEnsureSeed(mock)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, name, provider, base_url, models, enabled, created_at, updated_at FROM channels ORDER BY updated_at DESC`)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "provider", "base_url", "models", "enabled", "created_at", "updated_at"}).
+			AddRow("channel-1", "Test Anthropic", "anthropic", "https://api.anthropic.com", modelsJSON, true, now, now))
+
+	listed, err := store.ListChannels(ctx)
+	if err != nil {
+		t.Fatalf("ListChannels failed: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != "channel-1" {
+		t.Fatalf("unexpected listed channels: %+v", listed)
+	}
+	if listed[0].APIKey != "" || listed[0].EncryptedAPIKey != "" {
+		t.Fatalf("expected sanitized list channel, got %+v", listed[0])
+	}
+
+	updatedModels := []ChannelModel{{ID: "claude-sonnet-4-6", Name: "Claude Sonnet 4.6", Enabled: true}}
+	updatedModelsJSON, err := json.Marshal(updatedModels)
+	if err != nil {
+		t.Fatalf("marshal updated models: %v", err)
+	}
+	updatedName := "Updated Anthropic"
+	updatedBaseURL := "https://anthropic-proxy.example.com"
+	updatedAPIKey := "new-secret-key"
+	updatedEnabled := false
+
+	expectEnsureSeed(mock)
+	expectEnsureSeed(mock)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, name, provider, base_url, encrypted_api_key, models, enabled, created_at, updated_at FROM channels WHERE id = $1`)).
+		WithArgs("channel-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "provider", "base_url", "encrypted_api_key", "models", "enabled", "created_at", "updated_at"}).
+			AddRow("channel-1", "Test Anthropic", "anthropic", "https://api.anthropic.com", encryptAPIKey("secret-key"), modelsJSON, true, now, now))
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		UPDATE channels
+		SET name = $2,
+		    provider = $3,
+		    base_url = $4,
+		    encrypted_api_key = $5,
+		    models = $6,
+		    enabled = $7,
+		    updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, name, provider, base_url, models, enabled, created_at, updated_at`)).
+		WithArgs("channel-1", updatedName, "anthropic", updatedBaseURL, encryptAPIKey(updatedAPIKey), updatedModelsJSON, updatedEnabled).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "provider", "base_url", "models", "enabled", "created_at", "updated_at"}).
+			AddRow("channel-1", updatedName, "anthropic", updatedBaseURL, updatedModelsJSON, updatedEnabled, now, now.Add(time.Second)))
+
+	updated, err := store.UpdateChannel(ctx, "channel-1", ChannelUpdateInput{
+		Name:    &updatedName,
+		BaseURL: &updatedBaseURL,
+		APIKey:  &updatedAPIKey,
+		Models:  updatedModels,
+		Enabled: &updatedEnabled,
+	})
+	if err != nil {
+		t.Fatalf("UpdateChannel failed: %v", err)
+	}
+	if updated.APIKey != "" || updated.EncryptedAPIKey != "" {
+		t.Fatalf("expected sanitized updated channel, got %+v", updated)
+	}
+	if updated.Name != updatedName || updated.BaseURL != updatedBaseURL || updated.Enabled != updatedEnabled {
+		t.Fatalf("unexpected updated channel: %+v", updated)
+	}
+
+	expectEnsureSeed(mock)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, name, provider, base_url, encrypted_api_key, models, enabled, created_at, updated_at FROM channels WHERE id = $1`)).
+		WithArgs("channel-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "provider", "base_url", "encrypted_api_key", "models", "enabled", "created_at", "updated_at"}).
+			AddRow("channel-1", updatedName, "anthropic", updatedBaseURL, encryptAPIKey(updatedAPIKey), updatedModelsJSON, updatedEnabled, now, now.Add(time.Second)))
+
+	runtime, err := store.GetChannelRuntime(ctx, "channel-1")
+	if err != nil {
+		t.Fatalf("GetChannelRuntime failed: %v", err)
+	}
+	if runtime.APIKey != updatedAPIKey || runtime.EncryptedAPIKey != encryptAPIKey(updatedAPIKey) {
+		t.Fatalf("expected runtime secrets, got %+v", runtime)
+	}
+	if runtime.Name != updatedName || runtime.BaseURL != updatedBaseURL || len(runtime.Models) != 1 || runtime.Models[0].ID != "claude-sonnet-4-6" {
+		t.Fatalf("unexpected runtime channel: %+v", runtime)
+	}
+
+	expectEnsureSeed(mock)
+	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM channels WHERE id = $1`)).WithArgs("channel-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := store.DeleteChannel(ctx, "channel-1"); err != nil {
+		t.Fatalf("DeleteChannel failed: %v", err)
+	}
+
+	expectEnsureSeed(mock)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, name, provider, base_url, encrypted_api_key, models, enabled, created_at, updated_at FROM channels WHERE id = $1`)).
+		WithArgs("channel-1").
+		WillReturnError(sql.ErrNoRows)
+	if _, err := store.GetChannelRuntime(ctx, "channel-1"); err != ErrChannelNotFound {
+		t.Fatalf("expected ErrChannelNotFound after delete, got %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+	func TestPostgresStoreConversationLifecycle(t *testing.T) {
 	store, mock, cleanup := newPostgresMockStore(t)
 	defer cleanup()
 	ctx := context.Background()

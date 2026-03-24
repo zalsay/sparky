@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"sort"
 	"strings"
@@ -15,6 +16,7 @@ var errMessageNotFound = ErrMessageNotFound
 
 type MemoryStore struct {
 	settings      Settings
+	channels      []Channel
 	workspaces    []Workspace
 	conversations []Conversation
 	messages      map[string][]Message
@@ -57,13 +59,29 @@ func NewMemoryStore() *MemoryStore {
 		},
 	}
 
+	defaultChannelID := uuid.NewString()
+	defaultModelID := "claude-opus-4-6"
+
 	return &MemoryStore{
 		settings: Settings{
 			ThemeMode:               "system",
 			OnboardingCompleted:     true,
 			EnvironmentCheckSkipped: false,
 			NotificationsEnabled:    true,
+			AgentChannelID:          defaultChannelID,
+			AgentModelID:            defaultModelID,
 		},
+		channels: []Channel{{
+			ID:              defaultChannelID,
+			Name:            "Default Anthropic",
+			Provider:        "anthropic",
+			BaseURL:         "https://api.anthropic.com",
+			EncryptedAPIKey: encryptAPIKey("test-anthropic-key"),
+			Models: []ChannelModel{{ID: defaultModelID, Name: "Claude Opus 4.6", Enabled: true}},
+			Enabled:         true,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}},
 		workspaces: []Workspace{{
 			ID:        workspaceID,
 			Name:      "Proma",
@@ -95,6 +113,107 @@ func (s *MemoryStore) UpdateSettings(_ context.Context, updates Settings) (Setti
 	s.settings.AgentChannelID = updates.AgentChannelID
 	s.settings.AgentModelID = updates.AgentModelID
 	return s.settings, nil
+}
+
+func (s *MemoryStore) ListChannels(context.Context) ([]Channel, error) {
+	items := make([]Channel, 0, len(s.channels))
+	for _, item := range s.channels {
+		items = append(items, sanitizeChannel(item))
+	}
+	return items, nil
+}
+
+func (s *MemoryStore) CreateChannel(_ context.Context, input ChannelCreateInput) (Channel, error) {
+	now := time.Now().UTC()
+	item := Channel{
+		ID:              uuid.NewString(),
+		Name:            strings.TrimSpace(input.Name),
+		Provider:        strings.TrimSpace(input.Provider),
+		BaseURL:         strings.TrimSpace(input.BaseURL),
+		EncryptedAPIKey: encryptAPIKey(input.APIKey),
+		Models:          append([]ChannelModel(nil), input.Models...),
+		Enabled:         input.Enabled,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	s.channels = append([]Channel{item}, s.channels...)
+	return sanitizeChannel(item), nil
+}
+
+func (s *MemoryStore) UpdateChannel(_ context.Context, channelID string, input ChannelUpdateInput) (Channel, error) {
+	for i := range s.channels {
+		if s.channels[i].ID != channelID {
+			continue
+		}
+		if input.Name != nil {
+			s.channels[i].Name = strings.TrimSpace(*input.Name)
+		}
+		if input.Provider != nil {
+			s.channels[i].Provider = strings.TrimSpace(*input.Provider)
+		}
+		if input.BaseURL != nil {
+			s.channels[i].BaseURL = strings.TrimSpace(*input.BaseURL)
+		}
+		if input.APIKey != nil && strings.TrimSpace(*input.APIKey) != "" {
+			s.channels[i].EncryptedAPIKey = encryptAPIKey(*input.APIKey)
+		}
+		if input.Models != nil {
+			s.channels[i].Models = append([]ChannelModel(nil), input.Models...)
+		}
+		if input.Enabled != nil {
+			s.channels[i].Enabled = *input.Enabled
+		}
+		s.channels[i].UpdatedAt = time.Now().UTC()
+		return sanitizeChannel(s.channels[i]), nil
+	}
+	return Channel{}, ErrChannelNotFound
+}
+
+func (s *MemoryStore) DeleteChannel(_ context.Context, channelID string) error {
+	for i := range s.channels {
+		if s.channels[i].ID == channelID {
+			s.channels = append(s.channels[:i], s.channels[i+1:]...)
+			return nil
+		}
+	}
+	return ErrChannelNotFound
+}
+
+func (s *MemoryStore) GetChannelRuntime(_ context.Context, channelID string) (Channel, error) {
+	for _, item := range s.channels {
+		if item.ID == channelID {
+			resolved := item
+			resolved.APIKey = decryptAPIKey(item.EncryptedAPIKey)
+			return resolved, nil
+		}
+	}
+	return Channel{}, ErrChannelNotFound
+}
+
+func sanitizeChannel(item Channel) Channel {
+	copy := item
+	copy.APIKey = ""
+	copy.EncryptedAPIKey = ""
+	copy.Models = append([]ChannelModel(nil), item.Models...)
+	return copy
+}
+
+func encryptAPIKey(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString([]byte(value))
+}
+
+func decryptAPIKey(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return ""
+	}
+	return string(decoded)
 }
 
 func (s *MemoryStore) ListWorkspaces(context.Context) ([]Workspace, error) {

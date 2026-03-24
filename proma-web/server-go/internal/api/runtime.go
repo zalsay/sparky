@@ -21,13 +21,24 @@ func (s *Server) handleRuntime(w http.ResponseWriter, r *http.Request) {
 		status = "connected"
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"service":     "sparky-server-go",
-		"version":     "0.1.0",
-		"environment": s.config.Environment,
-		"database": map[string]any{
+	runner := s.agentService.DefaultRunner(r.Context())
+	runnerCount := 0
+	if s.config.AgentControlEnabled {
+		runnerCount = 1
+	}
+
+	writeJSON(w, http.StatusOK, runtimeResponse{
+		Service:     "sparky-server-go",
+		Version:     "0.1.0",
+		Environment: s.config.Environment,
+		Database: map[string]any{
 			"configured": s.db != nil && s.db.Status.Configured,
 			"status":     status,
+		},
+		AgentControlPlane: agentControlPlaneRuntime{
+			Enabled:             s.config.AgentControlEnabled,
+			RunnerCount:         runnerCount,
+			DefaultRunnerStatus: agentRunnerStatus(runner.Status),
 		},
 	})
 }

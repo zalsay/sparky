@@ -63,6 +63,10 @@ input {
   flex-wrap: wrap;
 }
 
+.toolbar.compact {
+  gap: 6px;
+}
+
 .ghost {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 10px;
@@ -172,6 +176,59 @@ textarea,
   background: rgba(37, 99, 235, 0.2);
 }
 
+.agent-session {
+  gap: 10px;
+}
+
+.agent-session-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+
+.active-session {
+  border-color: #34d399;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  text-transform: uppercase;
+}
+
+.status-badge.healthy,
+.status-badge.running {
+  color: #86efac;
+}
+
+.status-badge.unreachable,
+.status-badge.error {
+  color: #fca5a5;
+}
+
+.status-badge.unknown,
+.status-badge.stopped {
+  color: #cbd5e1;
+}
+
+.status-badge.connecting,
+.status-badge.starting,
+.status-badge.creating {
+  color: #93c5fd;
+}
+
+.status-badge.closing,
+.status-badge.restarting {
+  color: #fcd34d;
+}
+
 .list {
   display: flex;
   flex-direction: column;
@@ -228,6 +285,28 @@ textarea {
 .error {
   padding: 12px 14px;
   color: #fca5a5;
+}
+
+.inline-error {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.connection-banner {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 12px 14px;
+}
+
+.connection-banner.connected {
+  color: #86efac;
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.connection-banner.disconnected {
+  color: #fcd34d;
+  background: rgba(245, 158, 11, 0.12);
 }
 
 .attachment-list {

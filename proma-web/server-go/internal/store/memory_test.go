@@ -16,6 +16,58 @@ func createTestConversation(t *testing.T, s *MemoryStore, title string) Conversa
 	return conversation
 }
 
+func TestMemoryStoreChannelLifecycle(t *testing.T) {
+	s := NewMemoryStore()
+	ctx := context.Background()
+
+	created, err := s.CreateChannel(ctx, ChannelCreateInput{
+		Name:     "Test Anthropic",
+		Provider: "anthropic",
+		BaseURL:  "https://api.anthropic.com",
+		APIKey:   "secret-key",
+		Models:   []ChannelModel{{ID: "claude-opus-4-6", Name: "Claude Opus 4.6", Enabled: true}},
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel failed: %v", err)
+	}
+	if created.APIKey != "" {
+		t.Fatalf("expected sanitized apiKey, got %q", created.APIKey)
+	}
+
+	listed, err := s.ListChannels(ctx)
+	if err != nil {
+		t.Fatalf("ListChannels failed: %v", err)
+	}
+	found := false
+	for _, item := range listed {
+		if item.ID == created.ID {
+			found = true
+			if item.APIKey != "" {
+				t.Fatalf("expected sanitized list apiKey, got %q", item.APIKey)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected created channel in list")
+	}
+
+	runtime, err := s.GetChannelRuntime(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetChannelRuntime failed: %v", err)
+	}
+	if runtime.APIKey != "secret-key" {
+		t.Fatalf("expected runtime api key, got %q", runtime.APIKey)
+	}
+
+	if err := s.DeleteChannel(ctx, created.ID); err != nil {
+		t.Fatalf("DeleteChannel failed: %v", err)
+	}
+	if _, err := s.GetChannelRuntime(ctx, created.ID); err != ErrChannelNotFound {
+		t.Fatalf("expected ErrChannelNotFound after delete, got %v", err)
+	}
+}
+
 func TestMemoryStoreConversationLifecycle(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()

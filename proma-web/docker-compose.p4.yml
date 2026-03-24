@@ -1,0 +1,30 @@
+services:
+  proma-agent-runner:
+    build:
+      context: ./agent-runner
+    environment:
+      PORT: 3210
+      PROMA_AGENT_RUNNER_ID: default
+      PROMA_WORKSPACE_ROOT: /workspace
+      HOME: /home/app
+      SHELL: /bin/sh
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - /Users/yingzhang/.proma/agent-workspaces/college:/workspace
+    ports:
+      - "3210:3210"
+
+  proma-server:
+    build:
+      context: ./server-go
+    environment:
+      PORT: 3010
+      APP_ENV: docker
+      AGENT_RUNNER_BASE_URL: http://proma-agent-runner:3210
+      AGENT_DEFAULT_RUNNER_ID: default
+      PROMA_AGENT_RUNNER_TIMEOUT_MS: 5000
+      DATABASE_URL: ${DATABASE_URL:-}
+    depends_on:
+      - proma-agent-runner
+    ports:
+      - "3010:3010"

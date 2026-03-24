@@ -3,7 +3,12 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { SparkyApp } from '../index'
 import type { PlatformClient } from '@sparky/platform-contract'
 import type {
+  AgentRunnerInfo,
+  AgentSession,
+  AgentSessionActionResult,
+  AgentSessionListResult,
   AppSettings,
+  Channel,
   ChatMessage,
   ConversationMessagesResult,
   ConversationMeta,
@@ -27,15 +32,50 @@ function createPlatformClient(messages: ChatMessage[], overrides: Partial<Platfo
     version: 'test',
     environment: 'test',
     database: { configured: false, status: 'disconnected' },
+    agentControlPlane: { enabled: true, runnerCount: 1, defaultRunnerStatus: 'healthy' },
   }
   const profile: UserProfile = { displayName: 'Tester' }
+  const channels: Channel[] = [{
+    id: 'channel-1',
+    name: 'Anthropic',
+    provider: 'anthropic',
+    enabled: true,
+    createdAt: '2026-03-24T00:00:00.000Z',
+    updatedAt: '2026-03-24T00:00:00.000Z',
+    models: [{
+      id: 'claude-opus-4-6',
+      name: 'Claude Opus 4.6',
+      enabled: true,
+      createdAt: '2026-03-24T00:00:00.000Z',
+      updatedAt: '2026-03-24T00:00:00.000Z',
+    }],
+  }]
   const conversation: ConversationMeta = {
     id: 'conv-1',
     title: '测试会话',
+    channelId: 'channel-1',
+    modelId: 'claude-opus-4-6',
     createdAt: '2026-03-24T00:00:00.000Z',
     updatedAt: '2026-03-24T00:00:00.000Z',
   }
   const result: ConversationMessagesResult = { messages, hasMore: false, total: messages.length }
+  const agentSession: AgentSession = {
+    id: 'agent-1',
+    workspaceId: 'workspace-1',
+    name: 'Agent 1',
+    status: 'running',
+    runnerId: 'default',
+    transport: 'http',
+    createdAt: '2026-03-24T00:00:00.000Z',
+    updatedAt: '2026-03-24T00:00:00.000Z',
+  }
+  const runner: AgentRunnerInfo = {
+    id: 'default',
+    baseUrl: 'http://runner',
+    status: 'healthy',
+  }
+  const actionResult: AgentSessionActionResult = { session: agentSession }
+  const sessionList: AgentSessionListResult = { sessions: [agentSession], activeSessionId: 'agent-1' }
 
   return {
     getRuntime: async () => runtime,
@@ -46,7 +86,29 @@ function createPlatformClient(messages: ChatMessage[], overrides: Partial<Platfo
       notificationsEnabled: true,
     } as AppSettings),
     updateSettings: async (input: AppSettings) => input,
-    listWorkspaces: async () => [] as Workspace[],
+    listChannels: async () => channels,
+    listWorkspaces: async () => [{
+      id: 'workspace-1',
+      name: 'Workspace 1',
+      rootPath: '/tmp/workspace-1',
+      createdAt: '2026-03-24T00:00:00.000Z',
+      updatedAt: '2026-03-24T00:00:00.000Z',
+    }] as Workspace[],
+    listAgentRunners: async () => [runner],
+    getAgentRunner: async () => runner,
+    listAgentSessions: async () => sessionList,
+    createAgentSession: async () => actionResult,
+    getAgentSession: async () => agentSession,
+    connectAgentSession: async () => ({
+      session: agentSession,
+      connection: {
+        sessionId: agentSession.id,
+        conversationId: 'conv-1',
+        connectedAt: '2026-03-24T00:00:00.000Z',
+      },
+    }),
+    closeAgentSession: async () => actionResult,
+    restartAgentSession: async () => actionResult,
     listConversations: async () => [conversation],
     createConversation: async (input: CreateConversationInput) => ({
       ...conversation,

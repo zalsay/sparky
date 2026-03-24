@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/sparky-proma/server/internal/agent"
 	"github.com/sparky-proma/server/internal/store"
 )
 
@@ -131,6 +132,23 @@ func (s *Server) handleConversation(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) requireRunningAgentSession(w http.ResponseWriter, conversationID string) (agent.SessionRecord, bool) {
+	if s.agentService == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent control plane is unavailable"})
+		return agent.SessionRecord{}, false
+	}
+	session, ok := s.agentService.ActiveSessionForConversation(conversationID)
+	if !ok {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "agent session must be connected before sending messages"})
+		return agent.SessionRecord{}, false
+	}
+	if session.Status != agent.SessionStatusRunning {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "connected agent session is not running"})
+		return agent.SessionRecord{}, false
+	}
+	return session, true
+}
+
 func (s *Server) handleConversationMessages(w http.ResponseWriter, r *http.Request) {
 	conversationID := conversationIDFromPath(r.URL.Path)
 	if conversationID == "" || !strings.Contains(r.URL.Path, "/messages") {
@@ -184,9 +202,18 @@ func (s *Server) handleConversationMessages(w http.ResponseWriter, r *http.Reque
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 			return
 		}
+		session, ok := s.requireRunningAgentSession(w, conversationID)
+		if !ok {
+			return
+		}
+		messageResult, err := s.agentService.SendMessage(r.Context(), session.ID, agent.SendMessageInput{Content: req.Content})
+		if err != nil {
+			s.handleAgentError(w, err)
+			return
+		}
 		items, err := s.store.AppendMessagePair(r.Context(), conversationID,
 			store.MessageCreateInput{Role: "user", Content: req.Content, Status: "done", Attachments: normalizeAttachments(req.Attachments)},
-			store.MessageCreateInput{Role: "assistant", Content: "这是 Go server 的最小非流式占位回复。", Status: "done"},
+			store.MessageCreateInput{Role: "assistant", Content: messageResult.Message.Content, Status: "done"},
 		)
 		if err != nil {
 			writeStoreError(w, err)
@@ -288,9 +315,8 @@ func (s *Server) handleStreamMessage(w http.ResponseWriter, r *http.Request, con
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 		return
 	}
-	chunks, err := s.store.BuildStreamingReply(r.Context(), conversationID, req.Content)
-	if err != nil {
-		writeStoreError(w, err)
+	session, ok := s.requireRunningAgentSession(w, conversationID)
+	if !ok {
 		return
 	}
 	assistantID := uuid.NewString()
@@ -306,11 +332,20 @@ func (s *Server) handleStreamMessage(w http.ResponseWriter, r *http.Request, con
 
 	content := ""
 	status := "loading"
-	for _, chunk := range chunks {
-		content += chunk.Content
-		status = chunk.Status
-		_ = writeSSEEvent(w, "message", map[string]any{"type": "delta", "conversationId": conversationID, "delta": map[string]any{"messageId": assistantID, "content": chunk.Content, "status": chunk.Status}})
-		flusher.Flush()
+	streamErr := s.agentService.StreamMessageEvents(r.Context(), session.ID, agent.SendMessageInput{Content: req.Content}, func(event agent.RunnerStreamEvent) error {
+		if event.Chunk != nil {
+			content += event.Chunk.Content
+			status = event.Chunk.Status
+			if err := writeSSEEvent(w, "message", map[string]any{"type": "delta", "conversationId": conversationID, "delta": map[string]any{"messageId": assistantID, "content": event.Chunk.Content, "status": event.Chunk.Status}}); err != nil {
+				return err
+			}
+			flusher.Flush()
+		}
+		return nil
+	})
+	if streamErr != nil {
+		s.handleAgentError(w, streamErr)
+		return
 	}
 
 	created, err := s.store.AppendMessagePair(r.Context(), conversationID,

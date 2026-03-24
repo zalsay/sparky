@@ -24,6 +24,21 @@ func NewPostgresStore(db *sql.DB) *PostgresStore {
 
 func (s *PostgresStore) ensureSchema(ctx context.Context) error {
 	statements := []string{
+		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS agent_channel_id TEXT`,
+		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS agent_model_id TEXT`,
+		`CREATE TABLE IF NOT EXISTS channels (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			base_url TEXT NOT NULL,
+			encrypted_api_key TEXT NOT NULL DEFAULT '',
+			models JSONB NOT NULL DEFAULT '[]'::jsonb,
+			enabled BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS model_id TEXT`,
+		`ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS channel_id TEXT`,
 		`ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE`,
 		`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS status TEXT`,
 		`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS kind TEXT`,
@@ -51,6 +66,21 @@ func (s *PostgresStore) ensureSeed(ctx context.Context) error {
 		ON CONFLICT (id) DO NOTHING`
 	if _, err := s.db.ExecContext(ctx, insertSettings); err != nil {
 		return err
+	}
+
+	const countChannels = `SELECT COUNT(*) FROM channels`
+	var channelCount int
+	if err := s.db.QueryRowContext(ctx, countChannels).Scan(&channelCount); err != nil {
+		return err
+	}
+	if channelCount == 0 {
+		defaultModels, _ := json.Marshal([]ChannelModel{{ID: "claude-opus-4-6", Name: "Claude Opus 4.6", Enabled: true}})
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO channels (id, name, provider, base_url, encrypted_api_key, models, enabled)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`, uuid.NewString(), "Default Anthropic", "anthropic", "https://api.anthropic.com", encryptAPIKey("test-anthropic-key"), defaultModels, true); err != nil {
+			return err
+		}
 	}
 
 	const countWorkspaces = `SELECT COUNT(*) FROM workspaces`
@@ -140,6 +170,169 @@ func (s *PostgresStore) UpdateSettings(ctx context.Context, updates Settings) (S
 		return Settings{}, err
 	}
 	return s.GetSettings(ctx)
+}
+
+func (s *PostgresStore) ListChannels(ctx context.Context) ([]Channel, error) {
+	if err := s.ensureSeed(ctx); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, provider, base_url, models, enabled, created_at, updated_at FROM channels ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []Channel{}
+	for rows.Next() {
+		item, err := scanChannel(rows, false)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *PostgresStore) CreateChannel(ctx context.Context, input ChannelCreateInput) (Channel, error) {
+	if err := s.ensureSeed(ctx); err != nil {
+		return Channel{}, err
+	}
+	modelsJSON, err := json.Marshal(input.Models)
+	if err != nil {
+		return Channel{}, err
+	}
+	const query = `
+		INSERT INTO channels (id, name, provider, base_url, encrypted_api_key, models, enabled)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, name, provider, base_url, models, enabled, created_at, updated_at`
+	row := s.db.QueryRowContext(ctx, query,
+		uuid.NewString(),
+		strings.TrimSpace(input.Name),
+		strings.TrimSpace(input.Provider),
+		strings.TrimSpace(input.BaseURL),
+		encryptAPIKey(input.APIKey),
+		modelsJSON,
+		input.Enabled,
+	)
+	return scanChannel(row, false)
+}
+
+func (s *PostgresStore) UpdateChannel(ctx context.Context, channelID string, input ChannelUpdateInput) (Channel, error) {
+	if err := s.ensureSeed(ctx); err != nil {
+		return Channel{}, err
+	}
+	current, err := s.GetChannelRuntime(ctx, channelID)
+	if err != nil {
+		return Channel{}, err
+	}
+
+	name := current.Name
+	if input.Name != nil {
+		name = strings.TrimSpace(*input.Name)
+	}
+	provider := current.Provider
+	if input.Provider != nil {
+		provider = strings.TrimSpace(*input.Provider)
+	}
+	baseURL := current.BaseURL
+	if input.BaseURL != nil {
+		baseURL = strings.TrimSpace(*input.BaseURL)
+	}
+	encryptedAPIKey := current.EncryptedAPIKey
+	if input.APIKey != nil && strings.TrimSpace(*input.APIKey) != "" {
+		encryptedAPIKey = encryptAPIKey(*input.APIKey)
+	}
+	models := current.Models
+	if input.Models != nil {
+		models = append([]ChannelModel(nil), input.Models...)
+	}
+	enabled := current.Enabled
+	if input.Enabled != nil {
+		enabled = *input.Enabled
+	}
+	modelsJSON, err := json.Marshal(models)
+	if err != nil {
+		return Channel{}, err
+	}
+
+	const query = `
+		UPDATE channels
+		SET name = $2,
+		    provider = $3,
+		    base_url = $4,
+		    encrypted_api_key = $5,
+		    models = $6,
+		    enabled = $7,
+		    updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, name, provider, base_url, models, enabled, created_at, updated_at`
+	row := s.db.QueryRowContext(ctx, query, channelID, name, provider, baseURL, encryptedAPIKey, modelsJSON, enabled)
+	item, err := scanChannel(row, false)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Channel{}, ErrChannelNotFound
+		}
+		return Channel{}, err
+	}
+	return item, nil
+}
+
+func (s *PostgresStore) DeleteChannel(ctx context.Context, channelID string) error {
+	if err := s.ensureSeed(ctx); err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM channels WHERE id = $1`, channelID)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return ErrChannelNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetChannelRuntime(ctx context.Context, channelID string) (Channel, error) {
+	if err := s.ensureSeed(ctx); err != nil {
+		return Channel{}, err
+	}
+	const query = `SELECT id, name, provider, base_url, encrypted_api_key, models, enabled, created_at, updated_at FROM channels WHERE id = $1`
+	item, err := scanChannel(s.db.QueryRowContext(ctx, query, channelID), true)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Channel{}, ErrChannelNotFound
+		}
+		return Channel{}, err
+	}
+	return item, nil
+}
+
+func scanChannel(scanner interface{ Scan(dest ...any) error }, includeSecret bool) (Channel, error) {
+	var item Channel
+	var modelsRaw []byte
+	if includeSecret {
+		if err := scanner.Scan(&item.ID, &item.Name, &item.Provider, &item.BaseURL, &item.EncryptedAPIKey, &modelsRaw, &item.Enabled, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return Channel{}, err
+		}
+	} else {
+		if err := scanner.Scan(&item.ID, &item.Name, &item.Provider, &item.BaseURL, &modelsRaw, &item.Enabled, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return Channel{}, err
+		}
+	}
+	if len(modelsRaw) > 0 {
+		if err := json.Unmarshal(modelsRaw, &item.Models); err != nil {
+			return Channel{}, err
+		}
+	}
+	if includeSecret {
+		item.APIKey = decryptAPIKey(item.EncryptedAPIKey)
+		item.Models = append([]ChannelModel(nil), item.Models...)
+		return item, nil
+	}
+	return sanitizeChannel(item), nil
 }
 
 func (s *PostgresStore) ListWorkspaces(ctx context.Context) ([]Workspace, error) {

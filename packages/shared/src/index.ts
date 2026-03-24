@@ -1,5 +1,48 @@
 export type ThemeMode = 'light' | 'dark' | 'system'
 
+export type ProviderType = 'anthropic' | 'openai' | 'deepseek' | 'google' | 'moonshot' | 'zhipu' | 'minimax' | 'doubao' | 'qwen' | 'custom'
+
+export interface ChannelModel {
+  id: string
+  name: string
+  enabled: boolean
+}
+
+export interface Channel {
+  id: string
+  name: string
+  provider: ProviderType
+  baseUrl: string
+  apiKey?: string
+  models: ChannelModel[]
+  enabled: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ChannelCreateInput {
+  name: string
+  provider: ProviderType
+  baseUrl: string
+  apiKey: string
+  models: ChannelModel[]
+  enabled?: boolean
+}
+
+export interface ChannelUpdateInput {
+  name?: string
+  provider?: ProviderType
+  baseUrl?: string
+  apiKey?: string
+  models?: ChannelModel[]
+  enabled?: boolean
+}
+
+export interface ConversationModelSelection {
+  channelId: string
+  modelId: string
+}
+
 export interface PlatformRequestErrorDetails {
   error?: string
   message?: string
@@ -52,6 +95,73 @@ export interface RuntimeInfo {
     configured: boolean
     status: 'connected' | 'disconnected'
   }
+  agentControlPlane: {
+    enabled: boolean
+    runnerCount: number
+    defaultRunnerStatus: AgentRunnerStatus
+  }
+}
+
+export type AgentRunnerStatus = 'unknown' | 'healthy' | 'unreachable'
+
+export type AgentSessionStatus =
+  | 'creating'
+  | 'starting'
+  | 'running'
+  | 'connecting'
+  | 'stopped'
+  | 'closing'
+  | 'restarting'
+  | 'error'
+
+export interface AgentRunnerInfo {
+  id: string
+  baseUrl: string
+  status: AgentRunnerStatus
+  version?: string
+  lastHeartbeatAt?: string
+  lastError?: string
+}
+
+export interface AgentSession {
+  id: string
+  workspaceId: string
+  name: string
+  channelId?: string
+  modelId?: string
+  status: AgentSessionStatus
+  runnerId: string
+  transport: 'http'
+  createdAt: string
+  updatedAt: string
+  connectedAt?: string
+  lastError?: string
+}
+
+export interface CreateAgentSessionInput {
+  workspaceId: string
+  name: string
+  channelId: string
+  modelId: string
+}
+
+export interface ConnectAgentSessionInput {
+  conversationId?: string
+}
+
+export interface AgentSessionConnection {
+  sessionId: string
+  conversationId?: string
+  connectedAt: string
+}
+
+export interface AgentSessionActionResult {
+  session: AgentSession
+}
+
+export interface AgentSessionListResult {
+  sessions: AgentSession[]
+  activeSessionId?: string
 }
 
 export interface Workspace {

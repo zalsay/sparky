@@ -1,7 +1,17 @@
 import type {
+  AgentRunnerInfo,
+  AgentSession,
+  AgentSessionActionResult,
+  AgentSessionConnection,
+  AgentSessionListResult,
   AppSettings,
+  Channel,
+  ChannelCreateInput,
+  ChannelUpdateInput,
+  ConnectAgentSessionInput,
   ConversationMessagesResult,
   ConversationMeta,
+  CreateAgentSessionInput,
   CreateConversationInput,
   EditMessageInput,
   GetMessagesInput,
@@ -26,7 +36,19 @@ export interface PlatformClient {
   getRuntime(): Promise<RuntimeInfo>
   getSettings(): Promise<AppSettings>
   updateSettings(input: AppSettings): Promise<AppSettings>
+  listChannels(): Promise<Channel[]>
+  createChannel(input: ChannelCreateInput): Promise<Channel>
+  updateChannel(channelId: string, input: ChannelUpdateInput): Promise<Channel>
+  deleteChannel(channelId: string): Promise<void>
   listWorkspaces(): Promise<Workspace[]>
+  listAgentRunners(): Promise<AgentRunnerInfo[]>
+  getAgentRunner(runnerId: string): Promise<AgentRunnerInfo>
+  listAgentSessions(): Promise<AgentSessionListResult>
+  createAgentSession(input: CreateAgentSessionInput): Promise<AgentSessionActionResult>
+  getAgentSession(sessionId: string): Promise<AgentSession>
+  connectAgentSession(sessionId: string, input?: ConnectAgentSessionInput): Promise<{ session: AgentSession, connection: AgentSessionConnection }>
+  closeAgentSession(sessionId: string): Promise<AgentSessionActionResult>
+  restartAgentSession(sessionId: string): Promise<AgentSessionActionResult>
   listConversations(): Promise<ConversationMeta[]>
   createConversation(input: CreateConversationInput): Promise<ConversationMeta>
   renameConversation(conversationId: string, input: RenameConversationInput): Promise<ConversationMeta>

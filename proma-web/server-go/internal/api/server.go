@@ -7,21 +7,23 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sparky-proma/server/internal/agent"
 	"github.com/sparky-proma/server/internal/config"
 	"github.com/sparky-proma/server/internal/db"
 	"github.com/sparky-proma/server/internal/store"
 )
 
 type Server struct {
-	config     config.Config
-	db         *db.DB
-	store      store.Store
-	uploadsDir string
+	config       config.Config
+	db           *db.DB
+	store        store.Store
+	uploadsDir   string
+	agentService *agent.Service
 }
 
 func NewServer(cfg config.Config, database *db.DB, st store.Store) *Server {
 	uploadsDir := filepath.Join(".", "uploads")
-	return &Server{config: cfg, db: database, store: st, uploadsDir: uploadsDir}
+	return &Server{config: cfg, db: database, store: st, uploadsDir: uploadsDir, agentService: agent.NewService(cfg)}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -29,6 +31,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /api/version", s.handleVersion)
 	mux.HandleFunc("GET /api/runtime", s.handleRuntime)
+	mux.HandleFunc("GET /api/channels", s.handleListChannels)
+	mux.HandleFunc("POST /api/channels", s.handleCreateChannel)
+	mux.HandleFunc("PATCH /api/channels/", s.handleChannel)
+	mux.HandleFunc("DELETE /api/channels/", s.handleChannel)
+	mux.HandleFunc("GET /api/agent/runners", s.handleListAgentRunners)
+	mux.HandleFunc("GET /api/agent/runners/", s.handleGetAgentRunner)
+	mux.HandleFunc("GET /api/agent/sessions", s.handleListAgentSessions)
+	mux.HandleFunc("POST /api/agent/sessions", s.handleCreateAgentSession)
+	mux.HandleFunc("GET /api/agent/sessions/", s.handleGetAgentSession)
+	mux.HandleFunc("POST /api/agent/sessions/", s.handleAgentSessionAction)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
 	mux.HandleFunc("GET /api/workspaces", s.handleListWorkspaces)
@@ -98,4 +110,34 @@ func limitFromRequest(r *http.Request) int {
 		return 50
 	}
 	return limit
+}
+
+func agentRunnerIDFromPath(path string) string {
+	prefix := "/api/agent/runners/"
+	trimmed := strings.TrimPrefix(path, prefix)
+	parts := strings.Split(trimmed, "/")
+	if len(parts) == 0 || parts[0] == "" {
+		return ""
+	}
+	return parts[0]
+}
+
+func agentSessionIDFromPath(path string) string {
+	prefix := "/api/agent/sessions/"
+	trimmed := strings.TrimPrefix(path, prefix)
+	parts := strings.Split(trimmed, "/")
+	if len(parts) == 0 || parts[0] == "" {
+		return ""
+	}
+	return parts[0]
+}
+
+func agentSessionActionFromPath(path string) string {
+	prefix := "/api/agent/sessions/"
+	trimmed := strings.TrimPrefix(path, prefix)
+	parts := strings.Split(trimmed, "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[1]
 }

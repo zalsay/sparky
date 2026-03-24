@@ -4,11 +4,21 @@ import {
   type PlatformRequestErrorDetails,
 } from '@sparky/shared'
 import type {
+  AgentRunnerInfo,
+  AgentSession,
+  AgentSessionActionResult,
+  AgentSessionConnection,
+  AgentSessionListResult,
   AppSettings,
   AttachmentInput,
+  Channel,
+  ChannelCreateInput,
+  ChannelUpdateInput,
   ChatMessage,
   ConversationMessagesResult,
   ConversationMeta,
+  ConnectAgentSessionInput,
+  CreateAgentSessionInput,
   CreateConversationInput,
   EditMessageInput,
   GetMessagesInput,
@@ -30,6 +40,11 @@ type ImportMetaEnvShape = { env?: { VITE_API_BASE_URL?: string } }
 
 type MessageMutationResponse = {
   messages: ChatMessage[]
+}
+
+type AgentSessionConnectionResponse = {
+  session: AgentSession
+  connection: AgentSessionConnection
 }
 
 const globalImportMeta = import.meta as unknown as ImportMetaEnvShape
@@ -210,7 +225,37 @@ export function createWebPlatformClient(options: WebPlatformClientOptions = {}):
       method: 'PUT',
       body: JSON.stringify(input),
     }),
+    listChannels: () => request<Channel[]>('/api/channels'),
+    createChannel: (input: ChannelCreateInput) => request<Channel>('/api/channels', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+    updateChannel: (channelId: string, input: ChannelUpdateInput) => request<Channel>(`/api/channels/${channelId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+    deleteChannel: (channelId: string) => request<void>(`/api/channels/${channelId}`, {
+      method: 'DELETE',
+    }),
     listWorkspaces: () => request<Workspace[]>('/api/workspaces'),
+    listAgentRunners: () => request<AgentRunnerInfo[]>('/api/agent/runners'),
+    getAgentRunner: (runnerId: string) => request<AgentRunnerInfo>(`/api/agent/runners/${runnerId}`),
+    listAgentSessions: () => request<AgentSessionListResult>('/api/agent/sessions'),
+    createAgentSession: (input: CreateAgentSessionInput) => request<AgentSessionActionResult>('/api/agent/sessions', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+    getAgentSession: (sessionId: string) => request<AgentSession>(`/api/agent/sessions/${sessionId}`),
+    connectAgentSession: (sessionId: string, input?: ConnectAgentSessionInput) => request<AgentSessionConnectionResponse>(`/api/agent/sessions/${sessionId}/connect`, {
+      method: 'POST',
+      body: JSON.stringify(input ?? {}),
+    }),
+    closeAgentSession: (sessionId: string) => request<AgentSessionActionResult>(`/api/agent/sessions/${sessionId}/close`, {
+      method: 'POST',
+    }),
+    restartAgentSession: (sessionId: string) => request<AgentSessionActionResult>(`/api/agent/sessions/${sessionId}/restart`, {
+      method: 'POST',
+    }),
     listConversations: () => request<ConversationMeta[]>('/api/chat/sessions'),
     createConversation: (input: CreateConversationInput) => request<ConversationMeta>('/api/chat/sessions', {
       method: 'POST',

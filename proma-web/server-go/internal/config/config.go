@@ -4,14 +4,20 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Port        string
-	DatabaseURL string
-	Environment string
+	Port                 string
+	DatabaseURL          string
+	Environment          string
+	AgentRunnerBaseURL   string
+	AgentControlEnabled  bool
+	AgentDefaultRunnerID string
+	AgentRunnerTimeout   time.Duration
 }
 
 type fileConfig struct {
@@ -42,10 +48,29 @@ func Load() Config {
 		databaseURL = loadDatabaseURLFromFile("config.yaml")
 	}
 
+	agentRunnerBaseURL := os.Getenv("AGENT_RUNNER_BASE_URL")
+	agentControlEnabled := agentRunnerBaseURL != ""
+
+	agentDefaultRunnerID := os.Getenv("AGENT_DEFAULT_RUNNER_ID")
+	if agentDefaultRunnerID == "" {
+		agentDefaultRunnerID = "default"
+	}
+
+	agentRunnerTimeout := 5 * time.Second
+	if value := os.Getenv("PROMA_AGENT_RUNNER_TIMEOUT_MS"); value != "" {
+		if timeoutMS, err := strconv.Atoi(value); err == nil && timeoutMS > 0 {
+			agentRunnerTimeout = time.Duration(timeoutMS) * time.Millisecond
+		}
+	}
+
 	return Config{
-		Port:        port,
-		DatabaseURL: databaseURL,
-		Environment: environment,
+		Port:                 port,
+		DatabaseURL:          databaseURL,
+		Environment:          environment,
+		AgentRunnerBaseURL:   agentRunnerBaseURL,
+		AgentControlEnabled:  agentControlEnabled,
+		AgentDefaultRunnerID: agentDefaultRunnerID,
+		AgentRunnerTimeout:   agentRunnerTimeout,
 	}
 }
 
