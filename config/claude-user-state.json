@@ -1,0 +1,15 @@
+{
+  "firstStartTime": "2026-04-07T07:41:56.793Z",
+  "opusProMigrationComplete": true,
+  "sonnet1m45MigrationComplete": true,
+  "migrationVersion": 11,
+  "userID": "366b78f2f7006007271d74ab14b94cb9e43f87d0c19852423b1b0f4df3ca2d93",
+  "theme": "dark",
+  "hasCompletedOnboarding": true,
+  "lastOnboardingVersion": "2.1.92",
+  "projects": {
+    "/workspace": {
+      "hasTrustDialogAccepted": true
+    }
+  }
+}

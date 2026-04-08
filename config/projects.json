@@ -1,0 +1,42 @@
+{
+  "projects": [
+    {
+      "project_id": "default",
+      "root_fs": "/",
+      "bind_dirs": [
+        "/tmp",
+        "/projects/default"
+      ],
+      "env_vars": {
+        "HOME": "/home/app",
+        "TERM": "xterm-256color",
+        "CC_SNAPSHOT_DIR": "/projects/default"
+      },
+      "cmd": "/bin/bash",
+      "cmd_args": [
+        "-lc",
+        "cd /projects/default && exec claude"
+      ]
+    },
+    {
+      "project_id": "codex",
+      "root_fs": "/",
+      "bind_dirs": [
+        "/tmp",
+        "/projects/codex"
+      ],
+      "env_vars": {
+        "HOME": "/home/app",
+        "TERM": "xterm-256color",
+        "CC_SNAPSHOT_DIR": "/projects/codex",
+        "CODEX_HOME": "/home/app/.codex",
+        "OPENAI_API_KEY": "{{OPENAI_API_KEY}}"
+      },
+      "cmd": "/bin/bash",
+      "cmd_args": [
+        "-lc",
+        "cd /projects/codex && exec codex"
+      ]
+    }
+  ]
+}

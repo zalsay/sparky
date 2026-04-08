@@ -1,0 +1,7 @@
+{
+  "hasCompletedOnboarding": true,
+  "skipDangerousModePermissionPrompt": true,
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  }
+}
