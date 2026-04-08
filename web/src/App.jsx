@@ -124,6 +124,26 @@ function normalizeSessions(payload) {
     .sort((a, b) => b.createdAtMs - a.createdAtMs)
 }
 
+function sameSessionTabs(left, right) {
+  if (left === right) {
+    return true
+  }
+
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+    return false
+  }
+
+  return left.every((tab, index) => {
+    const other = right[index]
+    return (
+      tab.id === other.id &&
+      tab.projectId === other.projectId &&
+      tab.label === other.label &&
+      tab.temporary === other.temporary
+    )
+  })
+}
+
 function normalizeProjectPathInput(value) {
   return value
     .replace(/^\/+/, '')
@@ -259,29 +279,83 @@ function gitOutputPreview(value) {
   return String(value || '').trim()
 }
 
-function buildSessionTab(sessionId, temporary, existingTabs = []) {
+function buildSessionTab(sessionId, project, temporary, existingTabs = []) {
+  const projectId = project?.id || ''
+  const projectName = project?.name || projectId || '项目'
+  const baseTab = {
+    id: sessionId,
+    projectId,
+    projectName,
+    provider: project?.provider || '自定义',
+    runtime: project?.runtime || 'claude',
+    temporary,
+  }
+
   if (!temporary) {
     return {
-      id: sessionId,
-      temporary: false,
-      label: '主会话',
+      ...baseTab,
+      label: projectName,
     }
   }
 
   const nextIndex = existingTabs.reduce((max, tab) => {
-    if (!tab.temporary) {
+    if (!tab.temporary || tab.projectId !== projectId) {
       return max
     }
 
-    const matched = /(\d+)$/.exec(tab.label || '')
+    const matched = /临时\s*(\d+)$/.exec(tab.label || '')
     return Math.max(max, matched ? Number(matched[1]) : 0)
   }, 0) + 1
 
   return {
-    id: sessionId,
-    temporary: true,
-    label: `临时 ${nextIndex}`,
+    ...baseTab,
+    label: `${projectName} · 临时 ${nextIndex}`,
   }
+}
+
+function composeSessionTabs(persistentSessions, projects, existingTabs = [], extraTemporaryTab = null) {
+  const projectMap = new Map(projects.map((project) => [project.id, project]))
+  const persistentCountByProject = persistentSessions.reduce((map, session) => {
+    map.set(session.projectId, (map.get(session.projectId) || 0) + 1)
+    return map
+  }, new Map())
+
+  const persistentTabs = persistentSessions
+    .map((session) => {
+      const project = projectMap.get(session.projectId)
+      if (!project) {
+        return null
+      }
+
+      const tab = buildSessionTab(session.id, project, false)
+      if ((persistentCountByProject.get(session.projectId) || 0) <= 1) {
+        return tab
+      }
+
+      return {
+        ...tab,
+        label: `${project.name} · ${session.id}`,
+      }
+    })
+    .filter(Boolean)
+
+  const temporaryTabs = existingTabs
+    .filter((tab) => tab.temporary && projectMap.has(tab.projectId))
+    .map((tab) => {
+      const project = projectMap.get(tab.projectId)
+      return {
+        ...tab,
+        projectName: project?.name || tab.projectName,
+        provider: project?.provider || tab.provider,
+        runtime: project?.runtime || tab.runtime,
+      }
+    })
+
+  if (extraTemporaryTab && !temporaryTabs.some((tab) => tab.id === extraTemporaryTab.id)) {
+    temporaryTabs.push(extraTemporaryTab)
+  }
+
+  return [...persistentTabs, ...temporaryTabs]
 }
 
 function App() {
@@ -338,6 +412,8 @@ function App() {
   const terminalRef = useRef(null)
   const fitAddonRef = useRef(null)
   const pendingOutputRef = useRef([])
+  const projectsRef = useRef([])
+  const sessionsRef = useRef([])
   const sessionTabsRef = useRef([])
   const sessionIdRef = useRef(null)
   const workspaceShellRef = useRef(null)
@@ -402,12 +478,31 @@ function App() {
   }, [sessionTabs])
 
   useEffect(() => {
+    projectsRef.current = projects
+  }, [projects])
+
+  useEffect(() => {
+    sessionsRef.current = sessions
+  }, [sessions])
+
+  useEffect(() => {
     sessionIdRef.current = sessionId
   }, [sessionId])
 
   useEffect(() => {
     localStorage.setItem(WORKSPACE_SIDEBAR_WIDTH_KEY, String(sidebarWidth))
   }, [sidebarWidth])
+
+  useEffect(() => {
+    setSessionTabs((prev) => {
+      if (prev.length === 0) {
+        return prev
+      }
+
+      const next = composeSessionTabs(sessions, projects, prev)
+      return sameSessionTabs(prev, next) ? prev : next
+    })
+  }, [projects, sessions])
 
   const resetTerminal = () => {
     pendingOutputRef.current = []
@@ -422,6 +517,7 @@ function App() {
     saveAuth(null)
     setProjects([])
     setSessions([])
+    setSessionTabs([])
     setSelectedProject(null)
     setSessionId(null)
     setConnected(false)
@@ -610,6 +706,17 @@ function App() {
       loadWorkspaceState()
     }
   }, [auth?.token])
+
+  useEffect(() => {
+    if (!selectedProject?.id) {
+      return
+    }
+
+    const nextProject = projects.find((item) => item.id === selectedProject.id)
+    if (nextProject && nextProject !== selectedProject) {
+      setSelectedProject(nextProject)
+    }
+  }, [projects, selectedProject])
 
   useEffect(() => {
     if (step === 'select' || !selectedProject?.id || !auth?.token) {
@@ -1164,12 +1271,29 @@ function App() {
     await Promise.all(ids.map((id) => destroySessionById(id)))
   }
 
+  const mergeProjects = (baseProjects, project) => {
+    if (!project?.id || baseProjects.some((item) => item.id === project.id)) {
+      return baseProjects
+    }
+
+    return [...baseProjects, project]
+  }
+
   const activateSessionTab = (tab, options = {}) => {
     if (!tab?.id) {
       return
     }
 
     const announce = options.announce !== false
+    const project = options.project
+      || projectsRef.current.find((item) => item.id === tab.projectId)
+      || null
+
+    if (project?.id) {
+      rememberProject(project.id)
+      setSelectedProject(project)
+    }
+
     closeSocket(true)
     setStep('connecting')
     setConnected(false)
@@ -1181,13 +1305,40 @@ function App() {
     connectWs(tab)
   }
 
+  const activatePersistentSession = (project, targetSessionId = '') => {
+    if (!project?.id) {
+      return
+    }
+
+    const nextTabs = composeSessionTabs(
+      sessionsRef.current,
+      mergeProjects(projectsRef.current, project),
+      sessionTabsRef.current,
+    )
+    const nextTab = targetSessionId
+      ? nextTabs.find((tab) => tab.id === targetSessionId)
+      : nextTabs.find((tab) => tab.projectId === project.id && !tab.temporary)
+
+    if (!nextTab) {
+      return
+    }
+
+    setSessionTabs(nextTabs)
+    activateSessionTab(nextTab, { project })
+  }
+
   const openSessionRequest = async (project, options = {}) => {
     const temporary = Boolean(options.temporary)
     const preserveTabs = Boolean(options.preserveTabs)
+    const fresh = Boolean(options.fresh)
     const endpoint = options.endpoint || `${API_BASE}/projects/${encodeURIComponent(project.id)}/session`
-    const requestBody = options.body ?? { temporary }
+    const requestBody = options.body ?? { temporary, fresh }
     const loadingMessage = options.loadingMessage
-      || (temporary ? `正在打开 ${project.name} 的临时 Shell...\r\n` : `正在启动 ${project.name}...\r\n`)
+      || (temporary
+        ? `正在打开 ${project.name} 的临时 Shell...\r\n`
+        : fresh
+          ? `正在新建 ${project.name} 的主会话...\r\n`
+          : `正在启动 ${project.name}...\r\n`)
     const readyMessage = options.readyMessage
       || (temporary
         ? (data) => `临时会话 ${data.session_id} 已就绪，正在连接...\r\n`
@@ -1196,6 +1347,7 @@ function App() {
     const previousTabs = sessionTabsRef.current
     const previousTab = previousTabs.find((tab) => tab.id === sessionIdRef.current) || null
     const previousProject = selectedProject
+    const nextProjects = mergeProjects(projectsRef.current, project)
 
     closeSocket(true)
     rememberProject(project.id)
@@ -1233,17 +1385,26 @@ function App() {
       }
 
       const nextTemporary = Boolean(data.temporary)
-      const tab = buildSessionTab(data.session_id, nextTemporary, sessionTabsRef.current)
-      setSessionTabs((prev) => {
-        if (nextTemporary) {
-          if (prev.some((item) => item.id === tab.id)) {
-            return prev
-          }
-          return [...prev, tab]
-        }
+      const tab = buildSessionTab(data.session_id, project, nextTemporary, sessionTabsRef.current)
+      const nextSessions = nextTemporary
+        ? sessionsRef.current
+        : [
+            {
+              id: data.session_id,
+              projectId: project.id,
+              createdAtMs: Date.now(),
+              alive: true,
+            },
+            ...sessionsRef.current.filter((item) => item.id !== data.session_id),
+          ].sort((a, b) => b.createdAtMs - a.createdAtMs)
 
-        const temporaryTabs = preserveTabs ? prev.filter((item) => item.temporary) : []
-        return [tab, ...temporaryTabs]
+      if (!nextTemporary) {
+        setSessions(nextSessions)
+      }
+
+      setSessionTabs((prev) => {
+        const preservedTabs = preserveTabs ? prev : prev.filter((item) => !item.temporary)
+        return composeSessionTabs(nextSessions, nextProjects, preservedTabs, nextTemporary ? tab : null)
       })
       setSessionId(data.session_id)
       queueTerminalOutput(typeof readyMessage === 'function' ? readyMessage(data) : readyMessage)
@@ -1251,10 +1412,10 @@ function App() {
       return data
     } catch (error) {
       queueTerminalOutput(`${failureMessage}：${error.message}\r\n`)
-      if (temporary && previousTab && previousProject?.id === project.id) {
+      if (previousTab) {
         setSessionTabs(previousTabs)
         setSelectedProject(previousProject)
-        activateSessionTab(previousTab, { announce: false })
+        activateSessionTab(previousTab, { announce: false, project: previousProject })
         return null
       }
       setStep('select')
@@ -1269,7 +1430,25 @@ function App() {
   )
 
   const selectProject = async (project) => {
+    const existingSession = sessionsRef.current.find((item) => item.projectId === project.id)
+    if (existingSession) {
+      activatePersistentSession(project, existingSession.id)
+      return
+    }
+
     await openProjectSession(project, { temporary: false, preserveTabs: false })
+  }
+
+  const openPrimarySession = async () => {
+    if (!selectedProject?.id) {
+      return
+    }
+
+    await openProjectSession(selectedProject, {
+      temporary: false,
+      fresh: true,
+      preserveTabs: true,
+    })
   }
 
   const openTemporarySession = async () => {
@@ -1360,9 +1539,14 @@ function App() {
     setCodexResumeLoading('')
     resetTerminal()
 
-    const fallbackTab = remainingTabs.find((tab) => !tab.temporary) || remainingTabs[remainingTabs.length - 1]
+    const fallbackTab = remainingTabs.find((tab) => !tab.temporary && tab.projectId === activeTab.projectId)
+      || remainingTabs.find((tab) => !tab.temporary)
+      || remainingTabs[remainingTabs.length - 1]
     if (fallbackTab) {
-      activateSessionTab(fallbackTab, { announce: false })
+      activateSessionTab(fallbackTab, {
+        announce: false,
+        project: projectsRef.current.find((item) => item.id === fallbackTab.projectId) || null,
+      })
       return
     }
 
@@ -1573,7 +1757,14 @@ function App() {
 
   const totalProjects = projects.length
   const activeSessionCount = sessions.length
-  const sessionByProjectId = new Map(sessions.map((session) => [session.projectId, session]))
+  const sessionByProjectId = new Map()
+  const sessionCountByProjectId = new Map()
+  sessions.forEach((session) => {
+    if (!sessionByProjectId.has(session.projectId)) {
+      sessionByProjectId.set(session.projectId, session)
+    }
+    sessionCountByProjectId.set(session.projectId, (sessionCountByProjectId.get(session.projectId) || 0) + 1)
+  })
   const activeWebTarget = webTargets.find((target) => target.id === selectedWebTargetId) || null
   const hasWebTargets = webTargets.length > 0
   const hasCodexSessions = codexSessions.length > 0
@@ -1787,6 +1978,7 @@ function App() {
             <div className="project-grid">
               {orderedProjects.map((project) => {
                 const activeSession = sessionByProjectId.get(project.id)
+                const activeSessionCountForProject = sessionCountByProjectId.get(project.id) || 0
                 const projectPath = project.bindDirs.find((dir) => dir !== '/tmp') || '/projects'
 
                 return (
@@ -1808,7 +2000,7 @@ function App() {
                       <span className="project-provider skill-card__icon">{project.provider}</span>
                       <div className="project-card-top-actions">
                         {activeSession ? (
-                          <span className="project-badge">保留会话</span>
+                          <span className="project-badge">{activeSessionCountForProject > 1 ? `${activeSessionCountForProject} 个会话` : '保留会话'}</span>
                         ) : preferredProjectId === project.id ? (
                           <span className="project-badge">上次使用</span>
                         ) : null}
@@ -1847,7 +2039,7 @@ function App() {
                       </div>
                       <p className="project-path">{projectPath}</p>
                       <div className="project-specs">
-                        {activeSession && <span className="project-meta">会话保留中</span>}
+                        {activeSession && <span className="project-meta">{activeSessionCountForProject > 1 ? `${activeSessionCountForProject} 个会话进行中` : '会话保留中'}</span>}
                         {!activeSession && preferredProjectId === project.id && <span className="project-meta">上次使用</span>}
                         {project.gitUrl && <span className="project-meta">已配置 Git</span>}
                       </div>
@@ -1878,7 +2070,7 @@ function App() {
                     <button
                       key={session.id}
                       className="session-row skill-card"
-                      onClick={() => project && selectProject(project)}
+                      onClick={() => project && activatePersistentSession(project, session.id)}
                     >
                       <span className="skill-card__accent" aria-hidden="true" />
                       <div className="session-row-main skill-card__description">
@@ -2045,6 +2237,13 @@ function App() {
               {codexResumeLoading === '__latest__' ? '恢复中' : '恢复最近会话'}
             </button>
           ) : null}
+          <button
+            className="toolbar-btn"
+            onClick={openPrimarySession}
+            disabled={!selectedProject?.id || step === 'connecting'}
+          >
+            新开主会话
+          </button>
           <button className="toolbar-btn" onClick={leaveSessionView}>
             返回列表
           </button>

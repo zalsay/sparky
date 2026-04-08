@@ -110,13 +110,12 @@ impl Session {
             .try_clone_reader()
             .map_err(|e| format!("try_clone_reader: {}", e))?;
         let snapshot_path = (!temporary)
-            .then(|| snapshot_file_path(project, user))
+            .then(|| snapshot_file_path(project, user, &id))
             .flatten();
         let legacy_snapshot_path = (!temporary)
-            .then(|| legacy_snapshot_file_path(project, user))
+            .then(|| legacy_snapshot_file_path(project, user, &id))
             .flatten();
-        let initial_snapshot =
-            load_snapshot_from_file(snapshot_path.as_deref(), legacy_snapshot_path.as_deref());
+        let initial_snapshot = load_snapshot_from_file(snapshot_path.as_deref());
         let snapshot = Arc::new(Mutex::new(SnapshotState {
             base_offset: 0,
             data: initial_snapshot,
@@ -372,32 +371,34 @@ fn inferred_exec_target(project: &Project) -> Option<String> {
     }
 }
 
-fn snapshot_file_path(project: &Project, user: &AuthSession) -> Option<PathBuf> {
+fn snapshot_file_path(project: &Project, user: &AuthSession, session_id: &str) -> Option<PathBuf> {
     let root = project.snapshot_root()?;
     Some(
         root.join(".sparky")
             .join("snapshots")
             .join(&user.user_id)
-            .join(format!("{}.ansi", project.project_id)),
+            .join(&project.project_id)
+            .join(format!("{}.ansi", session_id)),
     )
 }
 
-fn legacy_snapshot_file_path(project: &Project, user: &AuthSession) -> Option<PathBuf> {
+fn legacy_snapshot_file_path(
+    project: &Project,
+    user: &AuthSession,
+    session_id: &str,
+) -> Option<PathBuf> {
     let root = project.snapshot_root()?;
     Some(
         root.join(".cc-bridge")
             .join("snapshots")
             .join(&user.user_id)
-            .join(format!("{}.ansi", project.project_id)),
+            .join(&project.project_id)
+            .join(format!("{}.ansi", session_id)),
     )
 }
 
-fn load_snapshot_from_file(path: Option<&Path>, legacy_path: Option<&Path>) -> String {
-    let contents = path
-        .and_then(|path| fs::read_to_string(path).ok())
-        .or_else(|| legacy_path.and_then(|path| fs::read_to_string(path).ok()));
-
-    let Some(contents) = contents else {
+fn load_snapshot_from_file(path: Option<&Path>) -> String {
+    let Some(contents) = path.and_then(|path| fs::read_to_string(path).ok()) else {
         return String::new();
     };
 
@@ -442,7 +443,7 @@ fn remove_snapshot_file(path: Option<&Path>) {
     }
 
     let mut current = path.parent();
-    for _ in 0..3 {
+    for _ in 0..4 {
         let Some(dir) = current else {
             break;
         };
@@ -508,8 +509,9 @@ impl SessionManager {
         project: &Project,
         user: &AuthSession,
         temporary: bool,
+        fresh: bool,
     ) -> Result<Arc<Session>, String> {
-        self.create_with_launch(project, user, temporary, None, false)
+        self.create_with_launch(project, user, temporary, None, false, fresh)
     }
 
     pub fn create_with_launch(
@@ -519,10 +521,11 @@ impl SessionManager {
         temporary: bool,
         launch_override: Option<LaunchOverride>,
         replace_existing: bool,
+        fresh: bool,
     ) -> Result<Arc<Session>, String> {
         self.reap_dead_sessions();
 
-        if !temporary {
+        if !temporary && !fresh {
             if let Some(existing) = self.find_for_user_project(&user.user_id, &project.project_id) {
                 if !replace_existing
                     && launch_override.is_none()

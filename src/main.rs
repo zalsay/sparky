@@ -91,6 +91,7 @@ struct GitActionRequest {
 #[derive(Debug, Default, Deserialize)]
 struct CreateSessionRequest {
     temporary: Option<bool>,
+    fresh: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -743,8 +744,9 @@ async fn create_session(
 
     let request = payload.map(web::Json::into_inner).unwrap_or_default();
     let temporary = request.temporary.unwrap_or(false);
+    let fresh = request.fresh.unwrap_or(false);
 
-    match SESSION_MANAGER.create(&project, &user, temporary) {
+    match SESSION_MANAGER.create(&project, &user, temporary, fresh) {
         Ok(session) => {
             let id = session.id.clone();
             HttpResponse::Ok().json(serde_json::json!({
@@ -860,7 +862,7 @@ async fn resume_codex_session(
         ),
     };
 
-    match SESSION_MANAGER.create_with_launch(&project, &user, false, Some(launch), true) {
+    match SESSION_MANAGER.create_with_launch(&project, &user, false, Some(launch), true, true) {
         Ok(session) => HttpResponse::Ok().json(serde_json::json!({
             "session_id": session.id,
             "project_id": project_id,
