@@ -53,7 +53,7 @@ pub struct Session {
     pub created_at_ms: u64,
     /// Effective runtime worktree used when the session was spawned.
     pub runtime_worktree: String,
-    /// Temporary sessions are not persisted or listed for restore.
+    /// Temporary sessions run an auxiliary shell and can still be restored.
     pub temporary: bool,
     /// Snapshot file persisted under the project path when available.
     snapshot_path: Option<PathBuf>,
@@ -582,7 +582,7 @@ impl SessionManager {
             .sessions
             .lock()
             .values()
-            .filter(|session| session.user_id == user_id && !session.temporary)
+            .filter(|session| session.user_id == user_id)
             .map(|session| SessionSummary {
                 session_id: session.id.clone(),
                 project_id: session.project_id.clone(),

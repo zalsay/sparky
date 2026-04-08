@@ -119,6 +119,7 @@ function normalizeSessions(payload) {
       projectId: session.project_id || session.projectId,
       createdAtMs: Number(session.created_at_ms || session.createdAtMs || 0),
       alive: session.alive !== false,
+      temporary: Boolean(session.temporary),
     }))
     .filter((session) => session.id && session.projectId && session.alive)
     .sort((a, b) => b.createdAtMs - a.createdAtMs)
@@ -316,9 +317,12 @@ function buildSessionTab(sessionId, project, temporary, existingTabs = []) {
 function composeSessionTabs(persistentSessions, projects, existingTabs = [], extraTemporaryTab = null) {
   const projectMap = new Map(projects.map((project) => [project.id, project]))
   const persistentCountByProject = persistentSessions.reduce((map, session) => {
-    map.set(session.projectId, (map.get(session.projectId) || 0) + 1)
+    if (!session.temporary) {
+      map.set(session.projectId, (map.get(session.projectId) || 0) + 1)
+    }
     return map
   }, new Map())
+  const temporaryIndexByProject = new Map()
 
   const persistentTabs = persistentSessions
     .map((session) => {
@@ -327,35 +331,32 @@ function composeSessionTabs(persistentSessions, projects, existingTabs = [], ext
         return null
       }
 
-      const tab = buildSessionTab(session.id, project, false)
-      if ((persistentCountByProject.get(session.projectId) || 0) <= 1) {
-        return tab
+      if (session.temporary) {
+        const nextIndex = (temporaryIndexByProject.get(session.projectId) || 0) + 1
+        temporaryIndexByProject.set(session.projectId, nextIndex)
+        return {
+          ...buildSessionTab(session.id, project, true),
+          label: `${project.name} · 临时 ${nextIndex}`,
+        }
       }
 
-      return {
-        ...tab,
-        label: `${project.name} · ${session.id}`,
+      const tab = buildSessionTab(session.id, project, false)
+      if ((persistentCountByProject.get(session.projectId) || 0) > 1) {
+        return {
+          ...tab,
+          label: `${project.name} · ${session.id}`,
+        }
       }
+
+      return tab
     })
     .filter(Boolean)
 
-  const temporaryTabs = existingTabs
-    .filter((tab) => tab.temporary && projectMap.has(tab.projectId))
-    .map((tab) => {
-      const project = projectMap.get(tab.projectId)
-      return {
-        ...tab,
-        projectName: project?.name || tab.projectName,
-        provider: project?.provider || tab.provider,
-        runtime: project?.runtime || tab.runtime,
-      }
-    })
-
-  if (extraTemporaryTab && !temporaryTabs.some((tab) => tab.id === extraTemporaryTab.id)) {
-    temporaryTabs.push(extraTemporaryTab)
+  if (extraTemporaryTab && !persistentTabs.some((tab) => tab.id === extraTemporaryTab.id)) {
+    persistentTabs.push(extraTemporaryTab)
   }
 
-  return [...persistentTabs, ...temporaryTabs]
+  return persistentTabs
 }
 
 function App() {
@@ -905,6 +906,7 @@ function App() {
     const tokenQuery = auth?.token ? `?token=${encodeURIComponent(auth.token)}` : ''
     const ws = new WebSocket(`${WS_BASE}/session/${encodeURIComponent(sid)}/ws${tokenQuery}`)
     ws._sparkyManualClose = false
+    ws._sparkyExited = false
     wsRef.current = ws
 
     ws.onopen = () => {
@@ -922,19 +924,25 @@ function App() {
 
     ws.onclose = () => {
       const wasManualClose = ws._sparkyManualClose === true
+      const hasExited = ws._sparkyExited === true
       if (wsRef.current === ws) {
         wsRef.current = null
       }
       clearKeepAlive()
       setConnected(false)
-      if (!wasManualClose && temporary) {
+      if (!wasManualClose && hasExited) {
+        setSessions((prev) => prev.filter((item) => item.id !== sid))
         setSessionTabs((prev) => prev.filter((item) => item.id !== sid))
         if (sessionIdRef.current === sid) {
           setSessionId(null)
         }
       }
       if (!wasManualClose) {
-        writeTerminalLine(temporary ? '连接已关闭。临时 PTY 已结束。' : '连接已关闭。PTY 仍在保活，重新打开项目即可恢复。')
+        if (hasExited) {
+          writeTerminalLine(temporary ? '连接已关闭。临时 PTY 已结束。' : '连接已关闭。会话已结束。')
+        } else {
+          writeTerminalLine('连接已关闭。会话仍在保活，可重新连接。')
+        }
       }
     }
 
@@ -952,6 +960,7 @@ function App() {
         } else if (data.type === 'error') {
           writeTerminalLine(`错误：${data.msg || data.error || ''}`)
         } else if (data.type === 'done') {
+          ws._sparkyExited = true
           writeTerminalLine('进程已结束。')
         } else if (typeof data.content === 'string') {
           queueTerminalOutput(data.content)
@@ -1266,11 +1275,6 @@ function App() {
     }
   }
 
-  const destroyTemporaryTabs = async () => {
-    const ids = sessionTabsRef.current.filter((tab) => tab.temporary).map((tab) => tab.id)
-    await Promise.all(ids.map((id) => destroySessionById(id)))
-  }
-
   const mergeProjects = (baseProjects, project) => {
     if (!project?.id || baseProjects.some((item) => item.id === project.id)) {
       return baseProjects
@@ -1318,6 +1322,7 @@ function App() {
     const nextTab = targetSessionId
       ? nextTabs.find((tab) => tab.id === targetSessionId)
       : nextTabs.find((tab) => tab.projectId === project.id && !tab.temporary)
+        || nextTabs.find((tab) => tab.projectId === project.id)
 
     if (!nextTab) {
       return
@@ -1387,20 +1392,28 @@ function App() {
       const nextTemporary = Boolean(data.temporary)
       const tab = buildSessionTab(data.session_id, project, nextTemporary, sessionTabsRef.current)
       const nextSessions = nextTemporary
-        ? sessionsRef.current
+        ? [
+            {
+              id: data.session_id,
+              projectId: project.id,
+              createdAtMs: Date.now(),
+              alive: true,
+              temporary: true,
+            },
+            ...sessionsRef.current.filter((item) => item.id !== data.session_id),
+          ].sort((a, b) => b.createdAtMs - a.createdAtMs)
         : [
             {
               id: data.session_id,
               projectId: project.id,
               createdAtMs: Date.now(),
               alive: true,
+              temporary: false,
             },
             ...sessionsRef.current.filter((item) => item.id !== data.session_id),
           ].sort((a, b) => b.createdAtMs - a.createdAtMs)
 
-      if (!nextTemporary) {
-        setSessions(nextSessions)
-      }
+      setSessions(nextSessions)
 
       setSessionTabs((prev) => {
         const preservedTabs = preserveTabs ? prev : prev.filter((item) => !item.temporary)
@@ -1430,7 +1443,8 @@ function App() {
   )
 
   const selectProject = async (project) => {
-    const existingSession = sessionsRef.current.find((item) => item.projectId === project.id)
+    const existingSession = sessionsRef.current.find((item) => item.projectId === project.id && !item.temporary)
+      || sessionsRef.current.find((item) => item.projectId === project.id)
     if (existingSession) {
       activatePersistentSession(project, existingSession.id)
       return
@@ -1491,7 +1505,11 @@ function App() {
   }
 
   const switchSessionTab = (tab) => {
-    if (!tab?.id || tab.id === sessionId) {
+    if (!tab?.id) {
+      return
+    }
+
+    if (tab.id === sessionId && connected) {
       return
     }
 
@@ -1500,7 +1518,6 @@ function App() {
 
   const leaveSessionView = async () => {
     closeSocket(true)
-    await destroyTemporaryTabs()
     setStep('select')
     setConnected(false)
     setSessionId(null)
@@ -1527,6 +1544,7 @@ function App() {
     const remainingTabs = sessionTabsRef.current.filter((tab) => tab.id !== activeTab.id)
     closeSocket(true)
     await destroySessionById(activeTab.id)
+    setSessions((prev) => prev.filter((item) => item.id !== activeTab.id))
     setSessionTabs(remainingTabs)
     setConnected(false)
     setSessionId(null)
@@ -1727,7 +1745,6 @@ function App() {
   const logout = async () => {
     const token = auth?.token
     closeSocket(true)
-    await destroyTemporaryTabs()
     setStep('select')
     setConnected(false)
     setSessionId(null)
@@ -2075,7 +2092,7 @@ function App() {
                       <span className="skill-card__accent" aria-hidden="true" />
                       <div className="session-row-main skill-card__description">
                         <span className="session-row-title">{project?.name || session.projectId}</span>
-                        <span className="session-row-subtitle">{project?.provider || '自定义'} 终端</span>
+                        <span className="session-row-subtitle">{session.temporary ? '临时 Shell' : `${project?.provider || '自定义'} 终端`}</span>
                       </div>
                       <div className="session-row-meta">
                         <span>{session.id}</span>
