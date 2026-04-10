@@ -7,6 +7,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::net::{SocketAddr, TcpStream};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -19,7 +20,7 @@ const MAX_LOG_LINES: usize = 160;
 const START_PORT: u16 = 4100;
 const END_PORT: u16 = 4299;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebCandidate {
     pub id: String,
     pub name: String,
@@ -28,11 +29,11 @@ pub struct WebCandidate {
     pub framework: String,
     pub dev_script: String,
     pub support_level: String,
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub absolute_path: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebCandidateStatus {
     #[serde(flatten)]
     pub candidate: WebCandidate,
@@ -41,7 +42,7 @@ pub struct WebCandidateStatus {
     pub port: Option<u16>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DevServerStatus {
     pub running: bool,
     pub url: String,
@@ -49,6 +50,14 @@ pub struct DevServerStatus {
     pub port: u16,
     pub logs: String,
     pub started_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedDevServer {
+    pid: i32,
+    port: u16,
+    proxy_base: String,
+    started_at_ms: u64,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -84,6 +93,22 @@ impl RunningDevServer {
 
     fn kill(&self) {
         let mut child = self.child.lock();
+        let pid = child.id() as i32;
+
+        if pid > 0 {
+            let _ = unsafe { libc::kill(-pid, libc::SIGTERM) };
+
+            for _ in 0..20 {
+                match child.try_wait() {
+                    Ok(Some(_)) => return,
+                    Ok(None) => thread::sleep(Duration::from_millis(100)),
+                    Err(_) => break,
+                }
+            }
+
+            let _ = unsafe { libc::kill(-pid, libc::SIGKILL) };
+        }
+
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -153,6 +178,7 @@ impl DevServerManager {
     ) -> Option<DevServerStatus> {
         self.get_server(user_id, project_id, candidate_id)
             .map(|server| server.status())
+            .or_else(|| self.persisted_status_for(user_id, project_id, candidate_id))
     }
 
     pub fn ensure_running(
@@ -160,6 +186,16 @@ impl DevServerManager {
         user: &AuthSession,
         project_id: &str,
         candidate: &WebCandidate,
+    ) -> Result<DevServerStatus, String> {
+        self.ensure_running_with_port(user, project_id, candidate, None)
+    }
+
+    fn ensure_running_with_port(
+        &self,
+        user: &AuthSession,
+        project_id: &str,
+        candidate: &WebCandidate,
+        preferred_port: Option<u16>,
     ) -> Result<DevServerStatus, String> {
         self.remove_if_dead(user.user_id.as_str(), project_id, candidate.id.as_str());
 
@@ -169,10 +205,24 @@ impl DevServerManager {
             return Ok(server.status());
         }
 
-        let port = self.allocate_port()?;
+        if let Some(status) =
+            self.persisted_status_for(user.user_id.as_str(), project_id, candidate.id.as_str())
+        {
+            return Ok(status);
+        }
+
+        let port = if let Some(port) = preferred_port {
+            if !port_available(port) {
+                return Err(format!("调试端口 {} 仍被占用，旧进程未完全退出", port));
+            }
+            port
+        } else {
+            self.allocate_port()?
+        };
         let proxy_base = format!("/dev/{}/{}/", project_id, candidate.id);
         let logs = Arc::new(Mutex::new(VecDeque::new()));
         let started_at_ms = now_ms();
+        let launch_command = dev_shell_command(candidate, port, proxy_base.as_str());
 
         let mut command = build_dev_command(
             candidate,
@@ -180,6 +230,18 @@ impl DevServerManager {
             user,
             &self.server_config,
             proxy_base.as_str(),
+        );
+        log::info!(
+            "starting dev server user={} project={} candidate={} framework={} package_manager={} cwd={} port={} proxy_base={} command={}",
+            user.user_id,
+            project_id,
+            candidate.id,
+            candidate.framework,
+            candidate.package_manager,
+            candidate.absolute_path.display(),
+            port,
+            proxy_base,
+            launch_command,
         );
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
@@ -196,6 +258,18 @@ impl DevServerManager {
 
         wait_for_port(port, Duration::from_secs(20))
             .map_err(|error| format!("wait for dev server on {}: {}", port, error))?;
+
+        self.persist_runtime(
+            user.user_id.as_str(),
+            project_id,
+            candidate.id.as_str(),
+            PersistedDevServer {
+                pid: child.id() as i32,
+                port,
+                proxy_base: proxy_base.clone(),
+                started_at_ms,
+            },
+        )?;
 
         let server = Arc::new(RunningDevServer {
             user_id: user.user_id.clone(),
@@ -221,8 +295,22 @@ impl DevServerManager {
         project_id: &str,
         candidate: &WebCandidate,
     ) -> Result<DevServerStatus, String> {
+        let previous_port = self
+            .get_server(user.user_id.as_str(), project_id, candidate.id.as_str())
+            .map(|server| server.port)
+            .or_else(|| {
+                self.load_runtime(user.user_id.as_str(), project_id, candidate.id.as_str())
+                    .map(|runtime| runtime.port)
+            });
+
         self.stop_for_candidate(user.user_id.as_str(), project_id, candidate.id.as_str());
-        self.ensure_running(user, project_id, candidate)
+
+        if let Some(port) = previous_port {
+            wait_for_port_release(port, Duration::from_secs(8))
+                .map_err(|error| format!("旧调试进程未完全退出: {}", error))?;
+        }
+
+        self.ensure_running_with_port(user, project_id, candidate, previous_port)
     }
 
     pub fn remove_for_user_project(&self, user_id: &str, project_id: &str) {
@@ -240,6 +328,12 @@ impl DevServerManager {
                 server.kill();
             }
         }
+
+        let project_dir = self
+            .metadata_root()
+            .join(sanitize_key(user_id))
+            .join(sanitize_key(project_id));
+        let _ = fs::remove_dir_all(project_dir);
     }
 
     pub fn stop_for_candidate(&self, user_id: &str, project_id: &str, candidate_id: &str) {
@@ -250,6 +344,7 @@ impl DevServerManager {
         {
             server.kill();
         }
+        self.kill_persisted_runtime(user_id, project_id, candidate_id);
     }
 
     pub fn find_candidate(
@@ -285,18 +380,23 @@ impl DevServerManager {
     ) -> Result<String, String> {
         let server = self
             .get_server(user_id, project_id, candidate_id)
+            .map(|server| (server.port, server.is_alive()))
+            .or_else(|| {
+                self.persisted_status_for(user_id, project_id, candidate_id)
+                    .map(|status| (status.port, status.running))
+            })
             .ok_or_else(|| "web 调试服务未启动".to_string())?;
 
-        if !server.is_alive() {
+        if !server.1 {
             self.stop_for_candidate(user_id, project_id, candidate_id);
             return Err("web 调试服务已退出，请重新打开调试页".to_string());
         }
 
         let path = request_path.trim();
         let mut url = if path.is_empty() || path == "/" {
-            format!("http://127.0.0.1:{}/", server.port)
+            format!("http://127.0.0.1:{}/", server.0)
         } else {
-            format!("http://127.0.0.1:{}{}", server.port, path)
+            format!("http://127.0.0.1:{}{}", server.0, path)
         };
 
         if let Some(query) = query.filter(|value| !value.is_empty()) {
@@ -329,6 +429,15 @@ impl DevServerManager {
 
         if should_remove {
             self.stop_for_candidate(user_id, project_id, candidate_id);
+            return;
+        }
+
+        if self
+            .load_runtime(user_id, project_id, candidate_id)
+            .as_ref()
+            .is_some_and(|runtime| !runtime_is_alive(runtime))
+        {
+            self.remove_runtime(user_id, project_id, candidate_id);
         }
     }
 
@@ -349,9 +458,135 @@ impl DevServerManager {
 
         Err("没有可用的调试端口".to_string())
     }
+
+    fn metadata_root(&self) -> PathBuf {
+        self.server_config.sandbox_root.join("dev-servers")
+    }
+
+    fn metadata_path(&self, user_id: &str, project_id: &str, candidate_id: &str) -> PathBuf {
+        self.metadata_root()
+            .join(sanitize_key(user_id))
+            .join(sanitize_key(project_id))
+            .join(format!("{}.json", sanitize_key(candidate_id)))
+    }
+
+    fn persist_runtime(
+        &self,
+        user_id: &str,
+        project_id: &str,
+        candidate_id: &str,
+        runtime: PersistedDevServer,
+    ) -> Result<(), String> {
+        let path = self.metadata_path(user_id, project_id, candidate_id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("create {}: {}", parent.display(), error))?;
+        }
+        let content = serde_json::to_vec(&runtime)
+            .map_err(|error| format!("serialize runtime metadata: {}", error))?;
+        fs::write(&path, content).map_err(|error| format!("write {}: {}", path.display(), error))
+    }
+
+    fn load_runtime(
+        &self,
+        user_id: &str,
+        project_id: &str,
+        candidate_id: &str,
+    ) -> Option<PersistedDevServer> {
+        let path = self.metadata_path(user_id, project_id, candidate_id);
+        let content = fs::read(&path).ok()?;
+        serde_json::from_slice(&content).ok()
+    }
+
+    fn remove_runtime(&self, user_id: &str, project_id: &str, candidate_id: &str) {
+        let path = self.metadata_path(user_id, project_id, candidate_id);
+        let _ = fs::remove_file(path);
+    }
+
+    fn persisted_status_for(
+        &self,
+        user_id: &str,
+        project_id: &str,
+        candidate_id: &str,
+    ) -> Option<DevServerStatus> {
+        let runtime = self.load_runtime(user_id, project_id, candidate_id)?;
+        if !runtime_is_alive(&runtime) {
+            self.remove_runtime(user_id, project_id, candidate_id);
+            return None;
+        }
+
+        Some(DevServerStatus {
+            running: true,
+            url: runtime.proxy_base.clone(),
+            proxy_base: runtime.proxy_base,
+            port: runtime.port,
+            logs: String::new(),
+            started_at_ms: runtime.started_at_ms,
+        })
+    }
+
+    fn kill_persisted_runtime(&self, user_id: &str, project_id: &str, candidate_id: &str) {
+        if let Some(runtime) = self.load_runtime(user_id, project_id, candidate_id) {
+            kill_runtime_process(runtime.pid, Some(runtime.port));
+        }
+        self.remove_runtime(user_id, project_id, candidate_id);
+    }
 }
 
-pub fn rewrite_html_for_proxy(html: &str, proxy_base: &str) -> String {
+fn sanitize_key(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' => ch,
+            _ => '_',
+        })
+        .collect()
+}
+
+fn runtime_is_alive(runtime: &PersistedDevServer) -> bool {
+    process_exists(runtime.pid) && port_responding(runtime.port)
+}
+
+fn process_exists(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+
+    let status = unsafe { libc::kill(pid, 0) };
+    if status == 0 {
+        return true;
+    }
+
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+fn kill_runtime_process(pid: i32, port: Option<u16>) {
+    if pid <= 0 {
+        return;
+    }
+
+    let _ = unsafe { libc::kill(-pid, libc::SIGTERM) };
+    let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
+
+    for _ in 0..20 {
+        if !process_exists(pid) && port.is_none_or(|value| !port_responding(value)) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    let _ = unsafe { libc::kill(-pid, libc::SIGKILL) };
+    let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+
+    for _ in 0..20 {
+        if !process_exists(pid) && port.is_none_or(|value| !port_responding(value)) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+pub fn rewrite_html_for_proxy(html: &str, proxy_base: &str, document_base: &str) -> String {
     let mut output = html.to_string();
     let already_prefixed = output.contains(&format!("src=\"{}", proxy_base))
         || output.contains(&format!("href=\"{}", proxy_base))
@@ -361,7 +596,7 @@ pub fn rewrite_html_for_proxy(html: &str, proxy_base: &str) -> String {
         return output;
     }
 
-    let base_tag = format!("<base href=\"{}\">", proxy_base);
+    let base_tag = format!("<base href=\"{}\">", document_base);
 
     if !output.contains("<base ") {
         if let Some(index) = output.find("<head>") {
@@ -383,6 +618,47 @@ pub fn rewrite_html_for_proxy(html: &str, proxy_base: &str) -> String {
     }
 
     output
+}
+
+pub fn document_base_for_proxy(request_path: &str, proxy_base: &str) -> String {
+    let trimmed = request_path.trim();
+    if trimmed.is_empty() || trimmed == "/" {
+        return proxy_base.to_string();
+    }
+
+    if trimmed.ends_with('/') {
+        return trimmed.to_string();
+    }
+
+    let last_segment = trimmed.rsplit('/').next().unwrap_or_default();
+    if last_segment.contains('.') {
+        if let Some((prefix, _)) = trimmed.rsplit_once('/') {
+            if prefix.is_empty() {
+                return "/".to_string();
+            }
+            return format!("{}/", prefix);
+        }
+        return "/".to_string();
+    }
+
+    format!("{}/", trimmed)
+}
+
+pub fn build_dev_request_path(project_id: &str, candidate_id: &str, tail: &str) -> String {
+    let normalized = tail.trim_start_matches('/');
+    if normalized.is_empty() {
+        return format!("/dev/{}/{}/", project_id, candidate_id);
+    }
+
+    if should_strip_dev_proxy_prefix(normalized) {
+        return format!("/{}", normalized);
+    }
+
+    format!("/dev/{}/{}/{}", project_id, candidate_id, normalized)
+}
+
+fn should_strip_dev_proxy_prefix(tail: &str) -> bool {
+    tail == "api" || tail.starts_with("api/")
 }
 
 fn discover_web_candidates(project_root: &Path) -> Result<Vec<WebCandidate>, String> {
@@ -581,6 +857,7 @@ fn build_dev_command(
     proxy_base: &str,
 ) -> Command {
     let mut command = Command::new("/bin/bash");
+    command.process_group(0);
     command.arg("-lc");
     command.arg(dev_shell_command(candidate, port, proxy_base));
     command.current_dir(&candidate.absolute_path);
@@ -594,6 +871,18 @@ fn build_dev_command(
     command.env("BROWSER", "none");
     command.env("CI", "1");
     command.env("FORCE_COLOR", "1");
+    if matches!(candidate.framework.as_str(), "vite" | "astro") {
+        command.env("VITE_RUNTIME_MODE", "online");
+        command.env("VITE_PROXY_BASE", proxy_base);
+    }
+    if candidate.framework == "vite" {
+        let debug = std::env::var("DEBUG")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| format!("{},vite:proxy", value))
+            .unwrap_or_else(|| "vite:proxy".to_string());
+        command.env("DEBUG", debug);
+    }
     if let Some(ssh_auth_sock) = config.ssh_auth_sock.as_deref() {
         command.env("SSH_AUTH_SOCK", ssh_auth_sock);
     }
@@ -609,6 +898,8 @@ fn dev_shell_command(candidate: &WebCandidate, port: u16, proxy_base: &str) -> S
             "--port".to_string(),
             port.clone(),
             "--strictPort".to_string(),
+            "--mode".to_string(),
+            "dev".to_string(),
             "--base".to_string(),
             proxy_base.to_string(),
         ],
@@ -700,6 +991,24 @@ fn wait_for_port(port: u16, timeout: Duration) -> Result<(), String> {
     }
 
     Err(last_error.unwrap_or_else(|| "timeout".to_string()))
+}
+
+fn wait_for_port_release(port: u16, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+
+    while Instant::now() < deadline {
+        if port_available(port) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    Err(format!("port {} still busy", port))
+}
+
+fn port_responding(port: u16) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
 }
 
 fn port_available(port: u16) -> bool {

@@ -12,6 +12,16 @@ It does three things:
 
 Legacy Go/Python implementations have been moved to `legacy/` and are not part of the active runtime.
 
+## Planned Split
+
+The current runtime is intentionally simple but still monolithic. The next target architecture is:
+
+- `web`: static frontend
+- `server`: control plane and browser gateway
+- `executor`: PTY, Codex/Claude, code-server, and web dev server execution plane
+
+Design notes for that split live in `docs/executor-split-architecture.md`.
+
 ## Runtime Shape
 
 ```text

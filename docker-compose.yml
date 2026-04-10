@@ -1,48 +1,108 @@
+x-build-args: &build-args
+  HTTP_PROXY: ${BUILD_HTTP_PROXY:-http://127.0.0.1:7890}
+  HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-http://127.0.0.1:7890}
+  ALL_PROXY: ${BUILD_ALL_PROXY:-socks5://127.0.0.1:7890}
+  NO_PROXY: ${BUILD_NO_PROXY:-127.0.0.1,localhost}
+
+x-runtime-env: &runtime-env
+  PROJECT_CONFIG_DIR: /etc/sparky
+  PROJECTS_ROOT: /projects
+  CUSTOM_PROJECTS_FILE: /projects/.sparky/projects.json
+  SSH_AUTH_SOCK: /ssh-agent
+  SSH_KNOWN_HOSTS_TEMPLATE: /etc/sparky/known_hosts
+  SANDBOX_ROOT: /tmp/sp-sandbox
+  DATABASE_URL: ${DATABASE_URL:-postgres://cc_user:cc_pass_2026@host.docker.internal:5435/cc_service}
+  DB_MAX_CONNECTIONS: "5"
+  SPARKY_BWRAP_UNSHARE_USER: "false"
+  ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:7890}
+  HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:7890}
+  ALL_PROXY: ${ALL_PROXY:-socks5://host.docker.internal:7890}
+  NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost,host.docker.internal}
+
+x-server-volumes: &server-volumes
+  - ./config/projects.json:/etc/sparky/projects.json:ro
+  - /root/.ssh/known_hosts:/etc/sparky/known_hosts.raw:ro
+  - ./config/claude-user-state.json:/etc/sparky/claude-user-state.json:ro
+  - ./config/claude-settings.json:/etc/sparky/claude-settings.json:ro
+  - ./config/claude-user-state.json:/home/app/.claude.json:ro
+  - ./config/claude-settings.json:/home/app/.claude/settings.json:ro
+  - ${HOST_SSH_AUTH_SOCK:-/run/user/0/gcr/ssh}:/ssh-agent
+  - ${HOST_DATA_ROOT:-/home/sp-dev/data}/projects:/projects
+
+x-executor-volumes: &executor-volumes
+  - ./config/projects.json:/etc/sparky/projects.json:ro
+  - /root/.ssh/known_hosts:/etc/sparky/known_hosts.raw:ro
+  - ./config/claude-user-state.json:/etc/sparky/claude-user-state.json:ro
+  - ./config/claude-settings.json:/etc/sparky/claude-settings.json:ro
+  - ./config/claude-user-state.json:/home/app/.claude.json:ro
+  - ./config/claude-settings.json:/home/app/.claude/settings.json:ro
+  - ./codex-config:/home/app/.codex
+  - ${HOST_DATA_ROOT:-/home/sp-dev/data}/go:/home/app/go
+  - ${HOST_DATA_ROOT:-/home/sp-dev/data}/go-cache:/home/app/.cache/go-build
+  - ${HOST_DATA_ROOT:-/home/sp-dev/data}/python-local:/home/app/.local
+  - ${HOST_DATA_ROOT:-/home/sp-dev/data}/pip-cache:/home/app/.cache/pip
+  - ${HOST_DATA_ROOT:-/home/sp-dev/data}/uv-cache:/home/app/.cache/uv
+  - ${HOST_SSH_AUTH_SOCK:-/run/user/0/gcr/ssh}:/ssh-agent
+  - ${HOST_DATA_ROOT:-/home/sp-dev/data}/projects:/projects
+
 services:
+  sparky-web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      network: host
+      args: *build-args
+    image: sp-dev-web:latest
+    container_name: sp-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3001:80"
+    environment:
+      SERVER_UPSTREAM: http://sp-dev:3001
+
   sparky:
     build:
       context: .
       dockerfile: Dockerfile
+      target: server-runtime
       network: host
-      args:
-        HTTP_PROXY: ${BUILD_HTTP_PROXY:-http://127.0.0.1:7890}
-        HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-http://127.0.0.1:7890}
-        ALL_PROXY: ${BUILD_ALL_PROXY:-socks5://127.0.0.1:7890}
-        NO_PROXY: ${BUILD_NO_PROXY:-127.0.0.1,localhost}
-    image: cc-dev-rust:latest
-    container_name: cc-dev
+      args: *build-args
+    image: sp-dev-server:latest
+    container_name: sp-dev
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3001:3001"
+      - "127.0.0.1:3101:3001"
     environment:
+      <<: *runtime-env
       PORT: "3001"
-      PROJECT_CONFIG_DIR: /etc/sparky
-      PROJECTS_ROOT: /projects
-      CUSTOM_PROJECTS_FILE: /projects/.sparky/projects.json
-      SSH_AUTH_SOCK: /ssh-agent
-      SSH_KNOWN_HOSTS_TEMPLATE: /etc/sparky/known_hosts
-      SANDBOX_ROOT: /tmp/cc-sandbox
-      DATABASE_URL: ${DATABASE_URL:-postgres://cc_user:cc_pass_2026@host.docker.internal:5435/cc_service}
-      DB_MAX_CONNECTIONS: "5"
-      SPARKY_BWRAP_UNSHARE_USER: "false"
-      WEB_DIST_DIR: /app/web-dist
-      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:7890}
-      HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:7890}
-      ALL_PROXY: ${ALL_PROXY:-socks5://host.docker.internal:7890}
-      NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost,host.docker.internal}
+      EXECUTOR_BASE_URL: http://sp-executor:3002
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    volumes:
-      - ./target-bookworm/release/sparky:/usr/local/bin/sparky:ro
-      - ./web/dist:/app/web-dist:ro
-      - ./config/projects.json:/etc/sparky/projects.json:ro
-      - /root/.ssh/known_hosts:/etc/sparky/known_hosts.raw:ro
-      - ./config/claude-user-state.json:/etc/sparky/claude-user-state.json:ro
-      - ./config/claude-settings.json:/etc/sparky/claude-settings.json:ro
-      - ./config/claude-user-state.json:/home/app/.claude.json:ro
-      - ./config/claude-settings.json:/home/app/.claude/settings.json:ro
-      - ./codex-config:/home/app/.codex
-      - ${HOST_SSH_AUTH_SOCK:-/run/user/0/gcr/ssh}:/ssh-agent
-      - /home/cc-dev/data/projects:/projects
+    volumes: *server-volumes
+
+  sparky-executor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: executor-runtime
+      network: host
+      args: *build-args
+    image: sp-dev-executor:latest
+    container_name: sp-executor
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3102:3002"
+    environment:
+      <<: *runtime-env
+      EXECUTOR_PORT: "3002"
+      PORT: "3001"
+      GOCACHE: /home/app/.cache/go-build
+      GOMODCACHE: /home/app/go/pkg/mod
+      PIP_CACHE_DIR: /home/app/.cache/pip
+      UV_CACHE_DIR: /home/app/.cache/uv
+      PYTHONUSERBASE: /home/app/.local
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes: *executor-volumes

@@ -17,11 +17,19 @@
   --border-default: var(--border);
   --border: rgba(255, 255, 255, 0.1);
   --border-strong: rgba(255, 255, 255, 0.16);
-  --shadow: 0 30px 80px rgba(0, 0, 0, 0.42);
-  --radius-xl: 32px;
-  --radius-lg: 24px;
-  --radius-md: 18px;
-  --radius-sm: 14px;
+  --shadow: 0 24px 64px rgba(0, 0, 0, 0.38);
+  --radius-xl: 26px;
+  --radius-lg: 20px;
+  --radius-md: 15px;
+  --radius-sm: 11px;
+}
+
+@font-face {
+  font-family: "Seti";
+  src: url("/seti/seti.woff") format("woff");
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
 }
 
 * {
@@ -41,8 +49,9 @@ body {
   min-height: 100vh;
   min-height: 100dvh;
   overflow-x: hidden;
-  overflow-y: hidden;
+  overflow-y: auto;
   font-family: Inter, "SF Pro Display", "Segoe UI", sans-serif;
+  font-size: 14px;
   color: var(--text-primary);
   background:
     radial-gradient(circle at top left, rgba(50, 240, 140, 0.15), transparent 24%),
@@ -69,6 +78,20 @@ button {
   min-height: 100%;
   display: flex;
   flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.auth-page,
+.dashboard-page,
+.workspace-page {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.workspace-page {
+  height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -104,7 +127,7 @@ button {
   gap: 0.5rem;
   color: var(--brand);
   font-family: "JetBrains Mono", "SFMono-Regular", monospace;
-  font-size: 0.74rem;
+  font-size: 0.68rem;
   letter-spacing: 0.18em;
   text-transform: uppercase;
 }
@@ -127,8 +150,8 @@ button {
     linear-gradient(180deg, color-mix(in srgb, var(--primary) 3%, transparent), transparent 26%),
     var(--bg-card);
   border: 1px solid color-mix(in srgb, var(--primary) 10%, var(--border-default));
-  border-radius: 24px;
-  box-shadow: 0 14px 34px color-mix(in srgb, var(--primary) 8%, transparent);
+  border-radius: 20px;
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--primary) 8%, transparent);
   transition:
     transform 0.18s ease,
     border-color 0.18s ease,
@@ -138,8 +161,44 @@ button {
 
 .skill-card:hover {
   border-color: color-mix(in srgb, var(--primary) 24%, var(--border-default));
-  box-shadow: 0 18px 42px color-mix(in srgb, var(--primary) 12%, transparent);
+  box-shadow: 0 16px 36px color-mix(in srgb, var(--primary) 12%, transparent);
   transform: translateY(-3px);
+}
+
+.list-card:not(.is-selected):not(.active):not(.preferred) {
+  background: rgba(255, 255, 255, 0.022);
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  box-shadow: none;
+}
+
+.list-card:not(.is-selected):not(.active):not(.preferred):hover {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.032);
+  box-shadow: none;
+  transform: translateY(-1px);
+}
+
+.list-card:not(.is-selected):not(.active):not(.preferred) .skill-card__accent {
+  opacity: 0;
+}
+
+.list-card:not(.is-selected):not(.active):not(.preferred) .skill-card__description {
+  background: transparent;
+  border-color: transparent;
+}
+
+.list-card:not(.is-selected):not(.active):not(.preferred) .skill-card__icon,
+.list-card:not(.is-selected):not(.active):not(.preferred) .skill-card__cta {
+  background: rgba(255, 255, 255, 0.028);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: none;
+}
+
+.list-card:not(.is-selected):not(.active):not(.preferred) .skill-card__cta:hover,
+.list-card:not(.is-selected):not(.active):not(.preferred) .skill-card__cta:focus-visible {
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: none;
 }
 
 .skill-card__accent {
@@ -160,14 +219,14 @@ button {
 
 .skill-card__icon {
   border: 1px solid color-mix(in srgb, var(--primary) 12%, var(--border-default));
-  border-radius: 14px;
+  border-radius: 12px;
   background: color-mix(in srgb, var(--bg-base) 92%, transparent);
   color: color-mix(in srgb, var(--primary) 72%, var(--text-primary));
   box-shadow: inset 0 1px 0 color-mix(in srgb, white 45%, transparent);
 }
 
 .skill-card__description {
-  border-radius: 16px;
+  border-radius: 14px;
   background: color-mix(in srgb, var(--bg-base) 84%, transparent);
   border: 1px solid color-mix(in srgb, var(--primary) 6%, var(--border-default));
 }
@@ -188,26 +247,22 @@ button {
 .brand-mark {
   display: inline-flex;
   align-items: center;
-  gap: 0.85rem;
+  gap: 0.72rem;
   min-width: 0;
   max-width: 100%;
 }
 
-.brand-mark-block {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2.5rem;
-  height: 2.5rem;
-  border-radius: 0.95rem;
-  background: linear-gradient(135deg, #3ee1a3 0%, #32f08c 42%, #a0fde7 100%);
-  color: #0a0b0d;
-  font-weight: 800;
-  letter-spacing: -0.04em;
+.brand-mark-logo {
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 0.78rem;
+  object-fit: cover;
+  flex-shrink: 0;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
 }
 
 .brand-mark-text {
-  font-size: 1.15rem;
+  font-size: 1rem;
   font-weight: 700;
   letter-spacing: -0.04em;
   min-width: 0;
@@ -237,8 +292,8 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 2.9rem;
-  padding: 0 1rem;
+  min-height: 2.45rem;
+  padding: 0 0.85rem;
   border-radius: 999px;
   cursor: pointer;
   transition:
@@ -297,17 +352,30 @@ button {
 }
 
 .toolbar-btn {
-  min-width: 6.4rem;
-  min-height: 2.25rem;
-  padding: 0 0.95rem;
+  min-width: 5.6rem;
+  min-height: 2rem;
+  padding: 0 0.78rem;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.04);
   color: var(--text-primary);
   border-radius: 999px;
   font-family: "JetBrains Mono", "SFMono-Regular", monospace;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.toolbar-btn-icon {
+  min-width: 2rem;
+  width: 2rem;
+  padding: 0;
+  border-radius: 0.78rem;
+}
+
+.toolbar-btn-icon svg {
+  width: 1rem;
+  height: 1rem;
+  display: block;
 }
 
 .toolbar-btn-danger {
@@ -317,7 +385,7 @@ button {
 }
 
 .notice {
-  padding: 1rem 1.15rem;
+  padding: 0.88rem 1rem;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--bg-surface);
@@ -358,7 +426,7 @@ button {
 .auth-hero {
   position: relative;
   overflow: hidden;
-  padding: 2rem;
+  padding: 1.75rem;
   border: 1px solid var(--border);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
@@ -386,7 +454,7 @@ button {
 .hero-copy {
   max-width: 38rem;
   margin-top: 1.2rem;
-  font-size: 1.02rem;
+  font-size: 0.94rem;
 }
 
 .hero-rail {
@@ -399,7 +467,7 @@ button {
 }
 
 .hero-stat {
-  padding: 1rem 1.05rem;
+  padding: 0.88rem 0.95rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.03);
@@ -409,14 +477,14 @@ button {
   display: block;
   margin-top: 0.5rem;
   color: var(--text-primary);
-  font-size: 1rem;
+  font-size: 0.94rem;
   font-weight: 700;
 }
 
 .hero-stat-label {
   color: var(--text-muted);
   font-family: "JetBrains Mono", "SFMono-Regular", monospace;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   letter-spacing: 0.14em;
   text-transform: uppercase;
 }
@@ -426,8 +494,8 @@ button {
   z-index: 1;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-  padding: 2rem;
+  gap: 0.9rem;
+  padding: 1.7rem;
   border: 1px solid var(--border);
   background: rgba(18, 19, 20, 0.82);
   box-shadow: var(--shadow);
@@ -442,7 +510,7 @@ button {
 .panel-header {
   display: flex;
   flex-direction: column;
-  gap: 0.85rem;
+  gap: 0.72rem;
 }
 
 .auth-title {
@@ -461,7 +529,7 @@ button {
 }
 
 .auth-switch-btn {
-  min-height: 2.8rem;
+  min-height: 2.5rem;
   border-radius: 999px;
   color: var(--text-secondary);
   cursor: pointer;
@@ -475,13 +543,13 @@ button {
 
 .field-label {
   color: var(--text-secondary);
-  font-size: 0.92rem;
+  font-size: 0.86rem;
 }
 
 .field-input {
   width: 100%;
-  min-height: 3.15rem;
-  padding: 0 1rem;
+  min-height: 2.75rem;
+  padding: 0 0.85rem;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.04);
@@ -523,11 +591,11 @@ button {
 .path-input-prefix {
   display: inline-flex;
   align-items: center;
-  padding: 0 0.95rem;
+  padding: 0 0.82rem;
   border-right: 1px solid var(--border);
   color: var(--text-muted);
   font-family: "JetBrains Mono", "SFMono-Regular", monospace;
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   white-space: nowrap;
 }
 
@@ -554,20 +622,24 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  padding: 1.2rem 1.5rem;
-  padding-top: max(1.2rem, env(safe-area-inset-top));
+  gap: 0.85rem;
+  padding: 1rem 1.25rem;
+  padding-top: max(1rem, env(safe-area-inset-top));
 }
 
 .topbar-brand,
 .topbar-actions {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.8rem;
 }
 
 .topbar-brand {
   min-width: 0;
+}
+
+.topbar-back-btn {
+  flex-shrink: 0;
 }
 
 .topbar-actions {
@@ -583,15 +655,18 @@ button {
 }
 
 .topbar-title {
-  font-size: 0.98rem;
+  font-size: 0.88rem;
   color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .identity-chip {
   display: inline-flex;
-  flex-direction: column;
-  align-items: flex-end;
-  padding: 0.65rem 0.9rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0.56rem 0.8rem;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.04);
@@ -599,33 +674,30 @@ button {
 
 .identity-user {
   font-weight: 700;
-}
-
-.identity-meta {
-  color: var(--text-muted);
-  font-size: 0.8rem;
+  white-space: nowrap;
 }
 
 .topbar-stats {
   display: inline-flex;
   align-items: stretch;
-  gap: 0.65rem;
+  gap: 0.55rem;
 }
 
 .topbar-stat {
   display: inline-flex;
-  flex-direction: column;
+  align-items: baseline;
   justify-content: center;
-  min-width: 5.5rem;
-  padding: 0.65rem 0.9rem;
-  border-radius: 1rem;
+  gap: 0.42rem;
+  min-width: 5rem;
+  padding: 0.56rem 0.78rem;
+  border-radius: 0.85rem;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.04);
 }
 
 .topbar-stat strong {
-  margin-top: 0.2rem;
-  font-size: 1.2rem;
+  margin-top: 0;
+  font-size: 1.05rem;
   line-height: 1;
   letter-spacing: -0.04em;
 }
@@ -633,9 +705,10 @@ button {
 .topbar-stat-label {
   color: var(--text-muted);
   font-family: "JetBrains Mono", "SFMono-Regular", monospace;
-  font-size: 0.72rem;
+  font-size: 0.66rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .dashboard-shell,
@@ -644,7 +717,7 @@ button {
   z-index: 1;
   flex: 1;
   min-height: 0;
-  padding: 0 1.5rem 1.5rem;
+  padding: 0 1.25rem 1.25rem;
 }
 
 .dashboard-shell {
@@ -668,9 +741,9 @@ button {
 .session-panel {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.85rem;
   min-height: 0;
-  padding: 1.35rem;
+  padding: 1.12rem;
 }
 
 .catalog-panel {
@@ -691,17 +764,17 @@ button {
 .section-actions {
   display: inline-flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.6rem;
   flex-wrap: wrap;
 }
 
 .section-create-btn {
-  min-width: 7rem;
+  min-width: 6.2rem;
 }
 
 .section-title {
   margin-top: 0.45rem;
-  font-size: 1.55rem;
+  font-size: 1.32rem;
 }
 
 .project-grid {
@@ -715,9 +788,9 @@ button {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-  padding: 1.2rem;
-  border-radius: 24px;
+  gap: 0.85rem;
+  padding: 1rem;
+  border-radius: 20px;
   text-align: left;
   cursor: pointer;
 }
@@ -766,6 +839,10 @@ button {
   --primary: color-mix(in srgb, var(--text-primary) 26%, var(--brand));
 }
 
+.project-card.list-card:not(.is-selected)::before {
+  opacity: 0;
+}
+
 .project-card-top {
   position: relative;
   z-index: 1;
@@ -789,8 +866,8 @@ button {
   z-index: 1;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  padding: 0.9rem 1rem;
+  gap: 0.62rem;
+  padding: 0.78rem 0.88rem;
 }
 
 .project-heading,
@@ -809,12 +886,15 @@ button {
 .project-badge {
   display: inline-flex;
   align-items: center;
-  min-height: 2rem;
-  padding: 0 0.8rem;
+  min-height: 1.8rem;
+  padding: 0 0.72rem;
   border-radius: 999px;
   font-family: "JetBrains Mono", "SFMono-Regular", monospace;
-  font-size: 0.74rem;
+  font-size: 0.68rem;
   letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .project-provider {
@@ -831,8 +911,8 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 2rem;
-  padding: 0 0.75rem;
+  min-height: 1.8rem;
+  padding: 0 0.66rem;
   border-radius: 999px;
   cursor: pointer;
   transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
@@ -864,7 +944,7 @@ button {
 }
 
 .project-name {
-  font-size: 1.45rem;
+  font-size: 1.22rem;
   letter-spacing: -0.04em;
 }
 
@@ -872,17 +952,20 @@ button {
 .project-path,
 .project-meta {
   font-family: "JetBrains Mono", "SFMono-Regular", monospace;
-  font-size: 0.76rem;
+  font-size: 0.7rem;
 }
 
 .project-runtime {
   display: inline-flex;
   align-items: center;
-  min-height: 1.8rem;
-  padding: 0 0.68rem;
+  min-height: 1.6rem;
+  padding: 0 0.6rem;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.05);
   color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .project-path {
@@ -894,11 +977,14 @@ button {
 .project-meta {
   display: inline-flex;
   align-items: center;
-  min-height: 1.8rem;
-  padding: 0 0.68rem;
+  min-height: 1.6rem;
+  padding: 0 0.6rem;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.045);
   color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .project-launch {
@@ -908,8 +994,8 @@ button {
   align-items: center;
   justify-content: space-between;
   margin-top: auto;
-  min-height: 2.65rem;
-  padding: 0 0.95rem;
+  min-height: 2.3rem;
+  padding: 0 0.82rem;
   color: var(--text-primary);
   font-weight: 700;
 }
@@ -931,9 +1017,9 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  padding: 1rem 1.05rem;
-  border-radius: 24px;
+  gap: 0.8rem;
+  padding: 0.84rem 0.9rem;
+  border-radius: 20px;
   cursor: pointer;
   text-align: left;
 }
@@ -951,7 +1037,7 @@ button {
 
 .session-row-main {
   flex: 1;
-  padding: 0.8rem 0.95rem;
+  padding: 0.68rem 0.8rem;
 }
 
 .session-row-title {
@@ -962,7 +1048,13 @@ button {
   align-items: flex-end;
   color: var(--text-muted);
   font-family: "JetBrains Mono", "SFMono-Regular", monospace;
-  font-size: 0.76rem;
+  font-size: 0.7rem;
+}
+
+.session-row-subtitle {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .modal-backdrop {
@@ -979,7 +1071,7 @@ button {
 
 .modal-card {
   width: min(38rem, 100%);
-  padding: 1.35rem;
+  padding: 1.15rem;
   border-radius: var(--radius-xl);
 }
 
@@ -992,7 +1084,7 @@ button {
 
 .modal-title {
   margin-top: 0.45rem;
-  font-size: 1.7rem;
+  font-size: 1.48rem;
   letter-spacing: -0.04em;
 }
 
@@ -1017,13 +1109,13 @@ button {
 .project-form {
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
+  gap: 0.8rem;
   margin-top: 1.2rem;
 }
 
 .form-hint {
   color: var(--text-muted);
-  font-size: 0.9rem;
+  font-size: 0.82rem;
   line-height: 1.6;
 }
 
@@ -1031,14 +1123,22 @@ button {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 0.75rem;
+  gap: 0.6rem;
   margin-top: 0.4rem;
 }
 
 .workspace-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 14px minmax(320px, var(--workspace-sidebar-width, 380px));
-  gap: 1rem;
+  gap: 0.85rem;
+}
+
+.workspace-page .workspace-shell {
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+  padding-bottom: 10px;
+  overflow: hidden;
 }
 
 .workspace-shell-resizable {
@@ -1048,7 +1148,8 @@ button {
 .terminal-panel,
 .git-panel {
   min-height: 0;
-  padding: 1.35rem;
+  padding: 1.05rem;
+  border-radius: var(--radius-xl);
 }
 
 .workspace-resizer {
@@ -1095,6 +1196,7 @@ button {
   font-size: 0.78rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .status-pill.online {
@@ -1118,16 +1220,90 @@ button {
 .git-panel {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.85rem;
   overflow: hidden;
+}
+
+.workspace-page .terminal-panel,
+.workspace-page .git-panel {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace-page .side-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0.72rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.012)),
+    rgba(10, 11, 13, 0.48);
+}
+
+.workspace-page .git-file-list,
+.workspace-page .codex-session-list {
+  min-height: 0;
+  overflow: auto;
+}
+
+.workspace-page .side-panel-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 0.1rem;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(50, 240, 140, 0.28) rgba(255, 255, 255, 0.05);
+}
+
+.workspace-page .side-panel-scroll::-webkit-scrollbar,
+.workspace-page .git-file-list::-webkit-scrollbar,
+.workspace-page .codex-session-list::-webkit-scrollbar {
+  width: 10px;
+}
+
+.workspace-page .side-panel-scroll::-webkit-scrollbar-track,
+.workspace-page .git-file-list::-webkit-scrollbar-track,
+.workspace-page .codex-session-list::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 999px;
+}
+
+.workspace-page .side-panel-scroll::-webkit-scrollbar-thumb,
+.workspace-page .git-file-list::-webkit-scrollbar-thumb,
+.workspace-page .codex-session-list::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(50, 240, 140, 0.28), rgba(18, 96, 58, 0.88));
+  border: 2px solid rgba(12, 12, 13, 0.92);
+  border-radius: 999px;
+}
+
+.workspace-page .side-panel-scroll::-webkit-scrollbar-thumb:hover,
+.workspace-page .git-file-list::-webkit-scrollbar-thumb:hover,
+.workspace-page .codex-session-list::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(96, 242, 189, 0.46), rgba(24, 124, 74, 0.94));
+}
+
+.workspace-page .web-debug-panel,
+.workspace-page .codex-panel-scroll,
+.workspace-page .git-panel-scroll,
+.workspace-page .file-panel-scroll {
+  min-height: 0;
+}
+
+.file-panel-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 0.72rem;
+  padding-block: 0.16rem 0.28rem;
 }
 
 .side-panel-tabs {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
-  gap: 0.55rem;
-  padding: 0.3rem;
-  border-radius: 1rem;
+  gap: 0.45rem;
+  padding: 0.24rem;
+  border-radius: 0.85rem;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.03);
 }
@@ -1136,12 +1312,12 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 2.45rem;
-  padding: 0 0.9rem;
-  border-radius: 0.8rem;
+  min-height: 2.1rem;
+  padding: 0 0.72rem;
+  border-radius: 0.72rem;
   color: var(--text-secondary);
   font-family: "JetBrains Mono", "SFMono-Regular", monospace;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   letter-spacing: 0.06em;
   transition:
     background-color 0.16s ease,
@@ -1164,7 +1340,7 @@ button {
 .side-panel-body {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.85rem;
   min-height: 0;
   overflow: hidden;
 }
@@ -1172,8 +1348,8 @@ button {
 .web-debug-panel {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  padding: 1rem;
+  gap: 0.68rem;
+  padding: 0.86rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.03);
@@ -1184,6 +1360,7 @@ button {
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
+  margin-bottom: 0.26rem;
 }
 
 .codex-panel-header {
@@ -1191,12 +1368,38 @@ button {
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
+  margin-bottom: 0.26rem;
+}
+
+.panel-heading {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.24rem;
+  padding-bottom: 0.12rem;
+}
+
+.panel-heading-title {
+  color: var(--text-primary);
+  font-size: 0.94rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.panel-heading-subtitle {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .web-debug-actions {
   display: inline-flex;
   align-items: center;
-  gap: 0.55rem;
+  gap: 0.45rem;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
@@ -1206,10 +1409,10 @@ button {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 0.9rem;
+  gap: 0.75rem;
   width: 100%;
-  padding: 0.95rem 1rem;
-  border-radius: 24px;
+  padding: 0.8rem 0.86rem;
+  border-radius: 18px;
   text-align: left;
   cursor: pointer;
 }
@@ -1254,7 +1457,7 @@ button {
 
 .web-debug-target-main {
   flex: 1;
-  padding: 0.8rem 0.95rem;
+  padding: 0.68rem 0.8rem;
 }
 
 .codex-session-card {
@@ -1262,8 +1465,8 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.9rem;
-  padding: 0.95rem 1rem;
+  gap: 0.75rem;
+  padding: 0.8rem 0.86rem;
 }
 
 .codex-session-main {
@@ -1274,34 +1477,34 @@ button {
 }
 
 .codex-session-main strong {
-  font-size: 0.98rem;
+  font-size: 0.9rem;
   word-break: break-word;
 }
 
 .codex-session-meta {
   color: var(--text-muted);
   font-family: "JetBrains Mono", "SFMono-Regular", monospace;
-  font-size: 0.74rem;
+  font-size: 0.68rem;
   line-height: 1.5;
   word-break: break-all;
 }
 
 .web-debug-current {
   --primary: var(--brand);
-  padding: 0.9rem 1rem;
-  border-radius: 24px;
+  padding: 0.8rem 0.86rem;
+  border-radius: 18px;
 }
 
 .web-debug-target strong,
 .web-debug-current strong {
-  font-size: 1rem;
+  font-size: 0.92rem;
 }
 
 .web-debug-target span,
 .web-debug-current span {
   color: var(--text-muted);
   font-family: "JetBrains Mono", "SFMono-Regular", monospace;
-  font-size: 0.76rem;
+  font-size: 0.7rem;
   word-break: break-all;
 }
 
@@ -1315,14 +1518,14 @@ button {
 .web-debug-badge,
 .web-debug-port {
   font-family: "JetBrains Mono", "SFMono-Regular", monospace;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
 }
 
 .web-debug-badge {
   display: inline-flex;
   align-items: center;
-  min-height: 1.8rem;
-  padding: 0 0.7rem;
+  min-height: 1.62rem;
+  padding: 0 0.62rem;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.05);
   color: var(--text-secondary);
@@ -1342,76 +1545,82 @@ button {
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
+  margin-bottom: 0.26rem;
+}
+
+.git-panel-header-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.git-panel-header-meta .git-root {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .git-btn {
-  min-height: 2.05rem;
-  padding: 0 0.72rem;
-  border-radius: 0.8rem;
-  font-size: 0.78rem;
+  min-height: 1.72rem;
+  padding: 0 0.56rem;
+  border-radius: 0.62rem;
+  font-size: 0.7rem;
 }
 
 .git-refresh-btn {
-  min-width: 4.5rem;
+  min-width: 4.1rem;
 }
 
 .git-commit-btn {
-  min-height: 2.15rem;
-  font-size: 0.8rem;
+  min-height: 1.8rem;
+  font-size: 0.71rem;
 }
 
-.git-repo-meta,
-.git-last-commit {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.git-branch,
-.git-root,
+.git-last-commit,
 .git-last-commit-meta,
 .git-summary-label,
 .git-file-prev {
   font-family: "JetBrains Mono", "SFMono-Regular", monospace;
 }
 
-.git-branch {
-  font-size: 1rem;
-  font-weight: 700;
+.git-last-commit {
+  display: flex;
+  flex-direction: column;
+  gap: 0.34rem;
+  margin-top: 0.72rem;
 }
 
-.git-root,
 .git-last-commit-meta,
 .git-file-prev {
   color: var(--text-muted);
-  font-size: 0.78rem;
-  line-height: 1.55;
+  font-size: 0.7rem;
+  line-height: 1.5;
   word-break: break-all;
 }
 
 .git-summary-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.75rem;
+  gap: 0.56rem;
 }
 
 .git-summary-card {
   --primary: var(--brand);
   position: relative;
-  padding: 0.9rem 1rem;
-  border-radius: 24px;
+  padding: 0.66rem 0.74rem;
+  border-radius: 15px;
 }
 
 .git-summary-card strong {
   display: block;
-  margin-top: 0.3rem;
-  font-size: 1.2rem;
+  margin-top: 0.22rem;
+  font-size: 0.96rem;
   letter-spacing: -0.04em;
 }
 
 .git-summary-label {
   color: var(--text-muted);
-  font-size: 0.72rem;
+  font-size: 0.62rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
@@ -1424,13 +1633,137 @@ button {
 .git-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.55rem;
+  gap: 0.44rem;
+}
+
+.file-tree-list {
+  --primary: var(--brand);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.72rem;
+  border-radius: 18px;
+}
+
+.file-tree-node {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.file-tree-row {
+  display: grid;
+  grid-template-columns: 1.1rem 1rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.36rem;
+  width: 100%;
+  min-height: 2rem;
+  padding: 0.22rem 0.48rem;
+  padding-left: calc(0.42rem + var(--file-tree-depth, 0) * 0.88rem);
+  border-radius: 0.42rem;
+  text-align: left;
+  color: var(--text-secondary);
+  transition:
+    background-color 0.16s ease,
+    color 0.16s ease,
+    transform 0.16s ease;
+}
+
+.file-tree-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-primary);
+}
+
+.file-tree-row.file:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.file-tree-caret,
+.file-tree-icon,
+.file-tree-status {
+  font-family: "JetBrains Mono", "SFMono-Regular", monospace;
+}
+
+.file-tree-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  color: #8b949e;
+}
+
+.file-tree-caret svg {
+  width: 0.95rem;
+  height: 0.95rem;
+  display: block;
+}
+
+.file-tree-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  color: var(--text-muted);
+}
+
+.file-tree-row.directory .file-tree-icon {
+  width: 1.05rem;
+}
+
+.file-tree-row.file .file-tree-icon {
+  color: var(--text-secondary);
+}
+
+.file-tree-icon svg {
+  display: block;
+  width: 0.98rem;
+  height: 0.98rem;
+}
+
+.seti-file-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  font-family: "Seti", monospace;
+  font-size: 1rem;
+  line-height: 1;
+  font-style: normal;
+  font-weight: normal;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.file-tree-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.84rem;
+}
+
+.file-tree-status {
+  color: var(--brand);
+  white-space: nowrap;
 }
 
 .git-commit-box {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.56rem;
+  margin-top: 0.72rem;
+}
+
+.git-section-title {
+  color: var(--text-primary);
+  font-size: 0.94rem;
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 0;
 }
 
 .git-file-list {
@@ -1445,8 +1778,8 @@ button {
 .git-file-row {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  padding: 0.9rem 1rem;
+  gap: 0.65rem;
+  padding: 0.8rem 0.88rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.03);
@@ -1460,7 +1793,7 @@ button {
 }
 
 .git-file-path {
-  font-size: 0.95rem;
+  font-size: 0.86rem;
   word-break: break-word;
 }
 
@@ -1472,11 +1805,11 @@ button {
 .git-change-badge {
   display: inline-flex;
   align-items: center;
-  min-height: 1.8rem;
-  padding: 0 0.7rem;
+  min-height: 1.62rem;
+  padding: 0 0.62rem;
   border-radius: 999px;
   font-family: "JetBrains Mono", "SFMono-Regular", monospace;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
 }
 
 .git-change-staged {
@@ -1493,13 +1826,13 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 0.8rem;
 }
 
 .terminal-toolbar {
   display: flex;
   align-items: center;
-  gap: 0.85rem;
+  gap: 0.72rem;
   min-width: 0;
   flex: 1;
 }
@@ -1507,13 +1840,13 @@ button {
 .terminal-dots {
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.42rem;
   flex-shrink: 0;
 }
 
 .terminal-dot {
-  width: 0.72rem;
-  height: 0.72rem;
+  width: 0.64rem;
+  height: 0.64rem;
   padding: 0;
   border-radius: 999px;
   border: 0;
@@ -1552,7 +1885,7 @@ button {
 .terminal-tabs {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.36rem;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
@@ -1565,9 +1898,9 @@ button {
 .terminal-tab {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
-  min-height: 1.95rem;
-  padding: 0 0.72rem;
+  gap: 0.38rem;
+  min-height: 1.74rem;
+  padding: 0 0.62rem;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.03);
@@ -1611,10 +1944,10 @@ button {
 .terminal-panel-meta {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.78rem;
   color: var(--text-muted);
   font-family: "JetBrains Mono", "SFMono-Regular", monospace;
-  font-size: 0.78rem;
+  font-size: 0.7rem;
 }
 
 .terminal-host {
@@ -1630,14 +1963,86 @@ button {
   overflow: hidden;
 }
 
-.terminal-host .xterm {
+.terminal-host-shell {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.terminal-host-stack {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.workspace-page .terminal-host {
+  flex: 1;
+  min-height: 0;
+}
+
+.terminal-host.inactive {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.terminal-host.active {
+  position: relative;
+  z-index: 1;
+}
+
+.terminal-host-canvas {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.terminal-reconnect-banner {
+  position: absolute;
+  left: 0.9rem;
+  right: 0.9rem;
+  bottom: 0.9rem;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.72rem 0.82rem;
+  border-radius: calc(var(--radius-lg) - 2px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(8, 9, 11, 0.86);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(14px);
+}
+
+.terminal-reconnect-text {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.terminal-reconnect-btn {
+  flex-shrink: 0;
+  min-height: 1.9rem;
+  padding-left: 0.78rem;
+  padding-right: 0.78rem;
+}
+
+.terminal-host .xterm,
+.terminal-host-canvas .xterm {
   display: flex;
   width: 100%;
   height: 100%;
-  padding: 1rem;
+  padding: 0.82rem;
 }
 
-.terminal-host .xterm-viewport {
+.terminal-host .xterm-viewport,
+.terminal-host-canvas .xterm-viewport {
   border-radius: 1rem;
   overflow-y: auto !important;
   overscroll-behavior: contain;
@@ -1645,30 +2050,36 @@ button {
   scrollbar-color: rgba(50, 240, 140, 0.32) rgba(255, 255, 255, 0.06);
 }
 
-.terminal-host .xterm-viewport::-webkit-scrollbar {
+.terminal-host .xterm-viewport::-webkit-scrollbar,
+.terminal-host-canvas .xterm-viewport::-webkit-scrollbar {
   width: 10px;
 }
 
-.terminal-host .xterm-viewport::-webkit-scrollbar-track {
+.terminal-host .xterm-viewport::-webkit-scrollbar-track,
+.terminal-host-canvas .xterm-viewport::-webkit-scrollbar-track {
   background: rgba(255, 255, 255, 0.05);
   border-radius: 999px;
 }
 
-.terminal-host .xterm-viewport::-webkit-scrollbar-thumb {
+.terminal-host .xterm-viewport::-webkit-scrollbar-thumb,
+.terminal-host-canvas .xterm-viewport::-webkit-scrollbar-thumb {
   background: linear-gradient(180deg, rgba(50, 240, 140, 0.34), rgba(18, 96, 58, 0.9));
   border: 2px solid rgba(12, 12, 13, 0.92);
   border-radius: 999px;
 }
 
-.terminal-host .xterm-viewport::-webkit-scrollbar-thumb:hover {
+.terminal-host .xterm-viewport::-webkit-scrollbar-thumb:hover,
+.terminal-host-canvas .xterm-viewport::-webkit-scrollbar-thumb:hover {
   background: linear-gradient(180deg, rgba(96, 242, 189, 0.52), rgba(24, 124, 74, 0.96));
 }
 
-.terminal-host .xterm-screen {
+.terminal-host .xterm-screen,
+.terminal-host-canvas .xterm-screen {
   flex: 1;
 }
 
-.terminal-host .xterm-screen canvas {
+.terminal-host .xterm-screen canvas,
+.terminal-host-canvas .xterm-screen canvas {
   image-rendering: auto;
 }
 
@@ -1816,6 +2227,10 @@ button {
     width: 100%;
   }
 
+  .git-panel-header-meta .git-root {
+    white-space: normal;
+  }
+
   .section-actions > button,
   .web-debug-actions > button {
     width: 100%;
@@ -1887,6 +2302,14 @@ button {
     grid-template-columns: 1fr;
   }
 
+  .file-tree-row {
+    grid-template-columns: 0.9rem auto minmax(0, 1fr);
+  }
+
+  .file-tree-status {
+    display: none;
+  }
+
   .terminal-panel-bar,
   .terminal-toolbar,
   .terminal-panel-meta {
@@ -1943,6 +2366,12 @@ button {
 
   .terminal-host {
     min-height: 46dvh;
+  }
+
+  .terminal-reconnect-banner {
+    left: 0.7rem;
+    right: 0.7rem;
+    bottom: 0.7rem;
   }
 
   .terminal-host .xterm {
@@ -2017,7 +2446,7 @@ button {
     gap: 0.7rem;
   }
 
-  .brand-mark-block {
+  .brand-mark-logo {
     width: 2.2rem;
     height: 2.2rem;
     border-radius: 0.8rem;
@@ -2123,6 +2552,15 @@ button {
 
   .terminal-host {
     min-height: 44dvh;
+  }
+
+  .terminal-reconnect-banner {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .terminal-reconnect-btn {
+    width: 100%;
   }
 
   .terminal-host .xterm {

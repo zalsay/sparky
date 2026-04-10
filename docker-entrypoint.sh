@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-mkdir -p /projects /home/app/.ssh /etc/sparky
-chown -R app:app /projects /home/app/.ssh
+mkdir -p /projects /home/app/.ssh /home/app/go /home/app/.local /home/app/.cache/pip /home/app/.cache/uv /etc/sparky
+chown -R app:app /projects /home/app/.ssh /home/app/go /home/app/.local /home/app/.cache
 
 if [ -d /projects/.cc-bridge ] && [ ! -e /projects/.sparky ]; then
     mv /projects/.cc-bridge /projects/.sparky
@@ -18,4 +18,6 @@ export HOME=/home/app
 export USER=app
 export LOGNAME=app
 
-exec gosu app /usr/local/bin/sparky
+SPARKY_COMMAND=${SPARKY_COMMAND:-/usr/local/bin/sparky}
+
+exec gosu app "$SPARKY_COMMAND"

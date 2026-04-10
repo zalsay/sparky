@@ -7,7 +7,7 @@ use crate::project::Project;
 use crate::sandbox::{unmount_overlay, OverlayPaths};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write as IoWrite;
@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 const SNAPSHOT_MAX_BYTES: usize = 256 * 1024;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaunchOverride {
     pub command: String,
     pub args: Vec<String>,
@@ -462,7 +462,7 @@ fn remove_snapshot_file(path: Option<&Path>) {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSummary {
     pub session_id: String,
     pub project_id: String,

@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -8,7 +8,7 @@ pub struct GitRuntimeContext {
     pub ssh_auth_sock: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitStatusSummary {
     pub available: bool,
     pub root: String,
@@ -25,7 +25,7 @@ pub struct GitStatusSummary {
     pub last_commit: Option<GitCommitSummary>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitFileChange {
     pub path: String,
     pub original_path: Option<String>,
@@ -33,7 +33,7 @@ pub struct GitFileChange {
     pub unstaged: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitCommitSummary {
     pub id: String,
     pub subject: String,
@@ -41,7 +41,7 @@ pub struct GitCommitSummary {
     pub relative_time: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GitAction {
     Fetch,
     Pull,
@@ -54,7 +54,7 @@ pub enum GitAction {
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitActionResult {
     pub output: String,
     pub status: GitStatusSummary,
@@ -647,7 +647,7 @@ where
     command.env("HOME", &runtime.home_dir);
     command.env(
         "GIT_SSH_COMMAND",
-        "ssh -o UserKnownHostsFile=$HOME/.ssh/known_hosts",
+        "ssh -o GlobalKnownHostsFile=/etc/sparky/known_hosts -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=accept-new",
     );
     if let Some(ssh_auth_sock) = runtime.ssh_auth_sock.as_deref() {
         command.env("SSH_AUTH_SOCK", ssh_auth_sock);

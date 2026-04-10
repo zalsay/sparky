@@ -93,6 +93,7 @@ fn env_bool(name: &str, default: bool) -> bool {
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub port: u16,
+    pub executor_base_url: Option<String>,
     pub sandbox_root: PathBuf,
     pub web_dist_dir: PathBuf,
     pub claude_user_state_template: PathBuf,
@@ -121,7 +122,12 @@ impl ServerConfig {
 
         let sandbox_root = std::env::var("SANDBOX_ROOT")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/tmp/cc-sandbox"));
+            .unwrap_or_else(|_| PathBuf::from("/tmp/sp-sandbox"));
+
+        let executor_base_url = std::env::var("EXECUTOR_BASE_URL")
+            .ok()
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| !value.is_empty());
 
         let web_dist_dir = std::env::var("WEB_DIST_DIR")
             .map(PathBuf::from)
@@ -214,6 +220,7 @@ impl ServerConfig {
 
         Self {
             port,
+            executor_base_url,
             sandbox_root,
             web_dist_dir,
             claude_user_state_template,
