@@ -2,6 +2,9 @@ import { TerminalPanel } from './TerminalPanel'
 import { WorkspaceSidePanel } from './WorkspaceSidePanel'
 
 export function WorkspaceShell({
+  isMobileViewport,
+  mobileSidePanelOpen,
+  onCloseMobileSidePanel,
   onResetSidebarWidth,
   onStartSidebarResize,
   sidebarResizing,
@@ -10,6 +13,28 @@ export function WorkspaceShell({
   workspaceShellRef,
   workspaceShellStyle,
 }) {
+  if (isMobileViewport) {
+    return (
+      <main
+        ref={workspaceShellRef}
+        className="workspace-shell workspace-shell-mobile"
+        style={workspaceShellStyle}
+      >
+        <TerminalPanel {...terminalPanelProps} />
+
+        {mobileSidePanelOpen ? (
+          <div className="workspace-mobile-panel-drawer">
+            <WorkspaceSidePanel
+              {...sidePanelProps}
+              isMobile
+              onCloseMobilePanel={onCloseMobileSidePanel}
+            />
+          </div>
+        ) : null}
+      </main>
+    )
+  }
+
   return (
     <main
       ref={workspaceShellRef}

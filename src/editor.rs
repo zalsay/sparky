@@ -15,6 +15,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 const START_PORT: u16 = 4300;
 const END_PORT: u16 = 4499;
+const DEFAULT_CODE_SERVER_EXTENSIONS_DIR: &str = "/opt/sparky/code-server/default-extensions";
+const DEFAULT_CODE_SERVER_LOCALE: &str = "zh-cn";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditorStatus {
@@ -297,6 +299,120 @@ pub fn build_editor_url(proxy_base: &str, root: &Path, file_path: Option<&Path>)
     format!("{}/?{}", proxy_base.trim_end_matches('/'), query.join("&"))
 }
 
+fn persistent_editor_data_root(user: &AuthSession) -> PathBuf {
+    let stable_home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| PathBuf::from("/home/app"));
+
+    stable_home
+        .join(".local")
+        .join("share")
+        .join("sparky")
+        .join("code-server")
+        .join(&user.user_id)
+}
+
+fn migrate_editor_dir_if_needed(legacy_dir: &Path, target_dir: &Path) {
+    if !legacy_dir.exists() || target_dir.exists() {
+        return;
+    }
+
+    if let Some(parent) = target_dir.parent() {
+        if let Err(error) = fs::create_dir_all(parent) {
+            log::warn!("create editor data parent {}: {}", parent.display(), error);
+            return;
+        }
+    }
+
+    if let Err(error) = fs::rename(legacy_dir, target_dir) {
+        log::warn!(
+            "migrate editor data {} -> {}: {}",
+            legacy_dir.display(),
+            target_dir.display(),
+            error
+        );
+    }
+}
+
+fn seed_default_editor_extensions(default_dir: &Path, target_dir: &Path) {
+    if !default_dir.exists() {
+        return;
+    }
+
+    if let Err(error) = fs::create_dir_all(target_dir) {
+        log::warn!(
+            "create editor extensions dir {}: {}",
+            target_dir.display(),
+            error
+        );
+        return;
+    }
+
+    let entries = match fs::read_dir(default_dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            log::warn!(
+                "read default editor extensions {}: {}",
+                default_dir.display(),
+                error
+            );
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let source = entry.path();
+        let target = target_dir.join(entry.file_name());
+        if target.exists() {
+            continue;
+        }
+
+        if let Err(error) = copy_dir_or_file(&source, &target) {
+            log::warn!(
+                "seed default editor extension {} -> {}: {}",
+                source.display(),
+                target.display(),
+                error
+            );
+        }
+    }
+}
+
+fn copy_dir_or_file(source: &Path, target: &Path) -> Result<(), String> {
+    let metadata =
+        fs::metadata(source).map_err(|error| format!("stat {}: {}", source.display(), error))?;
+
+    if metadata.is_dir() {
+        fs::create_dir_all(target)
+            .map_err(|error| format!("mkdir {}: {}", target.display(), error))?;
+        for entry in
+            fs::read_dir(source).map_err(|error| format!("read {}: {}", source.display(), error))?
+        {
+            let entry =
+                entry.map_err(|error| format!("read entry {}: {}", source.display(), error))?;
+            let child_source = entry.path();
+            let child_target = target.join(entry.file_name());
+            copy_dir_or_file(&child_source, &child_target)?;
+        }
+        return Ok(());
+    }
+
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("mkdir {}: {}", parent.display(), error))?;
+    }
+
+    fs::copy(source, target).map(|_| ()).map_err(|error| {
+        format!(
+            "copy {} -> {}: {}",
+            source.display(),
+            target.display(),
+            error
+        )
+    })
+}
+
 pub fn resolve_requested_path(root: &Path, relative_path: Option<&str>) -> Result<PathBuf, String> {
     let relative = normalize_relative_path(relative_path.unwrap_or_default())?;
     join_under_root(root, relative.as_str())
@@ -309,16 +425,23 @@ fn build_editor_command(
     proxy_base: &str,
     root: &Path,
 ) -> Command {
-    let data_root = user
+    let legacy_data_root = user
         .home_dir
         .join(".local")
         .join("share")
         .join("sparky")
         .join("code-server");
+    let data_root = persistent_editor_data_root(user);
     let user_data_dir = data_root.join("user-data");
     let extensions_dir = data_root.join("extensions");
+    migrate_editor_dir_if_needed(&legacy_data_root.join("user-data"), &user_data_dir);
+    migrate_editor_dir_if_needed(&legacy_data_root.join("extensions"), &extensions_dir);
     let _ = fs::create_dir_all(&user_data_dir);
     let _ = fs::create_dir_all(&extensions_dir);
+    seed_default_editor_extensions(
+        Path::new(DEFAULT_CODE_SERVER_EXTENSIONS_DIR),
+        &extensions_dir,
+    );
 
     let mut command = Command::new("code-server");
     command.args([
@@ -332,6 +455,8 @@ fn build_editor_command(
         "Sparky",
         "--disable-telemetry",
         "--disable-update-check",
+        "--locale",
+        DEFAULT_CODE_SERVER_LOCALE,
         "--user-data-dir",
         &user_data_dir.display().to_string(),
         "--extensions-dir",

@@ -90,6 +90,7 @@ RUN printf 'Types: deb\nURIs: %s\nSuites: bookworm bookworm-updates\nComponents:
         chromium \
         curl \
         file \
+        lsof \
         pkg-config \
         ripgrep && \
     rm -rf /var/lib/apt/lists/*
@@ -107,8 +108,32 @@ COPY --from=legacy-code-server /usr/local/lib/code-server-4.114.1 /usr/local/lib
 COPY --from=rust-build /src/target/release/sparky-executor /usr/local/bin/sparky-executor
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-RUN npm install -g @anthropic-ai/claude-code@latest @openai/codex@latest
+RUN npm config set fetch-retries 5 && \
+    npm config set fetch-retry-factor 2 && \
+    npm config set fetch-retry-mintimeout 10000 && \
+    npm config set fetch-retry-maxtimeout 120000 && \
+    npm config set proxy "${HTTP_PROXY}" && \
+    npm config set https-proxy "${HTTPS_PROXY}" && \
+    for attempt in 1 2 3; do \
+        npm install -g @anthropic-ai/claude-code@latest @openai/codex@latest chrome-devtools-mcp@latest && break; \
+        if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+        sleep 5; \
+    done && \
+    mkdir -p /home/app/.npm && \
+    chown -R app:app /home/app/.npm
 RUN ln -sf /usr/local/lib/code-server-4.114.1/bin/code-server /usr/local/bin/code-server
+RUN mkdir -p /opt/sparky/code-server/default-extensions && \
+    for attempt in 1 2 3; do \
+        code-server \
+            --install-extension MS-CEINTL.vscode-language-pack-zh-hans \
+            --extensions-dir /opt/sparky/code-server/default-extensions \
+            --force && break; \
+        if [ "$attempt" -eq 3 ]; then \
+            echo "warning: failed to install code-server zh-hans extension during build" >&2; \
+            break; \
+        fi; \
+        sleep 5; \
+    done
 RUN printf '%s\n' \
     'export GOROOT=/usr/local/go' \
     'export GOPATH=${GOPATH:-/home/app/go}' \

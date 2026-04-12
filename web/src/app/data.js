@@ -62,6 +62,7 @@ export function normalizeSessions(payload) {
       createdAtMs: Number(session.created_at_ms || session.createdAtMs || 0),
       alive: session.alive !== false,
       temporary: Boolean(session.temporary),
+      codexSessionId: session.codex_session_id || session.codexSessionId || '',
     }))
     .filter((session) => session.id && session.projectId && session.alive)
     .sort((a, b) => b.createdAtMs - a.createdAtMs)
@@ -82,7 +83,8 @@ export function sameSessionTabs(left, right) {
       tab.id === other.id &&
       tab.projectId === other.projectId &&
       tab.label === other.label &&
-      tab.temporary === other.temporary
+      tab.temporary === other.temporary &&
+      (tab.codexSessionId || '') === (other.codexSessionId || '')
     )
   })
 }
@@ -142,13 +144,7 @@ export function normalizeWebTargets(payload) {
     .filter((target) => target.id)
 }
 
-export function normalizeCodexSessions(payload) {
-  const list = Array.isArray(payload)
-    ? payload
-    : Array.isArray(payload?.sessions)
-      ? payload.sessions
-      : []
-
+function normalizeCodexHistorySessionList(list) {
   return list
     .map((session) => ({
       sessionId: session.session_id || session.sessionId,
@@ -159,6 +155,61 @@ export function normalizeCodexSessions(payload) {
     }))
     .filter((session) => session.sessionId)
     .sort((a, b) => b.updatedAtMs - a.updatedAtMs)
+}
+
+function normalizeCodexLiveSessionList(list) {
+  return list
+    .map((session) => ({
+      sessionId: session.session_id || session.sessionId,
+      cwd: session.cwd || '',
+      createdAtMs: Number(session.created_at_ms || session.createdAtMs || 0),
+      updatedAtMs: Number(session.updated_at_ms || session.updatedAtMs || 0),
+    }))
+    .filter((session) => session.sessionId)
+    .sort((a, b) => b.updatedAtMs - a.updatedAtMs)
+}
+
+export function normalizeCodexSessionPayload(payload) {
+  const historyList = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.history_sessions)
+      ? payload.history_sessions
+      : Array.isArray(payload?.sessions)
+        ? payload.sessions
+        : []
+
+  const liveList = Array.isArray(payload?.live_sessions) ? payload.live_sessions : []
+
+  return {
+    historySessions: normalizeCodexHistorySessionList(historyList),
+    liveSessions: normalizeCodexLiveSessionList(liveList),
+  }
+}
+
+export function normalizeCodexSessions(payload) {
+  return normalizeCodexSessionPayload(payload).historySessions
+}
+
+export function normalizeCodexTimeline(payload) {
+  const items = Array.isArray(payload?.items) ? payload.items : []
+
+  return {
+    sessionId: payload?.session_id || payload?.sessionId || '',
+    title: payload?.title || 'Codex 会话',
+    updatedAtMs: Number(payload?.updated_at_ms || payload?.updatedAtMs || 0),
+    items: items
+      .map((item, index) => ({
+        id: item.id || `timeline-${index}`,
+        sessionId: item.session_id || item.sessionId || payload?.session_id || '',
+        kind: item.kind || 'status',
+        timestamp: item.timestamp || '',
+        groupId: item.group_id || item.groupId || '',
+        title: item.title || '',
+        text: item.text || '',
+        meta: item.meta && typeof item.meta === 'object' ? item.meta : {},
+      }))
+      .filter((item) => item.id),
+  }
 }
 
 export function normalizeFileTree(payload) {
@@ -196,6 +247,21 @@ export function formatDateTime(value) {
     }).format(new Date(value))
   } catch {
     return '未知时间'
+  }
+}
+
+export function formatClockTime(value) {
+  if (!value) {
+    return ''
+  }
+
+  try {
+    return new Intl.DateTimeFormat('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(value))
+  } catch {
+    return ''
   }
 }
 
@@ -243,8 +309,8 @@ export function gitOutputPreview(value) {
   return String(value || '').trim()
 }
 
-export function buildSessionTab(sessionId, project, temporary, existingTabs = []) {
-  void existingTabs
+export function buildSessionTab(sessionId, project, temporary, existingTabs = [], codexSessionId = '') {
+  const existingTab = existingTabs.find((tab) => tab.id === sessionId) || null
   const projectId = project?.id || ''
   const projectName = project?.name || projectId || '项目'
   const baseTab = {
@@ -254,6 +320,7 @@ export function buildSessionTab(sessionId, project, temporary, existingTabs = []
     provider: project?.provider || '自定义',
     runtime: project?.runtime || 'claude',
     temporary,
+    codexSessionId: codexSessionId || existingTab?.codexSessionId || '',
   }
 
   if (!temporary) {
@@ -270,7 +337,6 @@ export function buildSessionTab(sessionId, project, temporary, existingTabs = []
 }
 
 export function composeSessionTabs(persistentSessions, projects, existingTabs = [], extraTemporaryTab = null) {
-  void existingTabs
   const projectMap = new Map(projects.map((project) => [project.id, project]))
   const persistentCountByProject = persistentSessions.reduce((map, session) => {
     if (!session.temporary) {
@@ -286,7 +352,7 @@ export function composeSessionTabs(persistentSessions, projects, existingTabs = 
         return null
       }
 
-      const tab = buildSessionTab(session.id, project, false)
+      const tab = buildSessionTab(session.id, project, false, existingTabs, session.codexSessionId)
       if ((persistentCountByProject.get(session.projectId) || 0) > 1) {
         return {
           ...tab,
@@ -306,7 +372,7 @@ export function composeSessionTabs(persistentSessions, projects, existingTabs = 
         return null
       }
 
-      return buildSessionTab(session.id, project, true)
+      return buildSessionTab(session.id, project, true, existingTabs, session.codexSessionId)
     })
     .filter(Boolean)
 

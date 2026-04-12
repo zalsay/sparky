@@ -6,6 +6,7 @@ export const LEGACY_AUTH_STORAGE_KEY = 'cc-bridge-auth'
 export const PROJECT_STORAGE_KEY = 'sparky-last-project'
 export const LEGACY_PROJECT_STORAGE_KEY = 'cc-bridge-last-project'
 export const KEEPALIVE_INTERVAL_MS = 15000
+export const WS_CONNECT_TIMEOUT_MS = 8000
 export const PROJECT_PATH_PREFIX = '/projects/'
 export const WORKSPACE_SIDEBAR_WIDTH_KEY = 'sparky-workspace-sidebar-width'
 export const DEFAULT_SIDEBAR_WIDTH = 380

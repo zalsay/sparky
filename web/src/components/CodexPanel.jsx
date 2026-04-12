@@ -5,8 +5,10 @@ export function CodexPanel({
   codexLoading,
   codexResumeLoading,
   codexSessions,
+  currentCodexSession,
   hasCodexSessions,
   onLoadCodexSessions,
+  onReturnToCurrentSession,
   onResumeCodexSession,
   selectedProjectId,
 }) {
@@ -39,6 +41,27 @@ export function CodexPanel({
         </div>
 
         {codexError ? <div className="notice notice-error">{codexError}</div> : null}
+
+        {currentCodexSession ? (
+          <div className="codex-session-list codex-session-list-current">
+            <div className="codex-session-card skill-card list-card">
+              <span className="skill-card__accent" aria-hidden="true" />
+              <div className="codex-session-main">
+                <strong>当前会话</strong>
+                <span className="codex-session-meta">实时 PTY</span>
+                <span className="codex-session-meta">{currentCodexSession.cwd || currentCodexSession.sessionId}</span>
+              </div>
+              <button
+                className="secondary-btn git-btn"
+                type="button"
+                onClick={onReturnToCurrentSession}
+                disabled={!selectedProjectId}
+              >
+                回到当前
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         {codexLoading ? (
           <div className="notice">正在同步 `CODEX_HOME` 中的历史会话...</div>

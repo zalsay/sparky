@@ -13,9 +13,6 @@ export function DeleteProjectModal({
             <span className="eyebrow">项目删除</span>
             <h3 className="modal-title">删除项目卡片</h3>
           </div>
-          <button className="modal-close" type="button" onClick={onClose}>
-            关闭
-          </button>
         </div>
 
         <p className="modal-copy">

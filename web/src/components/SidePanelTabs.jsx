@@ -19,7 +19,7 @@ export function SidePanelTabs({ isCodexProject, onSelectTab, sidePanelTab }) {
         className={`side-panel-tab ${sidePanelTab === 'web' ? 'active' : ''}`}
         onClick={() => onSelectTab('web')}
       >
-        Web 开发
+        Web开发
       </button>
       <button
         type="button"

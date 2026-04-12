@@ -23,9 +23,6 @@ export function ProjectFormModal({
             <span className="eyebrow">项目创建</span>
             <h3 className="modal-title">{isEditingProject ? '编辑项目工作区' : '新建项目工作区'}</h3>
           </div>
-          <button className="modal-close" type="button" onClick={onClose}>
-            关闭
-          </button>
         </div>
 
         <form className="project-form" onSubmit={onSubmit}>

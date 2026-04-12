@@ -1,5 +1,72 @@
+import { useEffect, useState } from 'react'
 import { BRAND_LOGO_SRC } from '../app/constants'
-import { runtimeLabel } from '../app/data'
+import { formatDateTime, runtimeLabel } from '../app/data'
+
+function projectSessionLabel(session, allSessions) {
+  if (!session?.temporary) {
+    const primarySessions = allSessions.filter((item) => !item.temporary)
+    if (primarySessions.length > 1) {
+      return `主会话 ${session.id.slice(0, 4)}`
+    }
+
+    return '主会话'
+  }
+
+  const temporarySessions = allSessions.filter((item) => item.temporary)
+  const index = temporarySessions.findIndex((item) => item.id === session.id)
+  return index >= 0 ? `终端 ${index + 1}` : '终端'
+}
+
+function ProjectSessionPickerModal({
+  onClose,
+  onSelectSession,
+  project,
+  sessions,
+}) {
+  const latestSessionId = sessions[0]?.id || ''
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card glass-panel session-picker-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <span className="eyebrow">选择会话</span>
+            <h3 className="modal-title">{project?.name || '项目会话'}</h3>
+          </div>
+        </div>
+        <p className="modal-copy">检测到多个保留中的会话，选择要进入的会话。</p>
+        <div className="session-picker-list">
+          {sessions.map((session) => (
+            <button
+              key={session.id}
+              type="button"
+              className="session-picker-item list-card"
+              onClick={() => onSelectSession(session)}
+            >
+              <div className="session-picker-item__main">
+                <div className="session-picker-item__title-row">
+                  <strong>{projectSessionLabel(session, sessions)}</strong>
+                  {session.id === latestSessionId ? <span className="project-badge">最近会话</span> : null}
+                  {session.temporary ? <span className="project-meta">临时 PTY</span> : null}
+                </div>
+                <span className="session-picker-item__meta">{session.id}</span>
+              </div>
+              <div className="session-picker-item__side">
+                <span>{formatDateTime(session.createdAtMs)}</span>
+                <span>进入</span>
+              </div>
+            </button>
+          ))}
+        </div>
+        <div className="modal-actions">
+          <button className="ghost-btn" type="button" onClick={onClose}>
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export function DashboardPage({
   activeSessionCount,
@@ -21,49 +88,174 @@ export function DashboardPage({
   temporarySessionCountByProjectId,
   totalProjects,
 }) {
+  const [isMobileViewport, setIsMobileViewport] = useState(() => (
+    typeof window !== 'undefined' ? window.innerWidth <= 780 : false
+  ))
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [sessionPickerProject, setSessionPickerProject] = useState(null)
+
+  useEffect(() => {
+    const handleResize = () => {
+      const nextIsMobile = window.innerWidth <= 780
+      setIsMobileViewport(nextIsMobile)
+      if (!nextIsMobile) {
+        setMobileMenuOpen(false)
+        setSessionPickerProject(null)
+      }
+    }
+
+    handleResize()
+    window.addEventListener('resize', handleResize)
+    window.addEventListener('orientationchange', handleResize)
+    return () => {
+      window.removeEventListener('resize', handleResize)
+      window.removeEventListener('orientationchange', handleResize)
+    }
+  }, [])
+
+  const handleProjectEnter = (project) => {
+    const projectSessions = sessions
+      .filter((session) => session.projectId === project.id)
+      .sort((left, right) => right.createdAtMs - left.createdAtMs)
+
+    if (projectSessions.length <= 1) {
+      if (projectSessions[0]) {
+        onActivatePersistentSession(project, projectSessions[0].id)
+        return
+      }
+
+      onSelectProject(project)
+      return
+    }
+
+    if (!isMobileViewport) {
+      onActivatePersistentSession(project, projectSessions[0].id)
+      return
+    }
+
+    setSessionPickerProject({
+      project,
+      sessions: projectSessions,
+    })
+  }
+
   return (
     <div className="app dashboard-page">
       <div className="app-aura app-aura-brand" />
       <div className="app-aura app-aura-signal" />
-      <header className="topbar">
-        <div className="topbar-brand">
-          <div className="brand-mark">
-            <img className="brand-mark-logo" src={BRAND_LOGO_SRC} alt="Sparky" />
-            <span className="brand-mark-text">Sparky</span>
-          </div>
-          <div className="topbar-copy">
-            <span className="eyebrow">工作区</span>
-            <span className="topbar-title">智能体终端</span>
-          </div>
-        </div>
-        <div className="topbar-actions">
-          <div className="identity-chip">
-            <span className="identity-user">@{auth.user.username}</span>
-          </div>
-          <div className="topbar-stats">
-            <div className="topbar-stat">
-              <span className="topbar-stat-label">项目</span>
-              <strong>{totalProjects}</strong>
+      {isMobileViewport ? (
+        <header className="topbar workspace-mobile-topbar dashboard-mobile-topbar">
+          <div className="workspace-mobile-topbar-row">
+            <div className="workspace-mobile-topbar-main">
+              <div className="brand-mark">
+                <img className="brand-mark-logo" src={BRAND_LOGO_SRC} alt="Sparky" />
+                <span className="brand-mark-text">Sparky</span>
+              </div>
             </div>
-            <div className="topbar-stat">
-              <span className="topbar-stat-label">进行中</span>
-              <strong>{activeSessionCount}</strong>
+
+            <div className="workspace-mobile-topbar-meta dashboard-mobile-topbar-meta">
+              <span className="workspace-mobile-tag workspace-mobile-tag-provider">
+                <span>Codex</span>
+              </span>
+              <button
+                type="button"
+                className={`toolbar-btn toolbar-btn-icon workspace-mobile-panel-toggle workspace-mobile-topbar-icon-btn ${mobileMenuOpen ? 'active' : ''}`}
+                onClick={() => setMobileMenuOpen((value) => !value)}
+                aria-label={mobileMenuOpen ? '关闭菜单' : '打开菜单'}
+                title={mobileMenuOpen ? '关闭菜单' : '打开菜单'}
+              >
+                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path d="M4 6h12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                  <path d="M4 10h12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                  <path d="M4 14h12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                </svg>
+              </button>
             </div>
           </div>
-          <button className="ghost-btn" onClick={onLogout}>
-            退出
-          </button>
-        </div>
-      </header>
+        </header>
+      ) : (
+        <header className="topbar">
+          <div className="topbar-brand">
+            <div className="brand-mark">
+              <img className="brand-mark-logo" src={BRAND_LOGO_SRC} alt="Sparky" />
+              <span className="brand-mark-text">Sparky</span>
+            </div>
+            <div className="topbar-copy">
+              <span className="eyebrow">工作区</span>
+              <span className="topbar-title">智能体终端</span>
+            </div>
+          </div>
+          <div className="topbar-actions">
+            <div className="identity-chip">
+              <span className="identity-user">@{auth.user.username}</span>
+            </div>
+            <div className="topbar-stats">
+              <div className="topbar-stat">
+                <span className="topbar-stat-label">项目</span>
+                <strong>{totalProjects}</strong>
+              </div>
+              <div className="topbar-stat">
+                <span className="topbar-stat-label">进行中</span>
+                <strong>{activeSessionCount}</strong>
+              </div>
+            </div>
+            <button className="ghost-btn" onClick={onLogout}>
+              退出
+            </button>
+          </div>
+        </header>
+      )}
+
+      {isMobileViewport ? (
+        <>
+          <div
+            className={`dashboard-mobile-menu-backdrop ${mobileMenuOpen ? 'is-open' : ''}`}
+            onClick={() => setMobileMenuOpen(false)}
+            aria-hidden={!mobileMenuOpen}
+          />
+          <div className={`dashboard-mobile-menu-drawer ${mobileMenuOpen ? 'is-open' : ''}`}>
+            <aside className="glass-panel dashboard-mobile-menu">
+              <div className="dashboard-mobile-menu__header">
+                <span className="eyebrow">工作区</span>
+                <strong className="dashboard-mobile-menu__title">账户与统计</strong>
+              </div>
+              <div className="identity-chip dashboard-mobile-menu__identity">
+                <span className="identity-user">@{auth.user.username}</span>
+              </div>
+              <div className="topbar-stats dashboard-mobile-menu__stats">
+                <div className="topbar-stat">
+                  <span className="topbar-stat-label">项目</span>
+                  <strong>{totalProjects}</strong>
+                </div>
+                <div className="topbar-stat">
+                  <span className="topbar-stat-label">进行中</span>
+                  <strong>{activeSessionCount}</strong>
+                </div>
+              </div>
+              <div className="dashboard-mobile-menu__actions">
+                <button
+                  className="ghost-btn"
+                  onClick={() => {
+                    setMobileMenuOpen(false)
+                    onLogout()
+                  }}
+                >
+                  退出
+                </button>
+              </div>
+            </aside>
+          </div>
+        </>
+      ) : null}
 
       <main className="dashboard-shell">
         <section className="catalog-panel glass-panel">
           <div className="section-bar">
             <div>
-              <span className="eyebrow">模型终端</span>
+              <span className="eyebrow">Codex</span>
               <h2 className="section-title">智能体工作区目录</h2>
             </div>
-            <div className="section-actions">
+            <div className="section-actions dashboard-section-actions">
               <button className="primary-btn section-create-btn" onClick={onOpenCreateProjectForm}>
                 新建项目
               </button>
@@ -90,11 +282,11 @@ export function DashboardPage({
                 <article
                   key={project.id}
                   className={`project-card skill-card list-card project-card-${project.accent} ${preferredProjectId === project.id ? 'preferred is-selected' : ''}`}
-                  onClick={() => onSelectProject(project)}
+                  onClick={() => handleProjectEnter(project)}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault()
-                      onSelectProject(project)
+                      handleProjectEnter(project)
                     }
                   }}
                   role="button"
@@ -157,9 +349,21 @@ export function DashboardPage({
               )
             })}
           </div>
+
+          {isMobileViewport ? (
+            <div className="dashboard-mobile-project-actions">
+              <button className="primary-btn section-create-btn" onClick={onOpenCreateProjectForm}>
+                新建项目
+              </button>
+              <button className="secondary-btn" onClick={onLoadWorkspaceState} disabled={loadingProjects}>
+                {loadingProjects ? '刷新中...' : '刷新'}
+              </button>
+            </div>
+          ) : null}
         </section>
 
-        <section className="session-panel glass-panel">
+        {!isMobileViewport ? (
+          <section className="session-panel glass-panel">
           <div className="section-bar">
             <div>
               <span className="eyebrow">可恢复状态</span>
@@ -194,8 +398,20 @@ export function DashboardPage({
               })}
             </div>
           )}
-        </section>
+          </section>
+        ) : null}
       </main>
+      {sessionPickerProject ? (
+        <ProjectSessionPickerModal
+          project={sessionPickerProject.project}
+          sessions={sessionPickerProject.sessions}
+          onClose={() => setSessionPickerProject(null)}
+          onSelectSession={(session) => {
+            setSessionPickerProject(null)
+            onActivatePersistentSession(sessionPickerProject.project, session.id)
+          }}
+        />
+      ) : null}
     </div>
   )
 }

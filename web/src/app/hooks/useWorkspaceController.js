@@ -8,16 +8,23 @@ import {
   LEGACY_PROJECT_STORAGE_KEY,
   PROJECT_PATH_PREFIX,
   PROJECT_STORAGE_KEY,
+  WS_CONNECT_TIMEOUT_MS,
   WS_BASE,
 } from '../constants'
 import {
   buildSessionTab,
   composeSessionTabs,
+  normalizeCodexTimeline,
   normalizeProjectPathInput,
   normalizeProjects,
   normalizeSessions,
   sameSessionTabs,
 } from '../data'
+import {
+  logSessionDebug,
+  socketReadyStateLabel,
+  summarizeContentPreview,
+} from '../sessionDebug'
 import { clearStorage, readStorage } from '../storage'
 import { useWorkspacePanels } from './useWorkspacePanels'
 
@@ -27,6 +34,15 @@ export function useWorkspaceController({
   clearAuth,
   setLoginError,
 }) {
+  const wait = (ms) => new Promise((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
+  const emptyCodexTimeline = {
+    sessionId: '',
+    title: '',
+    updatedAtMs: 0,
+    items: [],
+  }
   const [step, setStep] = useState('select')
   const [projects, setProjects] = useState([])
   const [sessions, setSessions] = useState([])
@@ -35,6 +51,10 @@ export function useWorkspaceController({
   const [sessionId, setSessionId] = useState(null)
   const [connected, setConnected] = useState(false)
   const [terminalReconnectState, setTerminalReconnectState] = useState({})
+  const [activeCodexSessionId, setActiveCodexSessionId] = useState('')
+  const [codexTimeline, setCodexTimeline] = useState(emptyCodexTimeline)
+  const [codexTimelineLoading, setCodexTimelineLoading] = useState(false)
+  const [codexTimelineError, setCodexTimelineError] = useState('')
 
   const [loadingProjects, setLoadingProjects] = useState(true)
   const [projectError, setProjectError] = useState('')
@@ -57,11 +77,14 @@ export function useWorkspaceController({
   const wsRef = useRef(null)
   const wsPoolRef = useRef(new Map())
   const keepAliveRef = useRef(new Map())
+  const connectTimeoutRef = useRef(new Map())
+  const reconnectingSessionRef = useRef(new Set())
   const terminalHostRef = useRef(new Map())
   const terminalHostCallbackRef = useRef(new Map())
   const terminalRef = useRef(new Map())
   const fitAddonRef = useRef(new Map())
   const pendingOutputRef = useRef(new Map())
+  const pendingInputRef = useRef(new Map())
   const terminalCleanupRef = useRef(new Map())
   const projectsRef = useRef([])
   const sessionsRef = useRef([])
@@ -70,6 +93,7 @@ export function useWorkspaceController({
   const stepRef = useRef(step)
   const workspaceShellRef = useRef(null)
   const resetPanelsRef = useRef(() => {})
+  const lastLoadedCodexSessionIdRef = useRef('')
 
   const rememberProject = (projectId) => {
     if (!projectId) {
@@ -144,6 +168,7 @@ export function useWorkspaceController({
     }
 
     pendingOutputRef.current.delete(sid)
+    pendingInputRef.current.delete(sid)
     const cleanup = terminalCleanupRef.current.get(sid)
     if (cleanup) {
       cleanup()
@@ -157,9 +182,116 @@ export function useWorkspaceController({
 
   const resetTerminal = () => {
     pendingOutputRef.current = new Map()
+    pendingInputRef.current = new Map()
     for (const sid of terminalCleanupRef.current.keys()) {
       resetTerminalById(sid)
     }
+  }
+
+  const ensurePendingInputQueue = (sid) => {
+    if (!pendingInputRef.current.has(sid)) {
+      pendingInputRef.current.set(sid, [])
+    }
+    return pendingInputRef.current.get(sid)
+  }
+
+  const serializeSessionInput = (content) => {
+    const value = String(content || '')
+    if (!value) {
+      return []
+    }
+
+    return Array.from(value)
+  }
+
+  const normalizeSessionInput = (content, options = {}) => {
+    const value = String(content || '')
+    if (!value) {
+      return ''
+    }
+
+    let normalized = value
+
+    if (options.replaceIntermediateReturns) {
+      const treatAsBulkInput = options.bulkInput === true || normalized.length > 1
+
+      if (treatAsBulkInput) {
+        normalized = normalized.replace(/\r\n|\r|\n/g, ' ')
+      } else {
+        const trailingBreakMatch = normalized.match(/(?:\r\n|\r|\n)+$/)
+        const trailingBreaks = trailingBreakMatch ? trailingBreakMatch[0] : ''
+        const body = trailingBreaks
+          ? normalized.slice(0, normalized.length - trailingBreaks.length)
+          : normalized
+
+        normalized = `${body.replace(/\r\n|\r|\n/g, ' ')}${trailingBreaks}`
+      }
+    }
+
+    if (options.ensureTrailingReturn && !/[\r\n]$/.test(normalized)) {
+      normalized = `${normalized}\r`
+    }
+
+    return normalized
+  }
+
+  const flushPendingSessionInput = (sid, ws) => {
+    if (!sid || !ws || ws.readyState !== WebSocket.OPEN) {
+      logSessionDebug('session_input_flush_skipped', {
+        sid,
+        hasSocket: Boolean(ws),
+        readyState: ws ? socketReadyStateLabel(ws.readyState) : 'NO_SOCKET',
+      })
+      return
+    }
+
+    const chunks = pendingInputRef.current.get(sid) || []
+    if (!chunks.length) {
+      logSessionDebug('session_input_flush_empty', {
+        sid,
+      })
+      return
+    }
+
+    logSessionDebug('session_input_flush_start', {
+      sid,
+      chunkCount: chunks.length,
+      preview: summarizeContentPreview(chunks.join('')),
+      wsUrl: ws.url || '',
+    })
+    chunks.forEach((chunk) => {
+      ws.send(JSON.stringify({ type: 'input', content: chunk }))
+    })
+    pendingInputRef.current.set(sid, [])
+    logSessionDebug('session_input_flush_done', {
+      sid,
+      chunkCount: chunks.length,
+    })
+  }
+
+  const sendWsPayload = (sid, ws, payload, meta = {}) => {
+    if (!ws) {
+      logSessionDebug('ws_send_skipped', {
+        sid,
+        reason: 'missing_socket',
+        payloadType: payload?.type || '',
+        ...meta,
+      })
+      return false
+    }
+
+    logSessionDebug('ws_send', {
+      sid,
+      wsUrl: ws.url || '',
+      readyState: socketReadyStateLabel(ws.readyState),
+      payloadType: payload?.type || '',
+      contentPreview: payload && typeof payload.content === 'string'
+        ? summarizeContentPreview(payload.content)
+        : '',
+      ...meta,
+    })
+    ws.send(JSON.stringify(payload))
+    return true
   }
 
   const clearReconnectNotice = (sid) => {
@@ -216,6 +348,22 @@ export function useWorkspaceController({
     }
   }
 
+  const clearConnectTimeout = (sid) => {
+    if (!sid) {
+      for (const timer of connectTimeoutRef.current.values()) {
+        clearTimeout(timer)
+      }
+      connectTimeoutRef.current.clear()
+      return
+    }
+
+    const timer = connectTimeoutRef.current.get(sid)
+    if (timer) {
+      clearTimeout(timer)
+      connectTimeoutRef.current.delete(sid)
+    }
+  }
+
   const attachActiveSocket = (sid) => {
     wsRef.current = sid ? wsPoolRef.current.get(sid) || null : null
   }
@@ -235,6 +383,7 @@ export function useWorkspaceController({
     }
 
     clearKeepAlive(sid)
+    clearConnectTimeout(sid)
     wsPoolRef.current.delete(sid)
     ws._sparkyManualClose = manual
 
@@ -243,8 +392,35 @@ export function useWorkspaceController({
     }
   }
 
+  const dropSocketById = (sid, manual = true) => {
+    if (!sid) {
+      return
+    }
+
+    const ws = wsPoolRef.current.get(sid)
+    if (!ws) {
+      return
+    }
+
+    if (wsRef.current === ws) {
+      wsRef.current = null
+    }
+
+    clearKeepAlive(sid)
+    clearConnectTimeout(sid)
+    wsPoolRef.current.delete(sid)
+    ws._sparkyManualClose = manual
+
+    try {
+      ws.close()
+    } catch {
+      // Ignore close failures on stale sockets.
+    }
+  }
+
   const closeAllSockets = (manual = true) => {
     clearKeepAlive()
+    clearConnectTimeout()
     wsRef.current = null
 
     const sockets = [...wsPoolRef.current.values()]
@@ -268,9 +444,14 @@ export function useWorkspaceController({
     setSessionId(null)
     setConnected(false)
     setTerminalReconnectState({})
+    setActiveCodexSessionId('')
+    setCodexTimeline(emptyCodexTimeline)
+    setCodexTimelineLoading(false)
+    setCodexTimelineError('')
     setStep('select')
     resetPanelsRef.current()
     resetTerminal()
+    lastLoadedCodexSessionIdRef.current = ''
   }
 
   const handleUnauthorized = () => {
@@ -386,6 +567,78 @@ export function useWorkspaceController({
     }
   }
 
+  const loadCodexTimeline = async (
+    codexSessionId = '',
+    project = selectedProject,
+    targetPtySessionId = sessionIdRef.current,
+  ) => {
+    if (!auth?.token || !project?.id || project.runtime !== 'codex') {
+      setActiveCodexSessionId('')
+      setCodexTimeline(emptyCodexTimeline)
+      setCodexTimelineLoading(false)
+      setCodexTimelineError('')
+      lastLoadedCodexSessionIdRef.current = ''
+      return null
+    }
+
+    const targetSessionId = codexSessionId || activeCodexSessionId || panels.codexSessions[0]?.sessionId || ''
+    if (!targetSessionId) {
+      setCodexTimeline(emptyCodexTimeline)
+      setCodexTimelineError('')
+      setCodexTimelineLoading(false)
+      lastLoadedCodexSessionIdRef.current = ''
+      return null
+    }
+
+    setCodexTimelineLoading(true)
+    setCodexTimelineError('')
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/projects/${encodeURIComponent(project.id)}/codex/sessions/${encodeURIComponent(targetSessionId)}/timeline`,
+        {
+          headers: authHeaders(),
+        },
+      )
+      const data = await response.json().catch(() => ({}))
+
+      if (response.status === 401) {
+        handleUnauthorized()
+        return null
+      }
+
+      if (!response.ok) {
+        throw new Error(data.error || '加载 Codex 会话详情失败')
+      }
+
+      const normalized = normalizeCodexTimeline(data)
+      const resolvedId = normalized.sessionId || targetSessionId
+      setActiveCodexSessionId(resolvedId)
+      setCodexTimeline(normalized)
+      if (project.runtime === 'codex' && targetPtySessionId) {
+        setSessions((prev) => prev.map((session) => (
+          session.id === targetPtySessionId
+            ? { ...session, codexSessionId: resolvedId }
+            : session
+        )))
+        setSessionTabs((prev) => prev.map((tab) => (
+          tab.id === targetPtySessionId
+            ? { ...tab, codexSessionId: resolvedId }
+            : tab
+        )))
+      }
+      lastLoadedCodexSessionIdRef.current = resolvedId
+      return normalized
+    } catch (error) {
+      setCodexTimeline(emptyCodexTimeline)
+      setCodexTimelineError(error.message || '加载 Codex 会话详情失败')
+      lastLoadedCodexSessionIdRef.current = ''
+      return null
+    } finally {
+      setCodexTimelineLoading(false)
+    }
+  }
+
   const ensureTerminal = (sid) => {
     if (!sid || stepRef.current === 'select' || terminalRef.current.has(sid)) {
       return
@@ -444,10 +697,25 @@ export function useWorkspaceController({
     const dataDisposable = terminal.onData((data) => {
       const ws = wsPoolRef.current.get(sid)
       if (!ws || ws.readyState !== WebSocket.OPEN) {
+        logSessionDebug('terminal_input_drop', {
+          sid,
+          hasSocket: Boolean(ws),
+          readyState: ws ? socketReadyStateLabel(ws.readyState) : 'NO_SOCKET',
+          preview: summarizeContentPreview(data),
+        })
         return
       }
 
-      ws.send(JSON.stringify({ type: 'input', content: data }))
+      const normalizedData = normalizeSessionInput(data, {
+        replaceIntermediateReturns: true,
+        bulkInput: data.length > 1,
+      })
+
+      sendWsPayload(sid, ws, { type: 'input', content: normalizedData }, {
+        source: 'terminal_on_data',
+        replacedIntermediateReturns: normalizedData !== data,
+        originalPreview: summarizeContentPreview(data),
+      })
     })
 
     flushPendingTerminalOutput(sid)
@@ -505,14 +773,102 @@ export function useWorkspaceController({
     return terminalHostCallbackRef.current.get(sid)
   }
 
+  const sendSessionInput = (sid, content, options = {}) => {
+    const normalizedContent = normalizeSessionInput(content, options)
+    const chunks = serializeSessionInput(normalizedContent)
+    const ws = wsPoolRef.current.get(sid)
+    logSessionDebug('mobile_session_input_called', {
+      sid,
+      chunkCount: chunks.length,
+      preview: summarizeContentPreview(normalizedContent),
+      ensureTrailingReturn: Boolean(options.ensureTrailingReturn),
+      hasTrailingReturn: /[\r\n]$/.test(normalizedContent),
+      hasSocket: Boolean(ws),
+      readyState: ws ? socketReadyStateLabel(ws.readyState) : 'NO_SOCKET',
+      activeSessionId: sessionIdRef.current,
+      step: stepRef.current,
+    })
+
+    if (!sid || chunks.length === 0) {
+      logSessionDebug('mobile_session_input_rejected', {
+        sid,
+        reason: !sid ? 'missing_session_id' : 'empty_chunks',
+      })
+      return false
+    }
+
+    if (ws?.readyState === WebSocket.OPEN) {
+      chunks.forEach((chunk) => {
+        sendWsPayload(sid, ws, { type: 'input', content: chunk }, {
+          source: 'mobile_composer',
+        })
+      })
+      logSessionDebug('mobile_session_input_sent', {
+        sid,
+        chunkCount: chunks.length,
+        hasTrailingReturn: /[\r\n]$/.test(normalizedContent),
+      })
+      return true
+    }
+
+    ensurePendingInputQueue(sid).push(...chunks)
+    logSessionDebug('mobile_session_input_queued', {
+      sid,
+      chunkCount: chunks.length,
+      queuedCount: ensurePendingInputQueue(sid).length,
+      hasTrailingReturn: /[\r\n]$/.test(normalizedContent),
+      readyState: ws ? socketReadyStateLabel(ws.readyState) : 'NO_SOCKET',
+    })
+
+    const targetTab = sessionTabsRef.current.find((tab) => tab.id === sid)
+    if (targetTab) {
+      logSessionDebug('mobile_session_input_reconnect', {
+        sid,
+        forceReconnect: ws?.readyState === WebSocket.CLOSING || ws?.readyState === WebSocket.CLOSED,
+        active: sessionIdRef.current === sid,
+      })
+      connectWs(targetTab, {
+        activate: sessionIdRef.current === sid,
+        forceReconnect: ws?.readyState === WebSocket.CLOSING || ws?.readyState === WebSocket.CLOSED,
+      })
+      if (sessionIdRef.current === sid) {
+        setConnected(false)
+        setStep('connecting')
+      }
+      return true
+    }
+
+    pendingInputRef.current.delete(sid)
+    logSessionDebug('mobile_session_input_failed', {
+      sid,
+      reason: 'missing_target_tab',
+    })
+    return false
+  }
+
   const connectWs = (tab, options = {}) => {
     const sid = tab.id
     const temporary = tab.temporary
     const existingWs = wsPoolRef.current.get(sid)
-    if (existingWs && (existingWs.readyState === WebSocket.OPEN || existingWs.readyState === WebSocket.CONNECTING)) {
+    const forceReconnect = options.forceReconnect === true
+
+    logSessionDebug('connect_ws_start', {
+      sid,
+      forceReconnect,
+      activate: options.activate !== false,
+      hasExistingSocket: Boolean(existingWs),
+      existingReadyState: existingWs ? socketReadyStateLabel(existingWs.readyState) : 'NO_SOCKET',
+    })
+
+    if (existingWs && !forceReconnect && (existingWs.readyState === WebSocket.OPEN || existingWs.readyState === WebSocket.CONNECTING)) {
       if (options.activate !== false) {
         attachActiveSocket(sid)
       }
+      logSessionDebug('connect_ws_reuse_existing', {
+        sid,
+        readyState: socketReadyStateLabel(existingWs.readyState),
+        wsUrl: existingWs.url || '',
+      })
       clearReconnectNotice(sid)
       if (existingWs.readyState === WebSocket.OPEN && options.activate !== false) {
         setConnected(true)
@@ -525,8 +881,16 @@ export function useWorkspaceController({
       return existingWs
     }
 
+    if (existingWs) {
+      dropSocketById(sid, true)
+    }
+
     const tokenQuery = auth?.token ? `?token=${encodeURIComponent(auth.token)}` : ''
     const ws = new WebSocket(`${WS_BASE}/session/${encodeURIComponent(sid)}/ws${tokenQuery}`)
+    logSessionDebug('connect_ws_created', {
+      sid,
+      wsUrl: ws.url || `${WS_BASE}/session/${encodeURIComponent(sid)}/ws${tokenQuery}`,
+    })
     ws._sparkySessionId = sid
     ws._sparkyManualClose = false
     ws._sparkyExited = false
@@ -536,15 +900,48 @@ export function useWorkspaceController({
     }
     wsPoolRef.current.set(sid, ws)
     clearReconnectNotice(sid)
+    clearConnectTimeout(sid)
+    connectTimeoutRef.current.set(sid, window.setTimeout(() => {
+      if (wsPoolRef.current.get(sid) !== ws || ws.readyState !== WebSocket.CONNECTING) {
+        return
+      }
+
+      ws._sparkyHadError = true
+      reconnectingSessionRef.current.delete(sid)
+      try {
+        ws.close()
+      } catch {
+        if (wsPoolRef.current.get(sid) === ws) {
+          wsPoolRef.current.delete(sid)
+        }
+        if (wsRef.current === ws) {
+          wsRef.current = null
+          setConnected(false)
+          if (sessionIdRef.current === sid) {
+            setStep('chat')
+          }
+        }
+        setReconnectNotice(sid, 'WebSocket 连接超时。会话仍在保活，可恢复当前 PTY 连接。')
+      }
+    }, WS_CONNECT_TIMEOUT_MS))
 
     ws.onopen = () => {
+      logSessionDebug('connect_ws_open', {
+        sid,
+        wsUrl: ws.url || '',
+      })
+      reconnectingSessionRef.current.delete(sid)
+      clearConnectTimeout(sid)
       clearReconnectNotice(sid)
       clearKeepAlive(sid)
       keepAliveRef.current.set(sid, window.setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'ping' }))
+          sendWsPayload(sid, ws, { type: 'ping' }, {
+            source: 'keepalive',
+          })
         }
       }, KEEPALIVE_INTERVAL_MS))
+      flushPendingSessionInput(sid, ws)
 
       if (wsRef.current !== ws) {
         return
@@ -557,6 +954,15 @@ export function useWorkspaceController({
     }
 
     ws.onclose = () => {
+      logSessionDebug('connect_ws_close', {
+        sid,
+        wsUrl: ws.url || '',
+        manualClose: ws._sparkyManualClose === true,
+        exited: ws._sparkyExited === true,
+        hadError: ws._sparkyHadError === true,
+      })
+      reconnectingSessionRef.current.delete(sid)
+      clearConnectTimeout(sid)
       const wasManualClose = ws._sparkyManualClose === true
       const hasExited = ws._sparkyExited === true
       const hadError = ws._sparkyHadError === true
@@ -568,6 +974,9 @@ export function useWorkspaceController({
       if (isActiveSocket) {
         wsRef.current = null
         setConnected(false)
+        if (!hasExited && sessionIdRef.current === sid) {
+          setStep('chat')
+        }
       }
       if (!wasManualClose && hasExited) {
         setSessions((prev) => prev.filter((item) => item.id !== sid))
@@ -591,6 +1000,10 @@ export function useWorkspaceController({
     }
 
     ws.onerror = () => {
+      logSessionDebug('connect_ws_error', {
+        sid,
+        wsUrl: ws.url || '',
+      })
       if (wsPoolRef.current.get(sid) !== ws) {
         return
       }
@@ -600,6 +1013,14 @@ export function useWorkspaceController({
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
+        logSessionDebug('connect_ws_message', {
+          sid,
+          wsUrl: ws.url || '',
+          messageType: data?.type || '',
+          contentPreview: typeof data?.content === 'string'
+            ? summarizeContentPreview(data.content)
+            : '',
+        })
         if (data.type === 'output' && typeof data.content === 'string') {
           queueTerminalOutput(sid, data.content)
         } else if (data.type === 'pong') {
@@ -613,6 +1034,11 @@ export function useWorkspaceController({
           queueTerminalOutput(sid, data.content)
         }
       } catch {
+        logSessionDebug('connect_ws_message_raw', {
+          sid,
+          wsUrl: ws.url || '',
+          preview: summarizeContentPreview(event.data),
+        })
         queueTerminalOutput(sid, event.data)
       }
     }
@@ -683,7 +1109,7 @@ export function useWorkspaceController({
 
     setConnected(false)
     setStep('connecting')
-    connectWs(tab, { activate: true })
+    connectWs(tab, { activate: true, forceReconnect: options.forceReconnect === true })
   }
 
   const activatePersistentSession = (project, targetSessionId = '') => {
@@ -709,6 +1135,63 @@ export function useWorkspaceController({
     activateSessionTab(nextTab, { project })
   }
 
+  const syncCodexHistoryAfterSessionOpen = async ({
+    project,
+    ptySessionId,
+    preferredCodexSessionId = '',
+    knownHistorySessionIds = [],
+  }) => {
+    if (!project?.id || project.runtime !== 'codex' || !ptySessionId) {
+      return ''
+    }
+
+    const attempts = [0, 800, 1600, 3200, 5000]
+    const seenHistoryIds = new Set(
+      knownHistorySessionIds
+        .concat(panels.codexSessions.map((item) => item.sessionId))
+        .filter(Boolean),
+    )
+
+    for (const delayMs of attempts) {
+      if (delayMs > 0) {
+        await wait(delayMs)
+      }
+
+      const normalized = await panels.loadCodexSessions(project)
+      if (!normalized) {
+        return ''
+      }
+
+      const historySessions = normalized.historySessions || []
+      if (historySessions.length === 0) {
+        continue
+      }
+
+      let targetCodexSessionId = preferredCodexSessionId
+      if (!targetCodexSessionId || !historySessions.some((item) => item.sessionId === targetCodexSessionId)) {
+        targetCodexSessionId = (
+          historySessions.find((item) => !seenHistoryIds.has(item.sessionId))
+          || historySessions[0]
+        )?.sessionId || ''
+      }
+
+      historySessions.forEach((item) => {
+        if (item.sessionId) {
+          seenHistoryIds.add(item.sessionId)
+        }
+      })
+
+      if (!targetCodexSessionId) {
+        continue
+      }
+
+      const timeline = await loadCodexTimeline(targetCodexSessionId, project, ptySessionId)
+      return timeline?.sessionId || targetCodexSessionId
+    }
+
+    return ''
+  }
+
   const openSessionRequest = async (project, options = {}) => {
     const temporary = Boolean(options.temporary)
     const preserveTabs = Boolean(options.preserveTabs)
@@ -723,6 +1206,9 @@ export function useWorkspaceController({
     const previousTab = previousTabs.find((tab) => tab.id === sessionIdRef.current) || null
     const previousProject = selectedProject
     const nextProjects = mergeProjects(projectsRef.current, project)
+    const knownCodexHistorySessionIds = project.runtime === 'codex'
+      ? panels.codexSessions.map((item) => item.sessionId).filter(Boolean)
+      : []
     rememberProject(project.id)
     setSelectedProject(project)
     if (!sessionIdRef.current) {
@@ -755,7 +1241,14 @@ export function useWorkspaceController({
       }
 
       const nextTemporary = Boolean(data.temporary)
-      const tab = buildSessionTab(data.session_id, project, nextTemporary, sessionTabsRef.current)
+      const codexSessionId = data.codex_session_id || ''
+      const tab = buildSessionTab(
+        data.session_id,
+        project,
+        nextTemporary,
+        sessionTabsRef.current,
+        codexSessionId,
+      )
       const nextSessions = [
         {
           id: data.session_id,
@@ -763,6 +1256,7 @@ export function useWorkspaceController({
           createdAtMs: Date.now(),
           alive: true,
           temporary: nextTemporary,
+          codexSessionId,
         },
         ...sessionsRef.current.filter((item) => item.id !== data.session_id),
       ].sort((a, b) => b.createdAtMs - a.createdAtMs)
@@ -779,6 +1273,14 @@ export function useWorkspaceController({
       setStep('connecting')
       setConnected(false)
       connectWs(tab, { activate: true })
+      if (project.runtime === 'codex' && !nextTemporary) {
+        void syncCodexHistoryAfterSessionOpen({
+          project,
+          ptySessionId: data.session_id,
+          preferredCodexSessionId: codexSessionId,
+          knownHistorySessionIds: knownCodexHistorySessionIds,
+        })
+      }
       return data
     } catch {
       if (previousTab) {
@@ -848,6 +1350,12 @@ export function useWorkspaceController({
 
       if (result?.session_id) {
         await panels.loadCodexSessions(selectedProject)
+        const nextCodexSessionId = result.codex_session_id || codexSessionId || ''
+        if (nextCodexSessionId) {
+          await loadCodexTimeline(nextCodexSessionId, selectedProject)
+        } else {
+          lastLoadedCodexSessionIdRef.current = ''
+        }
       }
     } catch (error) {
       panels.setCodexError(error.message || '恢复 Codex 会话失败')
@@ -866,6 +1374,10 @@ export function useWorkspaceController({
     }
 
     activateSessionTab(tab)
+    const tabProject = projectsRef.current.find((item) => item.id === tab.projectId) || selectedProject
+    if (tabProject?.runtime === 'codex' && tab.codexSessionId) {
+      loadCodexTimeline(tab.codexSessionId, tabProject)
+    }
   }
 
   const leaveSessionView = async () => {
@@ -876,8 +1388,13 @@ export function useWorkspaceController({
     setSessionTabs([])
     setSelectedProject(null)
     setTerminalReconnectState({})
+    setActiveCodexSessionId('')
+    setCodexTimeline(emptyCodexTimeline)
+    setCodexTimelineLoading(false)
+    setCodexTimelineError('')
     panels.resetWorkspacePanels()
     resetTerminal()
+    lastLoadedCodexSessionIdRef.current = ''
     await loadWorkspaceState()
   }
 
@@ -925,6 +1442,7 @@ export function useWorkspaceController({
       setSessionTabs(remainingTabs)
       setConnected(false)
       setSessionId(null)
+      lastLoadedCodexSessionIdRef.current = ''
       panels.setGitError('')
       panels.setGitActionResult('')
       panels.setCommitMessage('')
@@ -950,6 +1468,10 @@ export function useWorkspaceController({
       setSessionTabs([])
       setSelectedProject(null)
       setTerminalReconnectState({})
+      setActiveCodexSessionId('')
+      setCodexTimeline(emptyCodexTimeline)
+      setCodexTimelineLoading(false)
+      setCodexTimelineError('')
       panels.resetWorkspacePanels()
       resetTerminal()
       await loadWorkspaceState()
@@ -1069,8 +1591,13 @@ export function useWorkspaceController({
     setSessionTabs([])
     setSelectedProject(null)
     setTerminalReconnectState({})
+    setActiveCodexSessionId('')
+    setCodexTimeline(emptyCodexTimeline)
+    setCodexTimelineLoading(false)
+    setCodexTimelineError('')
     panels.resetWorkspacePanels()
     resetTerminal()
+    lastLoadedCodexSessionIdRef.current = ''
 
     if (token) {
       try {
@@ -1153,6 +1680,38 @@ export function useWorkspaceController({
     }
   }, [connected, panels.sidebarWidth, panels.sidePanelTab, sessionId, step])
 
+  useEffect(() => {
+    if (step === 'select' || selectedProject?.runtime !== 'codex') {
+      setActiveCodexSessionId('')
+      setCodexTimeline(emptyCodexTimeline)
+      setCodexTimelineLoading(false)
+      setCodexTimelineError('')
+      lastLoadedCodexSessionIdRef.current = ''
+      return
+    }
+
+    const availableSessionIds = panels.codexSessions.map((item) => item.sessionId).filter(Boolean)
+    if (availableSessionIds.length === 0) {
+      setCodexTimeline(emptyCodexTimeline)
+      setCodexTimelineError('')
+      setCodexTimelineLoading(false)
+      lastLoadedCodexSessionIdRef.current = ''
+      return
+    }
+
+    const nextSessionId = availableSessionIds.includes(activeCodexSessionId)
+      ? activeCodexSessionId
+      : availableSessionIds[0]
+
+    if (nextSessionId !== activeCodexSessionId) {
+      setActiveCodexSessionId(nextSessionId)
+    }
+
+    if (lastLoadedCodexSessionIdRef.current !== nextSessionId) {
+      loadCodexTimeline(nextSessionId, selectedProject)
+    }
+  }, [activeCodexSessionId, panels.codexSessions, selectedProject, step])
+
   const totalProjects = projects.length
   const activeSessionCount = sessions.length
   const sessionByProjectId = new Map()
@@ -1192,25 +1751,94 @@ export function useWorkspaceController({
   const activeSessionTab = sessionTabs.find((tab) => tab.id === sessionId) || null
   const activeReconnectNotice = activeSessionTab?.id ? terminalReconnectState[activeSessionTab.id] || null : null
   const currentSessionTemporary = Boolean(activeSessionTab?.temporary)
+  const currentCodexSessionTab = selectedProject?.runtime === 'codex'
+    ? (
+        sessionTabs.find((tab) => tab.id === panels.codexLiveSessions[0]?.sessionId)
+        || sessionTabs.find((tab) => tab.projectId === selectedProject.id && !tab.temporary)
+        || null
+      )
+    : null
+  const currentCodexLiveSession = selectedProject?.runtime === 'codex'
+    ? (
+        panels.codexLiveSessions[0]
+        || (currentCodexSessionTab
+          ? {
+              sessionId: currentCodexSessionTab.id,
+              cwd: '',
+              createdAtMs: 0,
+              updatedAtMs: 0,
+            }
+          : null)
+      )
+    : null
   const canReconnectCurrentSession = Boolean(activeSessionTab?.id) && !connected && step !== 'connecting'
   const isEditingProject = Boolean(editingProjectTarget?.id)
-  const reconnectCurrentSession = () => {
-    if (!activeSessionTab?.id) {
+  const reconnectCurrentSession = (targetTab = activeSessionTab) => {
+    if (!targetTab?.id || reconnectingSessionRef.current.has(targetTab.id)) {
       return
     }
 
-    activateSessionTab(activeSessionTab, {
-      project: selectedProject || projectsRef.current.find((item) => item.id === activeSessionTab.projectId) || null,
+    reconnectingSessionRef.current.add(targetTab.id)
+    activateSessionTab(targetTab, {
+      project: selectedProject || projectsRef.current.find((item) => item.id === targetTab.projectId) || null,
+      forceReconnect: true,
     })
   }
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return undefined
+    }
+
+    const tryReconnectVisibleSession = () => {
+      if (document.visibilityState !== 'visible') {
+        return
+      }
+
+      const activeTab = sessionTabsRef.current.find((tab) => tab.id === sessionIdRef.current) || null
+      if (!activeTab?.id) {
+        return
+      }
+
+      const ws = wsPoolRef.current.get(activeTab.id)
+      const reconnectable = !ws || ws.readyState !== WebSocket.OPEN
+      const hasReconnectNotice = Boolean(terminalReconnectState[activeTab.id])
+      if (!reconnectable || !hasReconnectNotice) {
+        return
+      }
+
+      reconnectCurrentSession(activeTab)
+    }
+
+    document.addEventListener('visibilitychange', tryReconnectVisibleSession)
+    window.addEventListener('focus', tryReconnectVisibleSession)
+    window.addEventListener('pageshow', tryReconnectVisibleSession)
+
+    return () => {
+      document.removeEventListener('visibilitychange', tryReconnectVisibleSession)
+      window.removeEventListener('focus', tryReconnectVisibleSession)
+      window.removeEventListener('pageshow', tryReconnectVisibleSession)
+    }
+  }, [terminalReconnectState, selectedProject, connected])
   const sidePanelProps = {
     codexPanelProps: {
       codexError: panels.codexError,
       codexLoading: panels.codexLoading,
       codexResumeLoading: panels.codexResumeLoading,
       codexSessions: panels.codexSessions,
+      currentCodexSession: currentCodexLiveSession,
       hasCodexSessions: panels.hasCodexSessions,
       onLoadCodexSessions: () => panels.loadCodexSessions(),
+      onReturnToCurrentSession: () => {
+        const targetTab = currentCodexSessionTab
+          || sessionTabsRef.current.find((tab) => tab.id === currentCodexLiveSession?.sessionId)
+          || null
+        if (targetTab) {
+          activateSessionTab(targetTab, {
+            project: selectedProject || projectsRef.current.find((item) => item.id === targetTab.projectId) || null,
+          })
+        }
+      },
       onResumeCodexSession: resumeCodexSession,
       selectedProjectId: selectedProject?.id,
     },
@@ -1261,9 +1889,14 @@ export function useWorkspaceController({
     },
   }
   const terminalPanelProps = {
+    activeCodexSessionId,
     canReconnectCurrentSession,
     connected,
+    codexTimeline,
+    codexTimelineError,
+    codexTimelineLoading,
     currentSessionTemporary,
+    onRefreshCodexTimeline: () => loadCodexTimeline(),
     onDestroyCurrentSession: requestCloseCurrentSession,
     onLeaveSessionView: leaveSessionView,
     onOpenTemporarySession: openTemporarySession,
@@ -1273,6 +1906,7 @@ export function useWorkspaceController({
     selectedProject,
     sessionId,
     sessionTabs,
+    onSendSessionInput: sendSessionInput,
     step,
     registerTerminalHost,
   }

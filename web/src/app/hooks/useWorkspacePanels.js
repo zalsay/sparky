@@ -11,7 +11,7 @@ import {
 import {
   clamp,
   gitOutputPreview,
-  normalizeCodexSessions,
+  normalizeCodexSessionPayload,
   normalizeFileTree,
   normalizeGitStatus,
   normalizeWebTargets,
@@ -41,6 +41,7 @@ export function useWorkspacePanels({
   const [selectedWebTargetId, setSelectedWebTargetId] = useState('')
 
   const [codexSessions, setCodexSessions] = useState([])
+  const [codexLiveSessions, setCodexLiveSessions] = useState([])
   const [codexLoading, setCodexLoading] = useState(false)
   const [codexError, setCodexError] = useState('')
   const [codexResumeLoading, setCodexResumeLoading] = useState('')
@@ -70,6 +71,7 @@ export function useWorkspacePanels({
     setWebRestartLoading(false)
     setSelectedWebTargetId('')
     setCodexSessions([])
+    setCodexLiveSessions([])
     setCodexLoading(false)
     setCodexError('')
     setCodexResumeLoading('')
@@ -194,7 +196,11 @@ export function useWorkspacePanels({
   const loadCodexSessions = async (project = selectedProject) => {
     if (!auth?.token || !project?.id || project.runtime !== 'codex') {
       setCodexSessions([])
-      return
+      setCodexLiveSessions([])
+      return {
+        historySessions: [],
+        liveSessions: [],
+      }
     }
 
     setCodexLoading(true)
@@ -208,17 +214,22 @@ export function useWorkspacePanels({
 
       if (response.status === 401) {
         onUnauthorized()
-        return
+        return null
       }
 
       if (!response.ok) {
         throw new Error(data.error || '加载 Codex 会话失败')
       }
 
-      setCodexSessions(normalizeCodexSessions(data))
+      const normalized = normalizeCodexSessionPayload(data)
+      setCodexSessions(normalized.historySessions)
+      setCodexLiveSessions(normalized.liveSessions)
+      return normalized
     } catch (error) {
       setCodexSessions([])
+      setCodexLiveSessions([])
       setCodexError(error.message || '加载 Codex 会话失败')
+      return null
     } finally {
       setCodexLoading(false)
     }
@@ -505,6 +516,7 @@ export function useWorkspacePanels({
       loadCodexSessions(selectedProject)
     } else {
       setCodexSessions([])
+      setCodexLiveSessions([])
       setCodexError('')
       setCodexResumeLoading('')
       if (sidePanelTab === 'codex') {
@@ -560,6 +572,7 @@ export function useWorkspacePanels({
   return {
     activeWebTarget,
     codexError,
+    codexLiveSessions,
     codexLoading,
     codexResumeLoading,
     codexSessions,

@@ -17,9 +17,6 @@ export function SessionCloseModal({
             <span className="eyebrow">会话关闭</span>
             <h3 className="modal-title">关闭当前会话</h3>
           </div>
-          <button className="modal-close" type="button" onClick={onClose} disabled={closingSession}>
-            取消
-          </button>
         </div>
 
         <p className="modal-copy">

@@ -28,7 +28,7 @@ use actix_ws::Message;
 use auth::{AuthError, AuthUser, UserStore};
 use awc::Client;
 use bytes::BytesMut;
-use codex::CodexSessionSummary;
+use codex::{CodexLiveSessionSummary, CodexSessionSummary, CodexSessionsResponse};
 use config::ServerConfig;
 use dev_server::{
     build_dev_request_path, bytes_to_string, document_base_for_proxy, rewrite_html_for_proxy,
@@ -44,7 +44,8 @@ use git::{
 use once_cell::sync::{Lazy, OnceCell};
 use project::{Project, ProjectStore};
 use serde::Deserialize;
-use session::LaunchOverride;
+use session::{LaunchOverride, SessionSummary};
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -90,6 +91,13 @@ struct UpdateProjectRequest {
     path: String,
     git_url: Option<String>,
     runtime: Option<String>,
+}
+
+#[derive(Debug)]
+struct PendingRepositoryClone {
+    project_id: String,
+    project_path: PathBuf,
+    git_url: String,
 }
 
 #[derive(Deserialize)]
@@ -199,6 +207,117 @@ fn is_codex_project(project: &Project) -> bool {
         || project.cmd_args.iter().any(|arg| arg.contains("codex"))
 }
 
+fn build_live_codex_session_summary(
+    session: &SessionSummary,
+    cwd: &str,
+) -> CodexLiveSessionSummary {
+    CodexLiveSessionSummary {
+        session_id: session.session_id.clone(),
+        cwd: cwd.to_string(),
+        created_at_ms: session.created_at_ms,
+        updated_at_ms: session.created_at_ms,
+    }
+}
+
+fn collect_live_codex_sessions(
+    sessions: Vec<SessionSummary>,
+    project: &Project,
+    cwd: &str,
+) -> Vec<CodexLiveSessionSummary> {
+    let live_sessions = sessions
+        .into_iter()
+        .filter(|session| session.project_id == project.project_id)
+        .filter(|session| session.alive && !session.temporary)
+        .map(|session| build_live_codex_session_summary(&session, cwd))
+        .collect::<Vec<_>>();
+
+    let original_count = live_sessions.len();
+    let mut deduped = HashMap::with_capacity(original_count);
+    for session in live_sessions {
+        deduped
+            .entry(session.session_id.clone())
+            .and_modify(|current: &mut CodexLiveSessionSummary| {
+                if (session.updated_at_ms, session.created_at_ms)
+                    > (current.updated_at_ms, current.created_at_ms)
+                {
+                    *current = session.clone();
+                }
+            })
+            .or_insert(session);
+    }
+
+    if deduped.len() != original_count {
+        log::warn!(
+            "Deduplicated live Codex sessions for project {}: {} -> {}",
+            project.project_id,
+            original_count,
+            deduped.len()
+        );
+    }
+
+    let mut live_sessions = deduped.into_values().collect::<Vec<_>>();
+
+    live_sessions.sort_by(|left, right| {
+        right
+            .updated_at_ms
+            .cmp(&left.updated_at_ms)
+            .then_with(|| left.session_id.cmp(&right.session_id))
+    });
+    live_sessions
+}
+
+async fn current_live_codex_sessions(
+    user: &auth::AuthSession,
+    project: &Project,
+) -> Result<Vec<CodexLiveSessionSummary>, String> {
+    let cwd = project_runtime_root(project)?.display().to_string();
+    if let Some(remote) = EXECUTOR_REMOTE.as_ref() {
+        let sessions = remote
+            .list_sessions_for_user(&user.user_id)
+            .await
+            .map_err(|error| format!("list remote executor sessions: {}", error.message))?;
+        return Ok(collect_live_codex_sessions(sessions, project, &cwd));
+    }
+
+    Ok(collect_live_codex_sessions(
+        EXECUTOR.list_sessions_for_user(&user.user_id),
+        project,
+        &cwd,
+    ))
+}
+
+async fn sync_live_codex_session(
+    user_id: &str,
+    project_id: &str,
+    session: &CodexLiveSessionSummary,
+) -> Result<(), String> {
+    let Some(pool) = USER_STORE.get().and_then(|store| store.postgres_pool()) else {
+        return Ok(());
+    };
+
+    codex::upsert_live_session(&pool, user_id, project_id, session).await
+}
+
+async fn clear_live_codex_sessions(user_id: &str, project_id: &str) -> Result<(), String> {
+    let Some(pool) = USER_STORE.get().and_then(|store| store.postgres_pool()) else {
+        return Ok(());
+    };
+
+    codex::clear_live_sessions_for_project(&pool, user_id, project_id).await
+}
+
+async fn remove_live_codex_session(
+    user_id: &str,
+    project_id: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    let Some(pool) = USER_STORE.get().and_then(|store| store.postgres_pool()) else {
+        return Ok(());
+    };
+
+    codex::remove_live_session(&pool, user_id, project_id, session_id).await
+}
+
 fn bearer_token_with_source(req: &HttpRequest) -> Option<(String, &'static str)> {
     if let Some(header) = req.headers().get("Authorization") {
         if let Ok(value) = header.to_str() {
@@ -253,29 +372,34 @@ async fn current_user(req: &HttpRequest) -> Option<auth::AuthSession> {
     store.get(&token).await
 }
 
+fn cookie_token(req: &HttpRequest, name: &'static str) -> Option<(String, &'static str)> {
+    let cookie = req.cookie(name)?;
+    let value = cookie.value().trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some((value.to_string(), name))
+    }
+}
+
 fn proxy_session_token_with_source(req: &HttpRequest) -> Option<(String, &'static str)> {
-    if let Some(cookie) = req.cookie("sparky_auth_token") {
-        let value = cookie.value().trim();
-        if !value.is_empty() {
-            return Some((value.to_string(), "sparky_auth_token"));
-        }
+    let path = req.path();
+
+    if path.starts_with("/dev/") {
+        return cookie_token(req, "sparky_dev_token")
+            .or_else(|| cookie_token(req, "sparky_auth_token"))
+            .or_else(|| cookie_token(req, "sparky_editor_token"));
     }
 
-    if let Some(cookie) = req.cookie("sparky_dev_token") {
-        let value = cookie.value().trim();
-        if !value.is_empty() {
-            return Some((value.to_string(), "sparky_dev_token"));
-        }
+    if path.starts_with("/editor/") {
+        return cookie_token(req, "sparky_editor_token")
+            .or_else(|| cookie_token(req, "sparky_auth_token"))
+            .or_else(|| cookie_token(req, "sparky_dev_token"));
     }
 
-    if let Some(cookie) = req.cookie("sparky_editor_token") {
-        let value = cookie.value().trim();
-        if !value.is_empty() {
-            return Some((value.to_string(), "sparky_editor_token"));
-        }
-    }
-
-    None
+    cookie_token(req, "sparky_auth_token")
+        .or_else(|| cookie_token(req, "sparky_dev_token"))
+        .or_else(|| cookie_token(req, "sparky_editor_token"))
 }
 
 fn proxy_session_token(req: &HttpRequest) -> Option<String> {
@@ -506,8 +630,8 @@ async fn create_project(
     let result =
         tokio::task::spawn_blocking(move || create_project_inner(&user.user_id, request)).await;
 
-    let project = match result {
-        Ok(Ok(project)) => project,
+    let (project, pending_clone) = match result {
+        Ok(Ok(result)) => result,
         Ok(Err(error)) => {
             return HttpResponse::BadRequest().json(serde_json::json!({
                 "error": error
@@ -519,6 +643,8 @@ async fn create_project(
             }))
         }
     };
+
+    spawn_repository_clone(pending_clone);
 
     HttpResponse::Ok().json(serde_json::json!({
         "project": project_payload(&project)
@@ -533,18 +659,28 @@ async fn delete_project(req: HttpRequest, path: web::Path<String>) -> HttpRespon
     };
 
     let project_id = path.into_inner();
+    let user_id = user.user_id.clone();
+    let project_id_for_task = project_id.clone();
     let task = tokio::task::spawn_blocking(move || {
-        let project = PROJECTS.remove_custom_project(&user.user_id, &project_id)?;
-        let removed_sessions = EXECUTOR.remove_project_runtime(&user.user_id, &project_id);
+        let project = PROJECTS.remove_custom_project(&user_id, &project_id_for_task)?;
+        let removed_sessions = EXECUTOR.remove_project_runtime(&user_id, &project_id_for_task);
         Ok::<_, String>((project, removed_sessions))
     })
     .await;
 
     match task {
-        Ok(Ok((project, removed_sessions))) => HttpResponse::Ok().json(serde_json::json!({
-            "project": project_payload(&project),
-            "removed_sessions": removed_sessions,
-        })),
+        Ok(Ok((project, removed_sessions))) => {
+            if let Err(error) = clear_live_codex_sessions(&user.user_id, &project_id).await {
+                return HttpResponse::InternalServerError().json(serde_json::json!({
+                    "error": error
+                }));
+            }
+
+            HttpResponse::Ok().json(serde_json::json!({
+                "project": project_payload(&project),
+                "removed_sessions": removed_sessions,
+            }))
+        }
         Ok(Err(error)) if error == "project not found" => {
             HttpResponse::NotFound().json(serde_json::json!({
                 "error": error
@@ -578,19 +714,33 @@ async fn update_project(
     let project_id = path.into_inner();
     let request = payload.into_inner();
     let user_id = user.user_id.clone();
+    let user_id_for_task = user_id.clone();
+    let project_id_for_task = project_id.clone();
 
     let result = tokio::task::spawn_blocking(move || {
-        let project = update_project_inner(&user_id, &project_id, request)?;
-        let removed_sessions = EXECUTOR.remove_project_runtime(&user_id, &project_id);
-        Ok::<_, String>((project, removed_sessions))
+        let (project, pending_clone) =
+            update_project_inner(&user_id_for_task, &project_id_for_task, request)?;
+        let removed_sessions =
+            EXECUTOR.remove_project_runtime(&user_id_for_task, &project_id_for_task);
+        Ok::<_, String>((project, pending_clone, removed_sessions))
     })
     .await;
 
     match result {
-        Ok(Ok((project, removed_sessions))) => HttpResponse::Ok().json(serde_json::json!({
-            "project": project_payload(&project),
-            "removed_sessions": removed_sessions,
-        })),
+        Ok(Ok((project, pending_clone, removed_sessions))) => {
+            spawn_repository_clone(pending_clone);
+
+            if let Err(error) = clear_live_codex_sessions(&user_id, &project_id).await {
+                return HttpResponse::InternalServerError().json(serde_json::json!({
+                    "error": error
+                }));
+            }
+
+            HttpResponse::Ok().json(serde_json::json!({
+                "project": project_payload(&project),
+                "removed_sessions": removed_sessions,
+            }))
+        }
         Ok(Err(error)) if error == "project not found" => {
             HttpResponse::NotFound().json(serde_json::json!({
                 "error": error
@@ -1169,23 +1319,65 @@ async fn create_session(
     let request = payload.map(web::Json::into_inner).unwrap_or_default();
     let temporary = request.temporary.unwrap_or(false);
     let fresh = request.fresh.unwrap_or(false);
+    let live_session_cwd = if is_codex_project(&project) {
+        match project_runtime_root(&project) {
+            Ok(path) => Some(path.display().to_string()),
+            Err(error) => {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": error
+                }))
+            }
+        }
+    } else {
+        None
+    };
 
     if let Some(remote) = EXECUTOR_REMOTE.as_ref() {
         return match remote
             .create_session(&project, &user, temporary, fresh, false, None)
             .await
         {
-            Ok(session) => HttpResponse::Ok().json(serde_json::json!({
-                "session_id": session.session_id,
-                "project_id": project_id,
-                "temporary": session.temporary,
-            })),
+            Ok(session) => {
+                if let Some(cwd) = live_session_cwd.as_deref().filter(|_| !session.temporary) {
+                    let live_session = build_live_codex_session_summary(&session, cwd);
+                    if let Err(error) =
+                        sync_live_codex_session(&user.user_id, &project.project_id, &live_session)
+                            .await
+                    {
+                        return HttpResponse::InternalServerError().json(serde_json::json!({
+                            "error": error
+                        }));
+                    }
+                }
+
+                HttpResponse::Ok().json(serde_json::json!({
+                    "session_id": session.session_id,
+                    "project_id": project_id,
+                    "temporary": session.temporary,
+                }))
+            }
             Err(error) => remote_executor_error_response(error),
         };
     }
 
     match EXECUTOR.create_session(&project, &user, temporary, fresh) {
         Ok(session) => {
+            if is_codex_project(&project) && !session.temporary {
+                let live_session = CodexLiveSessionSummary {
+                    session_id: session.id.clone(),
+                    cwd: session.runtime_worktree.clone(),
+                    created_at_ms: session.created_at_ms,
+                    updated_at_ms: session.created_at_ms,
+                };
+                if let Err(error) =
+                    sync_live_codex_session(&user.user_id, &project.project_id, &live_session).await
+                {
+                    return HttpResponse::InternalServerError().json(serde_json::json!({
+                        "error": error
+                    }));
+                }
+            }
+
             let id = session.id.clone();
             HttpResponse::Ok().json(serde_json::json!({
                 "session_id": id,
@@ -1218,9 +1410,7 @@ async fn list_codex_sessions(req: HttpRequest, path: web::Path<String>) -> HttpR
     }
 
     match load_project_codex_sessions(&user, &project).await {
-        Ok(sessions) => HttpResponse::Ok().json(serde_json::json!({
-            "sessions": sessions
-        })),
+        Ok(sessions) => HttpResponse::Ok().json(sessions),
         Err(error) => HttpResponse::InternalServerError().json(serde_json::json!({
             "error": error
         })),
@@ -1267,6 +1457,7 @@ async fn resume_codex_session(
         .filter(|value| !value.is_empty())
     {
         if sessions
+            .history_sessions
             .iter()
             .any(|session| session.session_id == session_id)
         {
@@ -1277,7 +1468,7 @@ async fn resume_codex_session(
             }));
         }
     } else {
-        match sessions.first() {
+        match sessions.history_sessions.first() {
             Some(session) => session.session_id.clone(),
             None => {
                 return HttpResponse::NotFound().json(serde_json::json!({
@@ -1299,29 +1490,107 @@ async fn resume_codex_session(
                 .to_string(),
         ),
     };
+    let live_session_cwd = launch.cwd.clone().unwrap_or_default();
 
     if let Some(remote) = EXECUTOR_REMOTE.as_ref() {
         return match remote
             .create_session(&project, &user, false, true, true, Some(launch))
             .await
         {
-            Ok(session) => HttpResponse::Ok().json(serde_json::json!({
-                "session_id": session.session_id,
-                "project_id": project_id,
-                "temporary": session.temporary,
-                "codex_session_id": target_session_id,
-            })),
+            Ok(session) => {
+                let live_session = build_live_codex_session_summary(&session, &live_session_cwd);
+                if let Err(error) =
+                    sync_live_codex_session(&user.user_id, &project.project_id, &live_session).await
+                {
+                    return HttpResponse::InternalServerError().json(serde_json::json!({
+                        "error": error
+                    }));
+                }
+
+                HttpResponse::Ok().json(serde_json::json!({
+                    "session_id": session.session_id,
+                    "project_id": project_id,
+                    "temporary": session.temporary,
+                    "codex_session_id": target_session_id,
+                }))
+            }
             Err(error) => remote_executor_error_response(error),
         };
     }
 
     match EXECUTOR.create_session_with_launch(&project, &user, false, Some(launch), true, true) {
-        Ok(session) => HttpResponse::Ok().json(serde_json::json!({
-            "session_id": session.id,
-            "project_id": project_id,
-            "temporary": session.temporary,
-            "codex_session_id": target_session_id,
+        Ok(session) => {
+            let live_session = CodexLiveSessionSummary {
+                session_id: session.id.clone(),
+                cwd: session.runtime_worktree.clone(),
+                created_at_ms: session.created_at_ms,
+                updated_at_ms: session.created_at_ms,
+            };
+            if let Err(error) =
+                sync_live_codex_session(&user.user_id, &project.project_id, &live_session).await
+            {
+                return HttpResponse::InternalServerError().json(serde_json::json!({
+                    "error": error
+                }));
+            }
+
+            HttpResponse::Ok().json(serde_json::json!({
+                "session_id": session.id,
+                "project_id": project_id,
+                "temporary": session.temporary,
+                "codex_session_id": target_session_id,
+            }))
+        }
+        Err(error) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": error
         })),
+    }
+}
+
+#[get("/projects/{id}/codex/sessions/{session_id}/timeline")]
+async fn get_codex_session_timeline(
+    req: HttpRequest,
+    path: web::Path<(String, String)>,
+) -> HttpResponse {
+    let user = match current_user(&req).await {
+        Some(user) => user,
+        None => return unauthorized(),
+    };
+
+    let (project_id, target_session_id) = path.into_inner();
+    let Some(project) = PROJECTS.find_for_user(&user.user_id, &project_id) else {
+        return HttpResponse::NotFound().json(serde_json::json!({
+            "error": "project not found"
+        }));
+    };
+
+    if !is_codex_project(&project) {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "project runtime is not codex"
+        }));
+    }
+
+    let sessions = match load_project_codex_sessions(&user, &project).await {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": error
+            }))
+        }
+    };
+
+    let Some(session) = sessions
+        .history_sessions
+        .iter()
+        .find(|session| session.session_id == target_session_id)
+    else {
+        return HttpResponse::NotFound().json(serde_json::json!({
+            "error": "codex session not found"
+        }));
+    };
+
+    match codex::read_timeline(session) {
+        Ok(timeline) => HttpResponse::Ok().json(timeline),
         Err(error) => HttpResponse::InternalServerError().json(serde_json::json!({
             "error": error
         })),
@@ -1342,51 +1611,91 @@ async fn destroy_session(
     let session_id = path.into_inner();
     let allow_persistent = query.allow_persistent.unwrap_or(false);
     if let Some(remote) = EXECUTOR_REMOTE.as_ref() {
+        let session = match remote.get_session(&user.user_id, &session_id).await {
+            Ok(session) => session,
+            Err(error) => return remote_executor_error_response(error),
+        };
         return match remote
             .destroy_session(&user.user_id, &session_id, allow_persistent)
             .await
         {
-            Ok(()) => HttpResponse::Ok().json(serde_json::json!({
-                "status": "destroyed",
-                "session_id": session_id,
-                "temporary": !allow_persistent,
-            })),
+            Ok(()) => {
+                if !session.temporary {
+                    let Some(project) = PROJECTS.find_for_user(&user.user_id, &session.project_id)
+                    else {
+                        return HttpResponse::NotFound().json(serde_json::json!({
+                            "error": "project not found"
+                        }));
+                    };
+                    if is_codex_project(&project) {
+                        if let Err(error) = remove_live_codex_session(
+                            &user.user_id,
+                            &project.project_id,
+                            &session_id,
+                        )
+                        .await
+                        {
+                            return HttpResponse::InternalServerError().json(serde_json::json!({
+                                "error": error
+                            }));
+                        }
+                    }
+                }
+
+                HttpResponse::Ok().json(serde_json::json!({
+                    "status": "destroyed",
+                    "session_id": session_id,
+                    "temporary": !allow_persistent,
+                }))
+            }
             Err(error) => remote_executor_error_response(error),
         };
     }
 
-    if !allow_persistent {
-        match EXECUTOR.require_temporary_session_for_user(&user.user_id, &session_id) {
-            Ok(()) => {}
-            Err(SessionAccessError::DefaultSessionCannotBeClosed) => {
-                return HttpResponse::BadRequest().json(serde_json::json!({
-                    "error": "default session cannot be closed"
-                }))
-            }
-            Err(SessionAccessError::Forbidden) => {
-                return HttpResponse::Forbidden().json(serde_json::json!({
-                    "error": "forbidden"
-                }))
-            }
-            Err(SessionAccessError::NotFound) => {
-                return HttpResponse::NotFound().json(serde_json::json!({
+    let existing_session = match EXECUTOR.resolve_session_for_user(&user.user_id, &session_id) {
+        Ok(session) => session,
+        Err(error) => {
+            return match error {
+                SessionAccessError::Forbidden => {
+                    HttpResponse::Forbidden().json(serde_json::json!({
+                        "error": "forbidden"
+                    }))
+                }
+                SessionAccessError::NotFound => HttpResponse::NotFound().json(serde_json::json!({
                     "error": "session not found"
-                }))
-            }
+                })),
+                SessionAccessError::DefaultSessionCannotBeClosed => unreachable!(),
+            };
         }
-    } else if let Err(error) = EXECUTOR.resolve_session_for_user(&user.user_id, &session_id) {
-        return match error {
-            SessionAccessError::Forbidden => HttpResponse::Forbidden().json(serde_json::json!({
-                "error": "forbidden"
-            })),
-            SessionAccessError::NotFound => HttpResponse::NotFound().json(serde_json::json!({
-                "error": "session not found"
-            })),
-            SessionAccessError::DefaultSessionCannotBeClosed => unreachable!(),
-        };
+    };
+
+    if !allow_persistent {
+        if existing_session.temporary {
+        } else {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "default session cannot be closed"
+            }));
+        }
     }
 
+    let existing_project_id = existing_session.project_id.clone();
+    let existing_temporary = existing_session.temporary;
     EXECUTOR.remove_session(&session_id);
+    if !existing_temporary {
+        if let Some(project) = PROJECTS.find_for_user(&user.user_id, &existing_project_id) {
+            if is_codex_project(&project) {
+                if let Err(error) =
+                    remove_live_codex_session(&user.user_id, &existing_project_id, &session_id)
+                        .await
+                {
+                    return HttpResponse::InternalServerError().json(serde_json::json!({
+                        "error": error
+                    }));
+                }
+            }
+        }
+    }
+
     HttpResponse::Ok().json(serde_json::json!({
         "status": "destroyed",
         "session_id": session_id,
@@ -1457,7 +1766,7 @@ async fn session_ws(
 async fn load_project_codex_sessions(
     user: &auth::AuthSession,
     project: &Project,
-) -> Result<Vec<CodexSessionSummary>, String> {
+) -> Result<CodexSessionsResponse, String> {
     let project_root = project_runtime_root(project)?;
     let project_clone = project.clone();
     let discovered = tokio::task::spawn_blocking(move || {
@@ -1466,15 +1775,28 @@ async fn load_project_codex_sessions(
     .await
     .map_err(|error| format!("discover codex sessions task failed: {}", error))??;
 
+    let live_sessions = current_live_codex_sessions(user, project).await?;
+
     if let Some(pool) = USER_STORE.get().and_then(|store| store.postgres_pool()) {
-        codex::upsert_sessions(&pool, &user.user_id, &project.project_id, &discovered).await?;
-        return codex::list_sessions(&pool, &user.user_id, &project.project_id).await;
+        codex::replace_sessions(&pool, &user.user_id, &project.project_id, &discovered).await?;
+        codex::replace_live_sessions(&pool, &user.user_id, &project.project_id, &live_sessions)
+            .await?;
+
+        return Ok(CodexSessionsResponse {
+            history_sessions: codex::list_sessions(&pool, &user.user_id, &project.project_id)
+                .await?,
+            live_sessions: codex::list_live_sessions(&pool, &user.user_id, &project.project_id)
+                .await?,
+        });
     }
 
-    Ok(discovered
-        .into_iter()
-        .map(CodexSessionSummary::from)
-        .collect())
+    Ok(CodexSessionsResponse {
+        history_sessions: discovered
+            .into_iter()
+            .map(CodexSessionSummary::from)
+            .collect(),
+        live_sessions,
+    })
 }
 
 async fn dev_proxy_root(req: HttpRequest, payload: web::Payload) -> Result<HttpResponse, Error> {
@@ -2197,6 +2519,7 @@ async fn main() -> std::io::Result<()> {
             .service(project_git_action)
             .service(list_codex_sessions)
             .service(resume_codex_session)
+            .service(get_codex_session_timeline)
             .service(project_file_tree)
             .service(project_editor_open)
             .service(project_web_targets)
@@ -2223,7 +2546,10 @@ async fn main() -> std::io::Result<()> {
     .await
 }
 
-fn create_project_inner(user_id: &str, request: CreateProjectRequest) -> Result<Project, String> {
+fn create_project_inner(
+    user_id: &str,
+    request: CreateProjectRequest,
+) -> Result<(Project, Option<PendingRepositoryClone>), String> {
     let name = request.name.trim();
     if name.is_empty() {
         return Err("project name is required".to_string());
@@ -2237,8 +2563,9 @@ fn create_project_inner(user_id: &str, request: CreateProjectRequest) -> Result<
         return Err("project path already configured".to_string());
     }
 
+    let git_url = normalize_git_url(request.git_url.as_deref());
     let runtime = parse_runtime(request.runtime.as_deref());
-    initialize_project_directory(&project_path, request.git_url.as_deref())?;
+    initialize_project_directory(&project_path, git_url.is_some())?;
 
     let existing_ids = PROJECTS
         .list_for_user(user_id)
@@ -2250,11 +2577,18 @@ fn create_project_inner(user_id: &str, request: CreateProjectRequest) -> Result<
         &project_id,
         name,
         &project_path_str,
-        request.git_url,
+        git_url.clone(),
         runtime,
     );
 
-    PROJECTS.add_custom_project(user_id, project.clone())
+    let project = PROJECTS.add_custom_project(user_id, project)?;
+    let pending_clone = git_url.map(|git_url| PendingRepositoryClone {
+        project_id: project.project_id.clone(),
+        project_path,
+        git_url,
+    });
+
+    Ok((project, pending_clone))
 }
 
 fn project_worktree_path(project: &Project) -> Result<PathBuf, String> {
@@ -2310,7 +2644,7 @@ fn update_project_inner(
     user_id: &str,
     project_id: &str,
     request: UpdateProjectRequest,
-) -> Result<Project, String> {
+) -> Result<(Project, Option<PendingRepositoryClone>), String> {
     let existing = PROJECTS
         .find_for_user(user_id, project_id)
         .ok_or_else(|| "project not found".to_string())?;
@@ -2328,31 +2662,39 @@ fn update_project_inner(
         return Err("project path already configured".to_string());
     }
 
-    ensure_project_directory_exists(&project_path)?;
+    let git_url = normalize_git_url(request.git_url.as_deref());
+    let should_clone = matches!(git_url.as_deref(), Some(_)) && !has_git_repository(&project_path)?;
 
-    let git_url = request
-        .git_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-
-    if let Some(git_url) = git_url.as_deref() {
-        if !has_git_repository(&project_path)? {
-            clone_project_repository(&project_path, git_url)?;
-        }
+    if should_clone {
+        initialize_project_directory(&project_path, true)?;
+    } else {
+        ensure_project_directory_exists(&project_path)?;
     }
 
     let runtime = parse_runtime(request.runtime.as_deref());
-    let updated = build_project_template(
-        &existing.project_id,
-        name,
-        &project_path_str,
-        git_url,
-        runtime,
-    );
+    let project = PROJECTS.update_custom_project(
+        user_id,
+        project_id,
+        build_project_template(
+            &existing.project_id,
+            name,
+            &project_path_str,
+            git_url.clone(),
+            runtime,
+        ),
+    )?;
 
-    PROJECTS.update_custom_project(user_id, project_id, updated)
+    let pending_clone = if should_clone {
+        git_url.map(|git_url| PendingRepositoryClone {
+            project_id: project.project_id.clone(),
+            project_path,
+            git_url,
+        })
+    } else {
+        None
+    };
+
+    Ok((project, pending_clone))
 }
 
 #[derive(Clone, Copy)]
@@ -2458,12 +2800,21 @@ fn resolve_project_path(input: &str, projects_root: &Path) -> Result<PathBuf, St
     Ok(projects_root.join(clean))
 }
 
-fn initialize_project_directory(project_path: &Path, git_url: Option<&str>) -> Result<(), String> {
+fn normalize_git_url(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn initialize_project_directory(
+    project_path: &Path,
+    validate_clone_target: bool,
+) -> Result<(), String> {
     ensure_project_parent_exists(project_path)?;
 
-    let git_url = git_url.map(str::trim).filter(|value| !value.is_empty());
-    if let Some(git_url) = git_url {
-        return clone_project_repository(project_path, git_url);
+    if validate_clone_target {
+        ensure_clone_target_ready(project_path)?;
     }
 
     std::fs::create_dir_all(project_path).map_err(|error| {
@@ -2473,6 +2824,38 @@ fn initialize_project_directory(project_path: &Path, git_url: Option<&str>) -> R
             error
         )
     })
+}
+
+fn spawn_repository_clone(task: Option<PendingRepositoryClone>) {
+    let Some(task) = task else {
+        return;
+    };
+
+    log::info!(
+        "starting background git clone for project {} into {}",
+        task.project_id,
+        task.project_path.display()
+    );
+
+    let _ = tokio::task::spawn_blocking(move || {
+        match clone_project_repository(&task.project_path, &task.git_url) {
+            Ok(()) => {
+                log::info!(
+                    "background git clone finished for project {} into {}",
+                    task.project_id,
+                    task.project_path.display()
+                );
+            }
+            Err(error) => {
+                log::warn!(
+                    "background git clone failed for project {} into {}: {}",
+                    task.project_id,
+                    task.project_path.display(),
+                    error
+                );
+            }
+        }
+    });
 }
 
 fn ensure_project_parent_exists(project_path: &Path) -> Result<(), String> {

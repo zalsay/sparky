@@ -1,3 +1,5 @@
+name: sparky_mobile_dev
+
 x-build-args: &build-args
   HTTP_PROXY: ${BUILD_HTTP_PROXY:-http://127.0.0.1:7890}
   HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-http://127.0.0.1:7890}
@@ -11,7 +13,7 @@ x-runtime-env: &runtime-env
   SSH_AUTH_SOCK: /ssh-agent
   SSH_KNOWN_HOSTS_TEMPLATE: /etc/sparky/known_hosts
   SANDBOX_ROOT: /tmp/sp-sandbox
-  DATABASE_URL: ${DATABASE_URL:-postgres://cc_user:cc_pass_2026@host.docker.internal:5435/cc_service}
+  DATABASE_URL: ${MOBILE_DEV_DATABASE_URL:-}
   DB_MAX_CONNECTIONS: "5"
   SPARKY_BWRAP_UNSHARE_USER: "false"
   ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN}
@@ -28,9 +30,9 @@ x-server-volumes: &server-volumes
   - ./config/claude-settings.json:/etc/sparky/claude-settings.json:ro
   - ./config/claude-user-state.json:/home/app/.claude.json:ro
   - ./config/claude-settings.json:/home/app/.claude/settings.json:ro
-  - ./codex-config:/home/app/.codex
+  - ${MOBILE_DEV_CODEX_HOME:-/tmp/sparky-mobile-dev/codex-config}:/home/app/.codex
   - ${HOST_SSH_AUTH_SOCK:-/run/user/0/gcr/ssh}:/ssh-agent
-  - ${HOST_DATA_ROOT:-/home/sp-dev/data}/projects:/projects
+  - ${MOBILE_DEV_HOST_DATA_ROOT:-/tmp/sparky-mobile-dev}/projects:/projects
 
 x-executor-volumes: &executor-volumes
   - ./config/projects.json:/etc/sparky/projects.json:ro
@@ -39,62 +41,62 @@ x-executor-volumes: &executor-volumes
   - ./config/claude-settings.json:/etc/sparky/claude-settings.json:ro
   - ./config/claude-user-state.json:/home/app/.claude.json:ro
   - ./config/claude-settings.json:/home/app/.claude/settings.json:ro
-  - ./codex-config:/home/app/.codex
-  - ${HOST_DATA_ROOT:-/home/sp-dev/data}/go:/home/app/go
-  - ${HOST_DATA_ROOT:-/home/sp-dev/data}/go-cache:/home/app/.cache/go-build
-  - ${HOST_DATA_ROOT:-/home/sp-dev/data}/python-local:/home/app/.local
-  - ${HOST_DATA_ROOT:-/home/sp-dev/data}/pip-cache:/home/app/.cache/pip
-  - ${HOST_DATA_ROOT:-/home/sp-dev/data}/uv-cache:/home/app/.cache/uv
+  - ${MOBILE_DEV_CODEX_HOME:-/tmp/sparky-mobile-dev/codex-config}:/home/app/.codex
+  - ${MOBILE_DEV_HOST_DATA_ROOT:-/tmp/sparky-mobile-dev}/go:/home/app/go
+  - ${MOBILE_DEV_HOST_DATA_ROOT:-/tmp/sparky-mobile-dev}/go-cache:/home/app/.cache/go-build
+  - ${MOBILE_DEV_HOST_DATA_ROOT:-/tmp/sparky-mobile-dev}/python-local:/home/app/.local
+  - ${MOBILE_DEV_HOST_DATA_ROOT:-/tmp/sparky-mobile-dev}/pip-cache:/home/app/.cache/pip
+  - ${MOBILE_DEV_HOST_DATA_ROOT:-/tmp/sparky-mobile-dev}/uv-cache:/home/app/.cache/uv
   - ${HOST_SSH_AUTH_SOCK:-/run/user/0/gcr/ssh}:/ssh-agent
-  - ${HOST_DATA_ROOT:-/home/sp-dev/data}/projects:/projects
+  - ${MOBILE_DEV_HOST_DATA_ROOT:-/tmp/sparky-mobile-dev}/projects:/projects
 
 services:
-  sparky-web:
+  sparky-web-mobile-dev:
     build:
       context: .
       dockerfile: Dockerfile.web
       network: host
       args: *build-args
-    image: sp-dev-web:latest
-    container_name: sp-web
+    image: sp-mobile-dev-web:latest
+    container_name: sp-mobile-dev-web
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3001:80"
+      - "0.0.0.0:${MOBILE_DEV_WEB_PORT:-3006}:80"
     environment:
-      SERVER_UPSTREAM: http://sp-server:3001
+      SERVER_UPSTREAM: http://sp-mobile-dev-server:3001
 
-  sparky:
+  sparky-server-mobile-dev:
     build:
       context: .
       dockerfile: Dockerfile
       target: server-runtime
       network: host
       args: *build-args
-    image: sp-server:latest
-    container_name: sp-server
+    image: sp-mobile-dev-server:latest
+    container_name: sp-mobile-dev-server
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3101:3001"
+      - "0.0.0.0:${MOBILE_DEV_SERVER_PORT:-3301}:3001"
     environment:
       <<: *runtime-env
       PORT: "3001"
-      EXECUTOR_BASE_URL: http://sp-executor:3002
+      EXECUTOR_BASE_URL: http://sp-mobile-dev-executor:3002
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes: *server-volumes
 
-  sparky-executor:
+  sparky-executor-mobile-dev:
     build:
       context: .
       dockerfile: Dockerfile
       target: executor-runtime
       network: host
       args: *build-args
-    image: sp-dev-executor:latest
-    container_name: sp-executor
+    image: sp-mobile-dev-executor:latest
+    container_name: sp-mobile-dev-executor
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3102:3002"
+      - "0.0.0.0:${MOBILE_DEV_EXECUTOR_PORT:-3302}:3002"
     environment:
       <<: *runtime-env
       EXECUTOR_PORT: "3002"

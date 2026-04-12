@@ -142,6 +142,7 @@ impl Session {
 
         // Direct command launch: no bwrap, no mount/userns path.
         let runtime_worktree = resolved_session_worktree(project);
+        sync_codex_agents_file(project, &runtime_worktree)?;
         let git_runtime = GitRuntimeContext {
             home_dir: user.home_dir.clone(),
             ssh_auth_sock: cfg.ssh_auth_sock.clone(),
@@ -353,6 +354,42 @@ fn resolved_session_worktree(project: &Project) -> String {
     resolve_runtime_worktree(Path::new(&configured))
         .map(|path| path.display().to_string())
         .unwrap_or(configured)
+}
+
+fn sync_codex_agents_file(project: &Project, runtime_worktree: &str) -> Result<(), String> {
+    let env_vars = project.resolved_env_vars();
+    let Some(codex_home) = env_vars
+        .get("CODEX_HOME")
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(());
+    };
+
+    let source = Path::new(codex_home).join("AGENTS.md");
+    if !source.is_file() {
+        return Ok(());
+    }
+
+    let target_dir = Path::new(runtime_worktree).join(".codex");
+    fs::create_dir_all(&target_dir).map_err(|error| {
+        format!(
+            "create codex config dir {}: {}",
+            target_dir.display(),
+            error
+        )
+    })?;
+
+    let target = target_dir.join("AGENTS.md");
+    fs::copy(&source, &target).map_err(|error| {
+        format!(
+            "sync codex agents {} -> {}: {}",
+            source.display(),
+            target.display(),
+            error
+        )
+    })?;
+
+    Ok(())
 }
 
 fn inferred_exec_target(project: &Project) -> Option<String> {
