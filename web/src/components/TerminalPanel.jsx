@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { CodexConversationPanel } from './CodexConversationPanel'
 
 function sessionTabLabel(tab, sessionTabs) {
@@ -14,6 +14,88 @@ function sessionTabLabel(tab, sessionTabs) {
   const temporaryTabs = sessionTabs.filter((item) => item.temporary)
   const index = temporaryTabs.findIndex((item) => item.id === tab.id)
   return index >= 0 ? `终端 ${index + 1}` : '终端'
+}
+
+function getDropPlacement(event) {
+  const rect = event.currentTarget.getBoundingClientRect()
+  return event.clientX >= rect.left + (rect.width / 2) ? 'after' : 'before'
+}
+
+function DesktopSessionTabs({
+  onReorderSessionTab,
+  onSwitchSessionTab,
+  sessionId,
+  sessionTabs,
+}) {
+  const [draggingId, setDraggingId] = useState('')
+  const [dropHint, setDropHint] = useState(null)
+
+  const clearDragState = () => {
+    setDraggingId('')
+    setDropHint(null)
+  }
+
+  return (
+    <div className="terminal-tabs" role="tablist" aria-label="PTY 标签">
+      {sessionTabs.map((tab) => {
+        const isDragging = tab.id === draggingId
+        const dropBefore = dropHint?.targetId === tab.id && dropHint.position === 'before'
+        const dropAfter = dropHint?.targetId === tab.id && dropHint.position === 'after'
+
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            draggable={sessionTabs.length > 1}
+            aria-selected={tab.id === sessionId}
+            className={`terminal-tab ${tab.id === sessionId ? 'active' : ''} ${isDragging ? 'dragging' : ''} ${dropBefore ? 'drop-before' : ''} ${dropAfter ? 'drop-after' : ''}`}
+            onClick={() => onSwitchSessionTab(tab)}
+            onDragStart={(event) => {
+              setDraggingId(tab.id)
+              setDropHint(null)
+              event.dataTransfer.effectAllowed = 'move'
+              event.dataTransfer.setData('text/plain', tab.id)
+            }}
+            onDragOver={(event) => {
+              if (!draggingId || draggingId === tab.id) {
+                return
+              }
+
+              event.preventDefault()
+              event.dataTransfer.dropEffect = 'move'
+              const nextPlacement = getDropPlacement(event)
+              setDropHint((prev) => (
+                prev?.targetId === tab.id && prev.position === nextPlacement
+                  ? prev
+                  : { targetId: tab.id, position: nextPlacement }
+              ))
+            }}
+            onDragEnd={clearDragState}
+            onDrop={(event) => {
+              event.preventDefault()
+              const draggedId = event.dataTransfer.getData('text/plain') || draggingId
+              if (!draggedId || draggedId === tab.id) {
+                clearDragState()
+                return
+              }
+
+              const placement = dropHint?.targetId === tab.id
+                ? dropHint.position
+                : getDropPlacement(event)
+
+              onReorderSessionTab?.(draggedId, tab.id, placement)
+              clearDragState()
+            }}
+            title={`${tab.label} · ${tab.id} · 按住拖动调整顺序`}
+          >
+            <span className={`terminal-tab-dot ${tab.temporary ? 'temporary' : 'default'}`} />
+            <span>{tab.label}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
 }
 
 function MobilePtyManager({
@@ -137,6 +219,258 @@ function MobilePtyManager({
   )
 }
 
+function MobileRawTerminalScrollbar({
+  containerRef,
+  enabled,
+}) {
+  const trackRef = useRef(null)
+  const viewportRef = useRef(null)
+  const dragStateRef = useRef({
+    pointerId: null,
+    dragging: false,
+    thumbOffset: 0,
+  })
+  const [metrics, setMetrics] = useState({
+    visible: false,
+    height: 0,
+    top: 0,
+  })
+
+  useEffect(() => {
+    if (!enabled) {
+      viewportRef.current = null
+      setMetrics({
+        visible: false,
+        height: 0,
+        top: 0,
+      })
+      return undefined
+    }
+
+    let frameId = 0
+    let intervalId = 0
+    let detachScroll = null
+    let resizeObserver = null
+
+    const updateMetrics = () => {
+      const container = containerRef.current
+      const nextViewport = container?.querySelector('.terminal-host.active .xterm-viewport') || null
+      if (viewportRef.current !== nextViewport) {
+        if (detachScroll) {
+          detachScroll()
+          detachScroll = null
+        }
+        viewportRef.current = nextViewport
+        if (nextViewport) {
+          const onScroll = () => {
+            updateMetrics()
+          }
+          nextViewport.addEventListener('scroll', onScroll, { passive: true })
+          detachScroll = () => nextViewport.removeEventListener('scroll', onScroll)
+        }
+      }
+
+      const viewport = viewportRef.current
+      const track = trackRef.current
+      if (!viewport || !track) {
+        setMetrics((prev) => (
+          prev.visible
+            ? { visible: false, height: 0, top: 0 }
+            : prev
+        ))
+        return
+      }
+
+      const scrollHeight = viewport.scrollHeight
+      const clientHeight = viewport.clientHeight
+      const scrollTop = viewport.scrollTop
+      const trackHeight = track.clientHeight
+      const maxScrollTop = Math.max(scrollHeight - clientHeight, 0)
+      const shouldShow = scrollHeight > clientHeight + 12 && trackHeight > 0
+
+      if (!shouldShow) {
+        setMetrics((prev) => (
+          prev.visible
+            ? { visible: false, height: 0, top: 0 }
+            : prev
+        ))
+        return
+      }
+
+      const thumbHeight = Math.max((clientHeight / scrollHeight) * trackHeight, 34)
+      const maxThumbTop = Math.max(trackHeight - thumbHeight, 0)
+      const thumbTop = maxScrollTop > 0
+        ? (scrollTop / maxScrollTop) * maxThumbTop
+        : 0
+
+      setMetrics((prev) => {
+        const next = {
+          visible: true,
+          height: thumbHeight,
+          top: thumbTop,
+        }
+
+        if (
+          prev.visible === next.visible
+          && Math.abs(prev.height - next.height) < 0.5
+          && Math.abs(prev.top - next.top) < 0.5
+        ) {
+          return prev
+        }
+
+        return next
+      })
+    }
+
+    const scheduleUpdate = () => {
+      window.cancelAnimationFrame(frameId)
+      frameId = window.requestAnimationFrame(updateMetrics)
+    }
+
+    scheduleUpdate()
+    intervalId = window.setInterval(scheduleUpdate, 220)
+
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        scheduleUpdate()
+      })
+
+      if (containerRef.current) {
+        resizeObserver.observe(containerRef.current)
+      }
+
+      if (trackRef.current) {
+        resizeObserver.observe(trackRef.current)
+      }
+    }
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+      window.clearInterval(intervalId)
+      if (detachScroll) {
+        detachScroll()
+      }
+      if (resizeObserver) {
+        resizeObserver.disconnect()
+      }
+    }
+  }, [containerRef, enabled])
+
+  useEffect(() => {
+    if (!enabled) {
+      return undefined
+    }
+
+    const handlePointerMove = (event) => {
+      const dragState = dragStateRef.current
+      if (!dragState.dragging || dragState.pointerId !== event.pointerId) {
+        return
+      }
+
+      const viewport = viewportRef.current
+      const track = trackRef.current
+      if (!viewport || !track) {
+        return
+      }
+
+      event.preventDefault()
+      const trackRect = track.getBoundingClientRect()
+      const thumbHeight = Math.max(metrics.height, 34)
+      const maxThumbTop = Math.max(trackRect.height - thumbHeight, 0)
+      const nextThumbTop = Math.min(
+        Math.max(event.clientY - trackRect.top - dragState.thumbOffset, 0),
+        maxThumbTop,
+      )
+      const nextScrollTop = maxThumbTop > 0
+        ? (nextThumbTop / maxThumbTop) * Math.max(viewport.scrollHeight - viewport.clientHeight, 0)
+        : 0
+
+      viewport.scrollTop = nextScrollTop
+    }
+
+    const handlePointerUp = (event) => {
+      if (dragStateRef.current.pointerId !== event.pointerId) {
+        return
+      }
+
+      dragStateRef.current = {
+        pointerId: null,
+        dragging: false,
+        thumbOffset: 0,
+      }
+    }
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: false })
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerUp)
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerUp)
+    }
+  }, [enabled, metrics.height])
+
+  const scrollViewportTo = (clientY, thumbOffset = metrics.height / 2) => {
+    const viewport = viewportRef.current
+    const track = trackRef.current
+    if (!viewport || !track) {
+      return
+    }
+
+    const trackRect = track.getBoundingClientRect()
+    const thumbHeight = Math.max(metrics.height, 34)
+    const maxThumbTop = Math.max(trackRect.height - thumbHeight, 0)
+    const nextThumbTop = Math.min(
+      Math.max(clientY - trackRect.top - thumbOffset, 0),
+      maxThumbTop,
+    )
+    const nextScrollTop = maxThumbTop > 0
+      ? (nextThumbTop / maxThumbTop) * Math.max(viewport.scrollHeight - viewport.clientHeight, 0)
+      : 0
+
+    viewport.scrollTop = nextScrollTop
+  }
+
+  if (!enabled) {
+    return null
+  }
+
+  return (
+    <div
+      ref={trackRef}
+      className={`mobile-terminal-scrollbar ${metrics.visible ? 'is-visible' : 'is-hidden'}`}
+      onPointerDown={(event) => {
+        if (metrics.visible && event.target === event.currentTarget) {
+          scrollViewportTo(event.clientY)
+        }
+      }}
+    >
+      {metrics.visible ? (
+        <button
+          type="button"
+          className="mobile-terminal-scrollbar__thumb"
+          style={{
+            height: `${metrics.height}px`,
+            transform: `translateY(${metrics.top}px)`,
+          }}
+          aria-label="拖动滚动终端"
+          onPointerDown={(event) => {
+            event.preventDefault()
+            const thumbRect = event.currentTarget.getBoundingClientRect()
+            event.currentTarget.setPointerCapture?.(event.pointerId)
+            dragStateRef.current = {
+              pointerId: event.pointerId,
+              dragging: true,
+              thumbOffset: event.clientY - thumbRect.top,
+            }
+          }}
+        />
+      ) : null}
+    </div>
+  )
+}
+
 export function TerminalPanel({
   canReconnectCurrentSession,
   connected,
@@ -149,6 +483,7 @@ export function TerminalPanel({
   onRefreshCodexTimeline,
   onOpenTemporarySession,
   onReconnectCurrentSession,
+  onReorderSessionTab,
   onSwitchSessionTab,
   reconnectNotice,
   selectedProject,
@@ -161,6 +496,8 @@ export function TerminalPanel({
     typeof window !== 'undefined' ? window.innerWidth <= 780 : false
   ))
   const [showRawTerminal, setShowRawTerminal] = useState(false)
+  const autoRawTerminalRef = useRef(false)
+  const rawTerminalBodyRef = useRef(null)
   const [scrollToBottomRequest, setScrollToBottomRequest] = useState(0)
   const isCodexMobile = selectedProject?.runtime === 'codex' && isMobileViewport
 
@@ -180,9 +517,30 @@ export function TerminalPanel({
 
   useEffect(() => {
     if (!isCodexMobile) {
+      autoRawTerminalRef.current = false
       setShowRawTerminal(false)
     }
   }, [isCodexMobile, sessionId])
+
+  useEffect(() => {
+    if (!isCodexMobile) {
+      autoRawTerminalRef.current = false
+      return
+    }
+
+    if (currentSessionTemporary) {
+      if (!showRawTerminal) {
+        autoRawTerminalRef.current = true
+        setShowRawTerminal(true)
+      }
+      return
+    }
+
+    if (autoRawTerminalRef.current) {
+      autoRawTerminalRef.current = false
+      setShowRawTerminal(false)
+    }
+  }, [currentSessionTemporary, isCodexMobile, showRawTerminal, sessionId])
 
   if (isCodexMobile) {
     return (
@@ -192,7 +550,10 @@ export function TerminalPanel({
           currentSessionTemporary={currentSessionTemporary}
           onDestroyCurrentSession={onDestroyCurrentSession}
           onOpenTemporarySession={onOpenTemporarySession}
-          onOpenRawTerminal={() => setShowRawTerminal(true)}
+          onOpenRawTerminal={() => {
+            autoRawTerminalRef.current = false
+            setShowRawTerminal(true)
+          }}
           onRefreshTimeline={onRefreshCodexTimeline}
           onScrollToBottom={() => setScrollToBottomRequest((value) => value + 1)}
           onSwitchSessionTab={onSwitchSessionTab}
@@ -210,12 +571,15 @@ export function TerminalPanel({
               <button
                 type="button"
                 className="chat-panel__info-button codex-raw-terminal-sheet__close"
-                onClick={() => setShowRawTerminal(false)}
+                onClick={() => {
+                  autoRawTerminalRef.current = false
+                  setShowRawTerminal(false)
+                }}
               >
                 关闭
               </button>
             </div>
-            <div className="terminal-host-shell codex-raw-terminal-sheet__body">
+            <div ref={rawTerminalBodyRef} className="terminal-host-shell codex-raw-terminal-sheet__body">
               <div className="terminal-host-stack">
                 {sessionTabs.length ? (
                   sessionTabs.map((tab) => (
@@ -231,6 +595,10 @@ export function TerminalPanel({
                   <div className="codex-conversation-state">当前没有可附着的终端会话。</div>
                 )}
               </div>
+              <MobileRawTerminalScrollbar
+                containerRef={rawTerminalBodyRef}
+                enabled={Boolean(showRawTerminal && sessionTabs.length && sessionId)}
+              />
             </div>
           </section>
         ) : (
@@ -289,22 +657,12 @@ export function TerminalPanel({
               title="打开新的临时 PTY"
             />
           </div>
-          <div className="terminal-tabs" role="tablist" aria-label="PTY 标签">
-            {sessionTabs.map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                aria-selected={tab.id === sessionId}
-                className={`terminal-tab ${tab.id === sessionId ? 'active' : ''}`}
-                onClick={() => onSwitchSessionTab(tab)}
-                title={`${tab.label} · ${tab.id}`}
-              >
-                <span className={`terminal-tab-dot ${tab.temporary ? 'temporary' : 'default'}`} />
-                <span>{tab.label}</span>
-              </button>
-            ))}
-          </div>
+          <DesktopSessionTabs
+            onReorderSessionTab={onReorderSessionTab}
+            onSwitchSessionTab={onSwitchSessionTab}
+            sessionId={sessionId}
+            sessionTabs={sessionTabs}
+          />
         </div>
         <div className="terminal-panel-meta">
           <span>{currentSessionTemporary ? '临时 Shell' : `${selectedProject?.provider || '自定义'} 运行时`}</span>

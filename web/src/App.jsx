@@ -44,8 +44,10 @@ function App() {
         <DashboardPage
           activeSessionCount={workspace.activeSessionCount}
           auth={auth.auth}
+          codexSessionTitlesByPtySessionId={workspace.codexSessionTitlesByPtySessionId}
           loadingProjects={workspace.loadingProjects}
           onActivatePersistentSession={workspace.activatePersistentSession}
+          onLoadCodexSessionTitles={workspace.loadCodexSessionTitlesForProject}
           onLoadWorkspaceState={workspace.loadWorkspaceState}
           onLogout={workspace.logout}
           onOpenCreateProjectForm={workspace.openCreateProjectForm}

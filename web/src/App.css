@@ -679,15 +679,15 @@ button {
 }
 
 .workspace-mobile-topbar-icon-btn {
-  min-width: 2.2rem;
-  width: 2.2rem;
-  height: 2.2rem;
+  min-width: 2.02rem;
+  width: 2.02rem;
+  height: 2.02rem;
   border-radius: 999px;
 }
 
 .workspace-mobile-topbar-icon-btn svg {
-  width: 1.08rem;
-  height: 1.08rem;
+  width: 0.96rem;
+  height: 0.96rem;
 }
 
 .workspace-mobile-topbar {
@@ -706,7 +706,7 @@ button {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0.7rem;
+  gap: 0.56rem;
   width: 100%;
   min-width: 0;
 }
@@ -730,7 +730,7 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 0.42rem;
+  gap: 0.34rem;
 }
 
 .dashboard-mobile-topbar-meta {
@@ -741,14 +741,14 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 1.75rem;
-  padding: 0 0.55rem;
+  min-height: 1.58rem;
+  padding: 0 0.48rem;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.04);
   color: var(--text-secondary);
   font-family: "JetBrains Mono", "SFMono-Regular", monospace;
-  font-size: 0.64rem;
+  font-size: 0.6rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   white-space: nowrap;
@@ -764,8 +764,8 @@ button {
 }
 
 .workspace-mobile-tag-provider-dot {
-  width: 0.42rem;
-  height: 0.42rem;
+  width: 0.36rem;
+  height: 0.36rem;
   border-radius: 999px;
   background: currentColor;
   flex-shrink: 0;
@@ -2329,7 +2329,9 @@ button {
     transform 0.16s ease,
     border-color 0.16s ease,
     background-color 0.16s ease,
-    color 0.16s ease;
+    color 0.16s ease,
+    opacity 0.16s ease;
+  cursor: grab;
 }
 
 .terminal-tab:hover {
@@ -2338,10 +2340,32 @@ button {
   color: var(--text-primary);
 }
 
+.terminal-tab:active {
+  cursor: grabbing;
+}
+
 .terminal-tab.active {
   border-color: rgba(50, 240, 140, 0.22);
   background: rgba(50, 240, 140, 0.08);
   color: var(--text-primary);
+}
+
+.terminal-tab.dragging {
+  opacity: 0.46;
+  transform: scale(0.98);
+}
+
+.terminal-tab.drop-before,
+.terminal-tab.drop-after {
+  border-color: rgba(50, 240, 140, 0.28);
+}
+
+.terminal-tab.drop-before {
+  box-shadow: inset 3px 0 0 rgba(50, 240, 140, 0.95);
+}
+
+.terminal-tab.drop-after {
+  box-shadow: inset -3px 0 0 rgba(50, 240, 140, 0.95);
 }
 
 .terminal-tab-status {
@@ -2544,13 +2568,13 @@ button {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  gap: 0.5rem;
+  gap: 0.4rem;
 }
 
 .mobile-pty-manager {
   display: flex;
   flex-direction: column;
-  gap: 0.38rem;
+  gap: 0.28rem;
 }
 
 .mobile-pty-manager-panel {
@@ -2566,13 +2590,13 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  min-height: 1.9rem;
+  min-height: 1.74rem;
 }
 
 .mobile-pty-manager__actions {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
+  gap: 0.24rem;
   margin-left: auto;
   flex-wrap: nowrap;
 }
@@ -2581,8 +2605,8 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.72rem;
-  height: 1.72rem;
+  width: 1.6rem;
+  height: 1.6rem;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.035);
@@ -2609,8 +2633,8 @@ button {
 }
 
 .mobile-pty-manager__icon-btn svg {
-  width: 0.88rem;
-  height: 0.88rem;
+  width: 0.82rem;
+  height: 0.82rem;
 }
 
 .mobile-pty-manager__tabs {
@@ -2635,8 +2659,8 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 3.1rem;
-  height: 3.1rem;
+  width: 2.86rem;
+  height: 2.86rem;
   border-radius: 999px;
   border: 1px solid rgba(50, 240, 140, 0.24);
   background:
@@ -2653,8 +2677,8 @@ button {
 }
 
 .mobile-codex-composer-fab svg {
-  width: 1.2rem;
-  height: 1.2rem;
+  width: 1.08rem;
+  height: 1.08rem;
 }
 
 .mobile-codex-composer-modal-backdrop {
@@ -2664,7 +2688,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 1rem;
+  padding: 0.82rem;
   background: rgba(3, 4, 5, 0.62);
   backdrop-filter: blur(14px);
 }
@@ -2673,24 +2697,24 @@ button {
   width: min(26rem, 100%);
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
-  padding: 1rem;
-  border-radius: 1.35rem;
+  gap: 0.72rem;
+  padding: 0.88rem;
+  border-radius: 1.2rem;
 }
 
 .mobile-codex-composer-modal__actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.7rem;
+  gap: 0.56rem;
 }
 
 .mobile-codex-composer__input {
   display: block;
   width: 100%;
-  height: 3rem;
-  padding: 0.82rem 0.95rem;
+  height: 2.78rem;
+  padding: 0.72rem 0.88rem;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 1.1rem;
+  border-radius: 0.96rem;
   background: rgba(18, 19, 24, 0.9);
   color: var(--text-primary);
   font-size: 16px;
@@ -3011,11 +3035,11 @@ button {
 .codex-raw-terminal-sheet {
   display: flex;
   flex-direction: column;
-  gap: 0.72rem;
+  gap: 0.58rem;
   flex: 1;
   min-height: 0;
-  padding: 0.78rem;
-  border-radius: 20px;
+  padding: 0.66rem;
+  border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background:
     linear-gradient(180deg, rgba(18, 19, 24, 0.7), rgba(9, 10, 12, 0.84)),
@@ -3028,11 +3052,12 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.8rem;
+  gap: 0.62rem;
 }
 
 .codex-raw-terminal-sheet__title {
   min-width: 0;
+  font-size: 0.88rem;
 }
 
 .codex-raw-terminal-sheet__close {
@@ -3041,6 +3066,7 @@ button {
 }
 
 .codex-raw-terminal-sheet__body {
+  position: relative;
   flex: 1;
   min-height: 0;
 }
@@ -3052,6 +3078,70 @@ button {
 
 .codex-raw-terminal-sheet__body .terminal-host {
   min-height: 0;
+}
+
+.codex-raw-terminal-sheet__body .terminal-host .xterm,
+.codex-raw-terminal-sheet__body .terminal-host-canvas .xterm {
+  padding-right: 1.2rem;
+}
+
+.codex-raw-terminal-sheet__body .terminal-host .xterm-viewport,
+.codex-raw-terminal-sheet__body .terminal-host-canvas .xterm-viewport {
+  scrollbar-width: none;
+}
+
+.codex-raw-terminal-sheet__body .terminal-host .xterm-viewport::-webkit-scrollbar,
+.codex-raw-terminal-sheet__body .terminal-host-canvas .xterm-viewport::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.mobile-terminal-scrollbar {
+  position: absolute;
+  top: 0.48rem;
+  right: 0.16rem;
+  bottom: 0.48rem;
+  width: 0.92rem;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.03));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+    0 8px 24px rgba(0, 0, 0, 0.18);
+  z-index: 3;
+  touch-action: none;
+  transition: opacity 0.16s ease;
+}
+
+.mobile-terminal-scrollbar.is-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.mobile-terminal-scrollbar.is-visible {
+  opacity: 1;
+}
+
+.mobile-terminal-scrollbar__thumb {
+  width: 0.64rem;
+  min-height: 2.2rem;
+  margin-top: 0;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(111, 252, 197, 0.96), rgba(28, 132, 82, 0.98));
+  box-shadow:
+    0 6px 18px rgba(0, 0, 0, 0.26),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  padding: 0;
+  cursor: grab;
+  touch-action: none;
+}
+
+.mobile-terminal-scrollbar__thumb:active {
+  cursor: grabbing;
+  background: linear-gradient(180deg, rgba(136, 255, 211, 0.98), rgba(34, 154, 95, 1));
 }
 
 @keyframes workspace-mobile-chip-pulse {
@@ -3161,7 +3251,7 @@ button {
   body {
     overflow-x: hidden;
     overflow-y: auto;
-    font-size: 14px;
+    font-size: 13px;
   }
 
   .dashboard-page {
@@ -3198,18 +3288,18 @@ button {
   .auth-page,
   .dashboard-shell,
   .workspace-shell {
-    padding-left: 0.78rem;
-    padding-right: 0.78rem;
-    padding-bottom: max(0.78rem, env(safe-area-inset-bottom));
+    padding-left: 0.68rem;
+    padding-right: 0.68rem;
+    padding-bottom: max(0.68rem, env(safe-area-inset-bottom));
   }
 
   .topbar {
     flex-direction: column;
     align-items: stretch;
-    gap: 0.7rem;
-    padding-left: 0.78rem;
-    padding-right: 0.78rem;
-    padding-bottom: 0.7rem;
+    gap: 0.58rem;
+    padding-left: 0.68rem;
+    padding-right: 0.68rem;
+    padding-bottom: 0.58rem;
   }
 
   .topbar-brand,
@@ -3312,7 +3402,7 @@ button {
 
   .modal-backdrop {
     align-items: flex-end;
-    padding: 0.8rem;
+    padding: 0.68rem;
   }
 
   .modal-card {
@@ -3322,7 +3412,7 @@ button {
   }
 
   .auth-page {
-    padding: 0.8rem;
+    padding: 0.68rem;
   }
 
   .path-input-shell {
@@ -3342,7 +3432,7 @@ button {
   .session-panel,
   .terminal-panel,
   .git-panel {
-    padding: 0.95rem;
+    padding: 0.82rem;
     border-radius: var(--radius-lg);
   }
 
@@ -3360,15 +3450,15 @@ button {
   .panel-copy,
   .notice,
   .session-row-subtitle {
-    font-size: 0.9rem;
-    line-height: 1.55;
+    font-size: 0.84rem;
+    line-height: 1.5;
   }
 
   .eyebrow,
   .git-summary-label,
   .topbar-stat-label,
   .hero-stat-label {
-    font-size: 0.66rem;
+    font-size: 0.62rem;
   }
 
   .git-actions,
@@ -3405,7 +3495,7 @@ button {
     width: 100%;
     justify-content: flex-start;
     gap: 0.4rem;
-    font-size: 0.68rem;
+    font-size: 0.64rem;
   }
 
   .session-row-meta {
@@ -3427,10 +3517,10 @@ button {
   }
 
   .terminal-tab {
-    max-width: min(68vw, 13rem);
-    min-height: 1.78rem;
-    padding: 0 0.58rem;
-    font-size: 0.72rem;
+    max-width: min(64vw, 12rem);
+    min-height: 1.64rem;
+    padding: 0 0.46rem;
+    font-size: 0.67rem;
   }
 
   .terminal-tab span:last-child {
@@ -3454,7 +3544,7 @@ button {
   }
 
   .terminal-host .xterm {
-    padding: 0.65rem;
+    padding: 0.48rem;
   }
 
   .side-panel-tabs {
@@ -3462,8 +3552,8 @@ button {
   }
 
   .side-panel-tab {
-    min-height: 2.15rem;
-    font-size: clamp(0.6rem, 2.7vw, 0.72rem);
+    min-height: 1.94rem;
+    font-size: clamp(0.58rem, 2.55vw, 0.68rem);
   }
 
   .workspace-mobile-panel-drawer {
@@ -3508,8 +3598,8 @@ button {
   .git-btn,
   .git-commit-btn {
     width: 100%;
-    min-height: 1.95rem;
-    font-size: 0.74rem;
+    min-height: 1.82rem;
+    font-size: 0.7rem;
   }
 
   .modal-actions {
@@ -3522,7 +3612,7 @@ button {
   }
 
   .codex-conversation {
-    min-height: min(74dvh, 48rem);
+    min-height: min(70dvh, 44rem);
   }
 
   .mobile-pty-manager__header {
@@ -3530,16 +3620,90 @@ button {
   }
 
   .mobile-codex-composer__input {
-    height: 2.9rem;
+    height: 2.68rem;
   }
 
   .mobile-codex-composer-fab {
-    right: 0.78rem;
-    bottom: max(0.78rem, env(safe-area-inset-bottom));
+    right: 0.68rem;
+    bottom: max(0.68rem, env(safe-area-inset-bottom));
   }
 
   .codex-conversation-actions {
     justify-content: flex-end;
+  }
+
+  .workspace-side-panel-mobile {
+    gap: 0.72rem;
+    padding: 0.8rem;
+    border-radius: 20px;
+  }
+
+  .workspace-side-panel-mobile__title {
+    margin-top: 0.22rem;
+    font-size: 0.92rem;
+  }
+
+  .codex-conversation-list {
+    gap: 0.56rem;
+  }
+
+  .codex-conversation-state {
+    padding: 0.82rem;
+    border-radius: 12px;
+    font-size: 0.82rem;
+  }
+
+  .codex-conversation-item {
+    gap: 0.4rem;
+    padding: 0.68rem 0.72rem;
+    border-radius: 14px;
+  }
+
+  .codex-conversation-item-tool,
+  .codex-conversation-item-result,
+  .codex-conversation-item-reasoning,
+  .codex-conversation-item-commentary,
+  .codex-conversation-item-status {
+    gap: 0.34rem;
+    padding: 0.56rem 0.62rem;
+    border-radius: 12px;
+  }
+
+  .codex-conversation-item-head {
+    gap: 0.6rem;
+  }
+
+  .codex-conversation-item-label,
+  .codex-conversation-item-time {
+    font-size: 0.64rem;
+  }
+
+  .codex-conversation-text,
+  .codex-conversation-details summary {
+    font-size: 0.86rem;
+    line-height: 1.5;
+  }
+
+  .codex-conversation-pre {
+    max-height: 12rem;
+    padding: 0.62rem 0.68rem;
+    font-size: 0.68rem;
+  }
+
+  .codex-conversation-details summary::after {
+    margin-left: 0.44rem;
+    padding: 0.06rem 0.36rem;
+    font-size: 0.62rem;
+  }
+
+  .codex-raw-terminal-sheet {
+    gap: 0.48rem;
+    padding: 0.56rem;
+    border-radius: 16px;
+  }
+
+  .codex-raw-terminal-sheet__title {
+    font-size: 0.82rem;
   }
 }
 
@@ -3547,39 +3711,39 @@ button {
   .auth-page,
   .dashboard-shell,
   .workspace-shell {
-    padding-left: 0.62rem;
-    padding-right: 0.62rem;
-    padding-bottom: max(0.62rem, env(safe-area-inset-bottom));
+    padding-left: 0.56rem;
+    padding-right: 0.56rem;
+    padding-bottom: max(0.56rem, env(safe-area-inset-bottom));
   }
 
   .topbar {
-    gap: 0.6rem;
-    padding-left: 0.62rem;
-    padding-right: 0.62rem;
-    padding-bottom: 0.62rem;
+    gap: 0.52rem;
+    padding-left: 0.56rem;
+    padding-right: 0.56rem;
+    padding-bottom: 0.56rem;
   }
 
   .brand-mark {
-    gap: 0.7rem;
+    gap: 0.58rem;
   }
 
   .brand-mark-logo {
-    width: 2.2rem;
-    height: 2.2rem;
-    border-radius: 0.8rem;
+    width: 1.96rem;
+    height: 1.96rem;
+    border-radius: 0.72rem;
   }
 
   .brand-mark-text {
-    font-size: 0.92rem;
+    font-size: 0.86rem;
   }
 
   .topbar-runtime-chip {
-    padding: 0.24rem 0.5rem;
-    font-size: 0.68rem;
+    padding: 0.2rem 0.42rem;
+    font-size: 0.64rem;
   }
 
   .topbar-title {
-    font-size: 0.84rem;
+    font-size: 0.78rem;
   }
 
   .section-title {
@@ -3605,7 +3769,7 @@ button {
   .project-path,
   .project-runtime,
   .project-meta {
-    font-size: 0.8rem;
+    font-size: 0.76rem;
   }
 
   .topbar-stat strong,
@@ -3624,7 +3788,7 @@ button {
   .project-card,
   .session-row,
   .web-debug-target {
-    padding: 0.8rem;
+    padding: 0.72rem;
   }
 
   .project-card-body,
@@ -3632,7 +3796,7 @@ button {
   .web-debug-target-main,
   .git-summary-card,
   .web-debug-current {
-    padding: 0.68rem 0.74rem;
+    padding: 0.6rem 0.66rem;
   }
 
   .project-name {
@@ -3641,24 +3805,24 @@ button {
 
   .toolbar-btn {
     min-width: 0;
-    min-height: 2rem;
-    padding: 0 0.72rem;
-    font-size: 0.7rem;
+    min-height: 1.88rem;
+    padding: 0 0.64rem;
+    font-size: 0.66rem;
   }
 
   .primary-btn,
   .secondary-btn,
   .ghost-btn,
   .danger-btn {
-    min-height: 2.45rem;
-    padding: 0 0.82rem;
-    font-size: 0.86rem;
+    min-height: 2.28rem;
+    padding: 0 0.74rem;
+    font-size: 0.8rem;
   }
 
   .field-input {
-    min-height: 2.7rem;
-    padding: 0 0.82rem;
-    font-size: 0.9rem;
+    min-height: 2.52rem;
+    padding: 0 0.74rem;
+    font-size: 0.86rem;
   }
 
   .terminal-panel-meta {
@@ -3666,10 +3830,10 @@ button {
   }
 
   .terminal-tab {
-    max-width: 62vw;
-    min-height: 1.68rem;
-    padding: 0 0.52rem;
-    font-size: 0.68rem;
+    max-width: 60vw;
+    min-height: 1.54rem;
+    padding: 0 0.44rem;
+    font-size: 0.64rem;
   }
 
   .terminal-host {
@@ -3686,20 +3850,20 @@ button {
   }
 
   .terminal-host .xterm {
-    padding: 0.55rem;
+    padding: 0.4rem;
   }
 
   .mobile-codex-composer-fab {
-    right: 0.62rem;
-    bottom: max(0.62rem, env(safe-area-inset-bottom));
+    right: 0.56rem;
+    bottom: max(0.56rem, env(safe-area-inset-bottom));
   }
 
   .mobile-codex-composer__input {
-    padding-right: 0.95rem;
+    padding-right: 0.82rem;
   }
 
   .mobile-codex-composer-modal {
-    padding: 0.9rem;
+    padding: 0.82rem;
   }
 
   .mobile-codex-composer-modal__actions {
@@ -3707,9 +3871,9 @@ button {
   }
 
   .dashboard-mobile-menu-drawer {
-    right: 0.62rem;
-    bottom: max(0.62rem, env(safe-area-inset-bottom));
-    width: min(19rem, calc(100vw - 1.24rem));
+    right: 0.56rem;
+    bottom: max(0.56rem, env(safe-area-inset-bottom));
+    width: min(18.5rem, calc(100vw - 1.12rem));
   }
 
   .dashboard-mobile-project-actions {
@@ -3721,7 +3885,7 @@ button {
   }
 
   .codex-conversation {
-    gap: 0.7rem;
+    gap: 0.58rem;
   }
 
   .codex-conversation-heading strong {
@@ -3729,8 +3893,8 @@ button {
   }
 
   .codex-conversation-item {
-    padding: 0.76rem 0.78rem;
-    border-radius: 14px;
+    padding: 0.66rem 0.68rem;
+    border-radius: 13px;
   }
 
   .codex-conversation-item-tool,
@@ -3738,7 +3902,7 @@ button {
   .codex-conversation-item-reasoning,
   .codex-conversation-item-commentary,
   .codex-conversation-item-status {
-    padding: 0.62rem 0.68rem;
+    padding: 0.52rem 0.58rem;
   }
 
   .codex-conversation-item-user {
@@ -3747,6 +3911,15 @@ button {
   }
 
   .codex-conversation-pre {
-    font-size: 0.72rem;
+    font-size: 0.66rem;
+  }
+
+  .codex-raw-terminal-sheet {
+    padding: 0.5rem;
+    border-radius: 15px;
+  }
+
+  .codex-raw-terminal-sheet__title {
+    font-size: 0.78rem;
   }
 }

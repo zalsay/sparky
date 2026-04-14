@@ -18,6 +18,7 @@ function projectSessionLabel(session, allSessions) {
 }
 
 function ProjectSessionPickerModal({
+  codexSessionTitlesByPtySessionId,
   onClose,
   onSelectSession,
   project,
@@ -49,6 +50,9 @@ function ProjectSessionPickerModal({
                   {session.id === latestSessionId ? <span className="project-badge">最近会话</span> : null}
                   {session.temporary ? <span className="project-meta">临时 PTY</span> : null}
                 </div>
+                {codexSessionTitlesByPtySessionId?.[session.id] ? (
+                  <span className="session-picker-item__meta">{codexSessionTitlesByPtySessionId[session.id]}</span>
+                ) : null}
                 <span className="session-picker-item__meta">{session.id}</span>
               </div>
               <div className="session-picker-item__side">
@@ -71,8 +75,10 @@ function ProjectSessionPickerModal({
 export function DashboardPage({
   activeSessionCount,
   auth,
+  codexSessionTitlesByPtySessionId,
   loadingProjects,
   onActivatePersistentSession,
+  onLoadCodexSessionTitles,
   onLoadWorkspaceState,
   onLogout,
   onOpenCreateProjectForm,
@@ -113,7 +119,7 @@ export function DashboardPage({
     }
   }, [])
 
-  const handleProjectEnter = (project) => {
+  const handleProjectEnter = async (project) => {
     const projectSessions = sessions
       .filter((session) => session.projectId === project.id)
       .sort((left, right) => right.createdAtMs - left.createdAtMs)
@@ -133,9 +139,15 @@ export function DashboardPage({
       return
     }
 
+    let titleMap = codexSessionTitlesByPtySessionId || {}
+    if (project.runtime === 'codex' && typeof onLoadCodexSessionTitles === 'function') {
+      titleMap = await onLoadCodexSessionTitles(project, projectSessions)
+    }
+
     setSessionPickerProject({
       project,
       sessions: projectSessions,
+      titleMap,
     })
   }
 
@@ -403,6 +415,7 @@ export function DashboardPage({
       </main>
       {sessionPickerProject ? (
         <ProjectSessionPickerModal
+          codexSessionTitlesByPtySessionId={sessionPickerProject.titleMap || codexSessionTitlesByPtySessionId}
           project={sessionPickerProject.project}
           sessions={sessionPickerProject.sessions}
           onClose={() => setSessionPickerProject(null)}

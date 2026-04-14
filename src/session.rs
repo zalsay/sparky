@@ -24,6 +24,8 @@ pub struct LaunchOverride {
     pub command: String,
     pub args: Vec<String>,
     pub cwd: Option<String>,
+    #[serde(default)]
+    pub codex_session_id: Option<String>,
 }
 
 /// PTY handles — the master PTY and child process.
@@ -53,6 +55,8 @@ pub struct Session {
     pub created_at_ms: u64,
     /// Effective runtime worktree used when the session was spawned.
     pub runtime_worktree: String,
+    /// Back-reference to the recovered Codex history session when available.
+    pub codex_session_id: String,
     /// Temporary sessions run an auxiliary shell and can still be restored.
     pub temporary: bool,
     /// Snapshot file persisted under the project path when available.
@@ -216,6 +220,9 @@ impl Session {
                 .unwrap_or_default()
                 .as_millis() as u64,
             runtime_worktree,
+            codex_session_id: launch_override
+                .and_then(|override_spec| override_spec.codex_session_id.clone())
+                .unwrap_or_default(),
             temporary,
             snapshot_path,
             legacy_snapshot_path,
@@ -507,6 +514,8 @@ pub struct SessionSummary {
     pub created_at_ms: u64,
     pub alive: bool,
     pub temporary: bool,
+    #[serde(default)]
+    pub codex_session_id: String,
 }
 
 // ── SessionManager ─────────────────────────────────────────────────────────────
@@ -627,6 +636,7 @@ impl SessionManager {
                 created_at_ms: session.created_at_ms,
                 alive: true,
                 temporary: session.temporary,
+                codex_session_id: session.codex_session_id.clone(),
             })
             .collect::<Vec<_>>();
 

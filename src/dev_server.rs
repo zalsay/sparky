@@ -899,7 +899,7 @@ fn dev_shell_command(candidate: &WebCandidate, port: u16, proxy_base: &str) -> S
             port.clone(),
             "--strictPort".to_string(),
             "--mode".to_string(),
-            "dev".to_string(),
+            "development".to_string(),
             "--base".to_string(),
             proxy_base.to_string(),
         ],

@@ -90,7 +90,11 @@ function MobileCodexComposer({
       return
     }
 
-    const sent = onSendSessionInput?.(sessionId, content, { ensureTrailingReturn: true })
+    const sent = onSendSessionInput?.(sessionId, content, {
+      ensureTrailingReturn: true,
+      replaceIntermediateReturns: true,
+      bulkInput: true,
+    })
     logSessionDebug('mobile_composer_send_result', {
       sessionId,
       connected,

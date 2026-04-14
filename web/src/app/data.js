@@ -89,6 +89,25 @@ export function sameSessionTabs(left, right) {
   })
 }
 
+export function applySessionTabOrder(tabs, orderedIds = []) {
+  if (!Array.isArray(tabs) || tabs.length === 0) {
+    return []
+  }
+
+  if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+    return tabs
+  }
+
+  const orderedIdSet = new Set(orderedIds)
+  const tabMap = new Map(tabs.map((tab) => [tab.id, tab]))
+  const orderedTabs = orderedIds
+    .map((id) => tabMap.get(id))
+    .filter(Boolean)
+  const remainingTabs = tabs.filter((tab) => !orderedIdSet.has(tab.id))
+
+  return [...orderedTabs, ...remainingTabs]
+}
+
 export function normalizeProjectPathInput(value) {
   return value
     .replace(/^\/+/, '')
@@ -161,6 +180,7 @@ function normalizeCodexLiveSessionList(list) {
   return list
     .map((session) => ({
       sessionId: session.session_id || session.sessionId,
+      codexSessionId: session.codex_session_id || session.codexSessionId || '',
       cwd: session.cwd || '',
       createdAtMs: Number(session.created_at_ms || session.createdAtMs || 0),
       updatedAtMs: Number(session.updated_at_ms || session.updatedAtMs || 0),

@@ -20,6 +20,8 @@ pub struct CodexSessionSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodexLiveSessionSummary {
     pub session_id: String,
+    #[serde(default)]
+    pub codex_session_id: String,
     pub cwd: String,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
@@ -137,6 +139,16 @@ pub async fn init_schema(pool: &PgPool) -> Result<(), String> {
     .execute(pool)
     .await
     .map_err(|error| format!("create bridge_codex_live_sessions: {}", error))?;
+
+    sqlx::query(
+        r#"
+        ALTER TABLE bridge_codex_live_sessions
+        ADD COLUMN IF NOT EXISTS codex_session_id VARCHAR(128) NOT NULL DEFAULT ''
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|error| format!("alter bridge_codex_live_sessions add codex_session_id: {}", error))?;
 
     Ok(())
 }
@@ -265,14 +277,16 @@ pub async fn replace_live_sessions(
                 user_id,
                 project_id,
                 session_id,
+                codex_session_id,
                 cwd,
                 created_at_ms,
                 updated_at_ms,
                 synced_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
             ON CONFLICT (user_id, project_id, session_id)
             DO UPDATE SET
+                codex_session_id = EXCLUDED.codex_session_id,
                 cwd = EXCLUDED.cwd,
                 created_at_ms = EXCLUDED.created_at_ms,
                 updated_at_ms = EXCLUDED.updated_at_ms,
@@ -282,6 +296,7 @@ pub async fn replace_live_sessions(
         .bind(user_id)
         .bind(project_id)
         .bind(&session.session_id)
+        .bind(&session.codex_session_id)
         .bind(&session.cwd)
         .bind(session.created_at_ms as i64)
         .bind(session.updated_at_ms as i64)
@@ -305,14 +320,16 @@ pub async fn upsert_live_session(
             user_id,
             project_id,
             session_id,
+            codex_session_id,
             cwd,
             created_at_ms,
             updated_at_ms,
             synced_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
         ON CONFLICT (user_id, project_id, session_id)
         DO UPDATE SET
+            codex_session_id = EXCLUDED.codex_session_id,
             cwd = EXCLUDED.cwd,
             created_at_ms = EXCLUDED.created_at_ms,
             updated_at_ms = EXCLUDED.updated_at_ms,
@@ -322,6 +339,7 @@ pub async fn upsert_live_session(
     .bind(user_id)
     .bind(project_id)
     .bind(&session.session_id)
+    .bind(&session.codex_session_id)
     .bind(&session.cwd)
     .bind(session.created_at_ms as i64)
     .bind(session.updated_at_ms as i64)
@@ -381,7 +399,7 @@ pub async fn list_live_sessions(
 ) -> Result<Vec<CodexLiveSessionSummary>, String> {
     let rows = sqlx::query(
         r#"
-        SELECT session_id, cwd, created_at_ms, updated_at_ms
+        SELECT session_id, codex_session_id, cwd, created_at_ms, updated_at_ms
         FROM bridge_codex_live_sessions
         WHERE user_id = $1 AND project_id = $2
         ORDER BY updated_at_ms DESC, session_id DESC
@@ -399,6 +417,9 @@ pub async fn list_live_sessions(
                 session_id: row
                     .try_get("session_id")
                     .map_err(|error| format!("read live session_id: {}", error))?,
+                codex_session_id: row
+                    .try_get("codex_session_id")
+                    .map_err(|error| format!("read live codex_session_id: {}", error))?,
                 cwd: row
                     .try_get("cwd")
                     .map_err(|error| format!("read live cwd: {}", error))?,

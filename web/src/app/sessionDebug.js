@@ -7,6 +7,16 @@ function normalizeText(value) {
     .replace(/\n/g, '\\n')
 }
 
+export function describeContent(value) {
+  const text = String(value || '')
+
+  return {
+    length: text.length,
+    preview: summarizeContentPreview(text, 40),
+    codes: Array.from(text).map((char) => char.codePointAt(0)),
+  }
+}
+
 export function summarizeContentPreview(value, maxLength = 120) {
   const normalized = normalizeText(value)
   if (normalized.length <= maxLength) {

@@ -622,6 +622,7 @@ fn session_summary_from_runtime(session: &sparky::session::Session) -> SessionSu
         created_at_ms: session.created_at_ms,
         alive: session.is_alive(),
         temporary: session.temporary,
+        codex_session_id: session.codex_session_id.clone(),
     }
 }
 

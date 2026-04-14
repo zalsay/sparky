@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { formatClockTime } from '../app/data'
 
 const EXPAND_CHAR_LIMIT = 220
@@ -165,6 +165,7 @@ export function CodexConversationPanel({
   const autoScrollAttemptsRef = useRef(0)
   const autoScrollTimerRef = useRef(null)
   const items = useMemo(() => buildDisplayItems(codexTimeline?.items || []), [codexTimeline?.items])
+  const timelineUpdatedAtMs = Number(codexTimeline?.updatedAtMs || 0)
 
   const clearAutoScrollTimer = () => {
     if (autoScrollTimerRef.current) {
@@ -173,9 +174,17 @@ export function CodexConversationPanel({
     }
   }
 
-  const forceScrollToBottom = () => {
+  const forceScrollToBottom = (behavior = 'auto') => {
     const node = scrollRef.current
     if (!node) {
+      return
+    }
+
+    if (typeof node.scrollTo === 'function') {
+      node.scrollTo({
+        top: node.scrollHeight,
+        behavior,
+      })
       return
     }
 
@@ -197,58 +206,39 @@ export function CodexConversationPanel({
     }, 120)
   }
 
-  useEffect(() => {
-    autoScrollAttemptsRef.current = 10
+  const requestAutoScrollToBottom = (attempts = 10, behavior = 'auto') => {
+    autoScrollAttemptsRef.current = attempts
     window.requestAnimationFrame(() => {
-      forceScrollToBottom()
+      forceScrollToBottom(behavior)
     })
     scheduleAutoScroll()
+  }
 
+  useLayoutEffect(() => {
+    requestAutoScrollToBottom(14)
     return () => {
       clearAutoScrollTimer()
     }
   }, [sessionId])
 
   useEffect(() => {
-    if (!autoScrollAttemptsRef.current || codexTimelineLoading) {
+    if (codexTimelineLoading) {
       return
     }
 
-    window.requestAnimationFrame(() => {
-      forceScrollToBottom()
-    })
-  }, [sessionId, items.length, codexTimelineLoading])
+    requestAutoScrollToBottom(12)
+  }, [sessionId, items.length, timelineUpdatedAtMs, codexTimelineLoading])
 
   useEffect(() => () => {
     clearAutoScrollTimer()
   }, [])
 
   useEffect(() => {
-    const node = scrollRef.current
-    if (!node) {
-      return
-    }
-
-    const nearBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 120
-    if (nearBottom) {
-      node.scrollTop = node.scrollHeight
-    }
-  }, [items.length, codexTimelineLoading])
-
-  useEffect(() => {
     if (!scrollToBottomRequest) {
       return
     }
 
-    const node = scrollRef.current
-    if (!node) {
-      return
-    }
-
-    node.scrollTo({
-      top: node.scrollHeight,
-      behavior: 'smooth',
-    })
+    requestAutoScrollToBottom(12, 'smooth')
   }, [scrollToBottomRequest])
 
   return (

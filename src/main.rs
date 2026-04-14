@@ -213,6 +213,7 @@ fn build_live_codex_session_summary(
 ) -> CodexLiveSessionSummary {
     CodexLiveSessionSummary {
         session_id: session.session_id.clone(),
+        codex_session_id: session.codex_session_id.clone(),
         cwd: cwd.to_string(),
         created_at_ms: session.created_at_ms,
         updated_at_ms: session.created_at_ms,
@@ -1365,6 +1366,7 @@ async fn create_session(
             if is_codex_project(&project) && !session.temporary {
                 let live_session = CodexLiveSessionSummary {
                     session_id: session.id.clone(),
+                    codex_session_id: session.codex_session_id.clone(),
                     cwd: session.runtime_worktree.clone(),
                     created_at_ms: session.created_at_ms,
                     updated_at_ms: session.created_at_ms,
@@ -1489,6 +1491,7 @@ async fn resume_codex_session(
                 .display()
                 .to_string(),
         ),
+        codex_session_id: Some(target_session_id.clone()),
     };
     let live_session_cwd = launch.cwd.clone().unwrap_or_default();
 
@@ -1522,6 +1525,7 @@ async fn resume_codex_session(
         Ok(session) => {
             let live_session = CodexLiveSessionSummary {
                 session_id: session.id.clone(),
+                codex_session_id: session.codex_session_id.clone(),
                 cwd: session.runtime_worktree.clone(),
                 created_at_ms: session.created_at_ms,
                 updated_at_ms: session.created_at_ms,

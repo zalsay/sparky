@@ -12,6 +12,7 @@ import {
   WS_BASE,
 } from '../constants'
 import {
+  applySessionTabOrder,
   buildSessionTab,
   composeSessionTabs,
   normalizeCodexTimeline,
@@ -21,6 +22,7 @@ import {
   sameSessionTabs,
 } from '../data'
 import {
+  describeContent,
   logSessionDebug,
   socketReadyStateLabel,
   summarizeContentPreview,
@@ -48,9 +50,11 @@ export function useWorkspaceController({
   const [sessions, setSessions] = useState([])
   const [selectedProject, setSelectedProject] = useState(null)
   const [sessionTabs, setSessionTabs] = useState([])
+  const [sessionTabOrder, setSessionTabOrder] = useState([])
   const [sessionId, setSessionId] = useState(null)
   const [connected, setConnected] = useState(false)
   const [terminalReconnectState, setTerminalReconnectState] = useState({})
+  const [codexSessionTitlesByPtySessionId, setCodexSessionTitlesByPtySessionId] = useState({})
   const [activeCodexSessionId, setActiveCodexSessionId] = useState('')
   const [codexTimeline, setCodexTimeline] = useState(emptyCodexTimeline)
   const [codexTimelineLoading, setCodexTimelineLoading] = useState(false)
@@ -89,6 +93,7 @@ export function useWorkspaceController({
   const projectsRef = useRef([])
   const sessionsRef = useRef([])
   const sessionTabsRef = useRef([])
+  const sessionTabOrderRef = useRef([])
   const sessionIdRef = useRef(null)
   const stepRef = useRef(step)
   const workspaceShellRef = useRef(null)
@@ -162,6 +167,89 @@ export function useWorkspaceController({
     })
   }
 
+  const configureTerminalTextarea = (terminal) => {
+    const textarea = terminal?.textarea
+    if (!textarea) {
+      return
+    }
+
+    textarea.autocapitalize = 'off'
+    textarea.autocomplete = 'off'
+    textarea.autocorrect = 'off'
+    textarea.enterKeyHint = 'enter'
+    textarea.spellcheck = false
+    textarea.setAttribute('autocapitalize', 'off')
+    textarea.setAttribute('autocomplete', 'off')
+    textarea.setAttribute('autocorrect', 'off')
+    textarea.setAttribute('data-gramm', 'false')
+    textarea.setAttribute('inputmode', 'text')
+  }
+
+  const setTerminalInputEnabled = (terminal, enabled) => {
+    const textarea = terminal?.textarea
+    if (!textarea) {
+      return
+    }
+
+    if (enabled) {
+      textarea.readOnly = false
+      textarea.removeAttribute('readonly')
+      textarea.setAttribute('inputmode', 'text')
+      return
+    }
+
+    textarea.blur()
+    textarea.readOnly = true
+    textarea.setAttribute('readonly', 'readonly')
+    textarea.setAttribute('inputmode', 'none')
+  }
+
+  const createKeyboardEchoDeduper = () => {
+    let pendingKey = null
+
+    return {
+      noteKey(key, domEvent) {
+        if (
+          !key
+          || Array.from(key).length !== 1
+          || domEvent?.ctrlKey
+          || domEvent?.altKey
+          || domEvent?.metaKey
+        ) {
+          pendingKey = null
+          return
+        }
+
+        pendingKey = {
+          atMs: Date.now(),
+          forwarded: false,
+          key,
+        }
+      },
+      shouldSuppress(data) {
+        if (!pendingKey) {
+          return false
+        }
+
+        const expired = (Date.now() - pendingKey.atMs) > 80
+        if (expired || data !== pendingKey.key) {
+          if (expired || pendingKey.forwarded) {
+            pendingKey = null
+          }
+          return false
+        }
+
+        if (!pendingKey.forwarded) {
+          pendingKey.forwarded = true
+          return false
+        }
+
+        pendingKey = null
+        return true
+      },
+    }
+  }
+
   const resetTerminalById = (sid) => {
     if (!sid) {
       return
@@ -201,7 +289,7 @@ export function useWorkspaceController({
       return []
     }
 
-    return Array.from(value)
+    return [value]
   }
 
   const normalizeSessionInput = (content, options = {}) => {
@@ -440,10 +528,12 @@ export function useWorkspaceController({
     setProjects([])
     setSessions([])
     setSessionTabs([])
+    setSessionTabOrder([])
     setSelectedProject(null)
     setSessionId(null)
     setConnected(false)
     setTerminalReconnectState({})
+    setCodexSessionTitlesByPtySessionId({})
     setActiveCodexSessionId('')
     setCodexTimeline(emptyCodexTimeline)
     setCodexTimelineLoading(false)
@@ -570,7 +660,7 @@ export function useWorkspaceController({
   const loadCodexTimeline = async (
     codexSessionId = '',
     project = selectedProject,
-    targetPtySessionId = sessionIdRef.current,
+    targetPtySessionId = '',
   ) => {
     if (!auth?.token || !project?.id || project.runtime !== 'codex') {
       setActiveCodexSessionId('')
@@ -616,6 +706,14 @@ export function useWorkspaceController({
       setActiveCodexSessionId(resolvedId)
       setCodexTimeline(normalized)
       if (project.runtime === 'codex' && targetPtySessionId) {
+        setCodexSessionTitlesByPtySessionId((prev) => (
+          prev[targetPtySessionId] === (normalized.title || '')
+            ? prev
+            : {
+                ...prev,
+                [targetPtySessionId]: normalized.title || '',
+              }
+        ))
         setSessions((prev) => prev.map((session) => (
           session.id === targetPtySessionId
             ? { ...session, codexSessionId: resolvedId }
@@ -649,12 +747,16 @@ export function useWorkspaceController({
       return
     }
 
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280
+    const mobileTerminalFontSize = viewportWidth <= 780 ? 10 : 14
+    const mobileTerminalLineHeight = viewportWidth <= 780 ? 1.16 : 1.3
+
     const terminal = new Terminal({
       convertEol: false,
       cursorBlink: true,
       fontFamily: '"SFMono-Regular", "Cascadia Code", "JetBrains Mono", monospace',
-      fontSize: 14,
-      lineHeight: 1.3,
+      fontSize: mobileTerminalFontSize,
+      lineHeight: mobileTerminalLineHeight,
       theme: {
         background: '#0c0c0d',
         foreground: '#d1d3db',
@@ -683,9 +785,11 @@ export function useWorkspaceController({
       allowProposedApi: false,
     })
     const fitAddon = new FitAddon()
+    const keyboardEchoDeduper = createKeyboardEchoDeduper()
 
     terminal.loadAddon(fitAddon)
     terminal.open(host)
+    configureTerminalTextarea(terminal)
 
     const scheduleFit = () => {
       fitTerminal(sid)
@@ -694,7 +798,36 @@ export function useWorkspaceController({
     terminalRef.current.set(sid, terminal)
     fitAddonRef.current.set(sid, fitAddon)
 
+    const keyDisposable = terminal.onKey(({ key, domEvent }) => {
+      logSessionDebug('terminal_key', {
+        sid,
+        key: describeContent(key),
+        altKey: Boolean(domEvent?.altKey),
+        ctrlKey: Boolean(domEvent?.ctrlKey),
+        metaKey: Boolean(domEvent?.metaKey),
+        shiftKey: Boolean(domEvent?.shiftKey),
+        code: domEvent?.code || '',
+        inputType: domEvent?.inputType || '',
+        isComposing: Boolean(domEvent?.isComposing),
+        keyCode: Number(domEvent?.keyCode || 0),
+      })
+      keyboardEchoDeduper.noteKey(key, domEvent)
+    })
+
     const dataDisposable = terminal.onData((data) => {
+      logSessionDebug('terminal_on_data', {
+        sid,
+        data: describeContent(data),
+      })
+
+      if (keyboardEchoDeduper.shouldSuppress(data)) {
+        logSessionDebug('terminal_input_suppressed_duplicate', {
+          sid,
+          preview: summarizeContentPreview(data),
+        })
+        return
+      }
+
       const ws = wsPoolRef.current.get(sid)
       if (!ws || ws.readyState !== WebSocket.OPEN) {
         logSessionDebug('terminal_input_drop', {
@@ -711,6 +844,12 @@ export function useWorkspaceController({
         bulkInput: data.length > 1,
       })
 
+      logSessionDebug('terminal_on_data_normalized', {
+        sid,
+        original: describeContent(data),
+        normalized: describeContent(normalizedData),
+      })
+
       sendWsPayload(sid, ws, { type: 'input', content: normalizedData }, {
         source: 'terminal_on_data',
         replacedIntermediateReturns: normalizedData !== data,
@@ -721,11 +860,27 @@ export function useWorkspaceController({
     flushPendingTerminalOutput(sid)
     scheduleFit()
 
+    const requiresDoubleTapInput = () => {
+      const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280
+      return viewportWidth <= 780 && Boolean(host.closest('.codex-raw-terminal-sheet__body'))
+    }
+    const syncTerminalInputMode = () => {
+      setTerminalInputEnabled(terminal, !requiresDoubleTapInput())
+    }
+
+    syncTerminalInputMode()
+
     const onResize = () => {
+      syncTerminalInputMode()
       scheduleFit()
     }
-    const onFocus = () => {
+    const onPointerDown = () => {
       if (sessionIdRef.current === sid) {
+        if (requiresDoubleTapInput()) {
+          return
+        }
+
+        setTerminalInputEnabled(terminal, true)
         terminal.focus()
       }
     }
@@ -741,14 +896,15 @@ export function useWorkspaceController({
     window.addEventListener('resize', onResize)
     window.addEventListener('orientationchange', onResize)
     window.visualViewport?.addEventListener('resize', onResize)
-    host.addEventListener('pointerdown', onFocus)
+    host.addEventListener('pointerdown', onPointerDown)
 
     const cleanup = () => {
       window.removeEventListener('resize', onResize)
       window.removeEventListener('orientationchange', onResize)
       window.visualViewport?.removeEventListener('resize', onResize)
-      host.removeEventListener('pointerdown', onFocus)
+      host.removeEventListener('pointerdown', onPointerDown)
       resizeObserver.disconnect()
+      keyDisposable.dispose()
       dataDisposable.dispose()
       terminal.dispose()
     }
@@ -980,7 +1136,7 @@ export function useWorkspaceController({
       }
       if (!wasManualClose && hasExited) {
         setSessions((prev) => prev.filter((item) => item.id !== sid))
-        setSessionTabs((prev) => prev.filter((item) => item.id !== sid))
+        commitSessionTabs(sessionTabsRef.current.filter((item) => item.id !== sid))
         if (sessionIdRef.current === sid) {
           setSessionId(null)
         }
@@ -1080,6 +1236,45 @@ export function useWorkspaceController({
     return [...baseProjects, project]
   }
 
+  const sameIdOrder = (left, right) => {
+    if (left === right) {
+      return true
+    }
+
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+      return false
+    }
+
+    return left.every((id, index) => id === right[index])
+  }
+
+  const deriveSessionTabOrder = (tabs, preferredOrder = sessionTabOrderRef.current) => {
+    const nextIds = tabs.map((tab) => tab.id)
+    const nextIdSet = new Set(nextIds)
+    const preservedIds = preferredOrder.filter((id) => nextIdSet.has(id))
+    const preservedIdSet = new Set(preservedIds)
+    const appendedIds = nextIds.filter((id) => !preservedIdSet.has(id))
+
+    return [...preservedIds, ...appendedIds]
+  }
+
+  const getOrderedSessionTabs = (tabs, preferredOrder = sessionTabOrderRef.current) => {
+    const nextOrder = deriveSessionTabOrder(tabs, preferredOrder)
+    return {
+      nextOrder,
+      orderedTabs: applySessionTabOrder(tabs, nextOrder),
+    }
+  }
+
+  const commitSessionTabs = (tabs, preferredOrder = sessionTabOrderRef.current) => {
+    const { nextOrder, orderedTabs } = getOrderedSessionTabs(tabs, preferredOrder)
+
+    setSessionTabOrder((prev) => (sameIdOrder(prev, nextOrder) ? prev : nextOrder))
+    setSessionTabs((prev) => (sameSessionTabs(prev, orderedTabs) ? prev : orderedTabs))
+
+    return orderedTabs
+  }
+
   const activateSessionTab = (tab, options = {}) => {
     if (!tab?.id) {
       return
@@ -1117,11 +1312,11 @@ export function useWorkspaceController({
       return
     }
 
-    const nextTabs = composeSessionTabs(
+    const nextTabs = commitSessionTabs(composeSessionTabs(
       sessionsRef.current,
       mergeProjects(projectsRef.current, project),
       sessionTabsRef.current,
-    )
+    ))
     const nextTab = targetSessionId
       ? nextTabs.find((tab) => tab.id === targetSessionId)
       : nextTabs.find((tab) => tab.projectId === project.id && !tab.temporary)
@@ -1131,8 +1326,33 @@ export function useWorkspaceController({
       return
     }
 
-    setSessionTabs(nextTabs)
     activateSessionTab(nextTab, { project })
+  }
+
+  const reorderSessionTab = (draggedId, targetId, placement = 'before') => {
+    if (!draggedId || !targetId || draggedId === targetId) {
+      return
+    }
+
+    const currentTabs = sessionTabsRef.current
+    const currentOrder = currentTabs.map((tab) => tab.id)
+    if (!currentOrder.includes(draggedId) || !currentOrder.includes(targetId)) {
+      return
+    }
+
+    const nextOrder = currentOrder.filter((id) => id !== draggedId)
+    const targetIndex = nextOrder.indexOf(targetId)
+    if (targetIndex < 0) {
+      return
+    }
+
+    const insertIndex = placement === 'after' ? targetIndex + 1 : targetIndex
+    nextOrder.splice(insertIndex, 0, draggedId)
+    if (sameIdOrder(currentOrder, nextOrder)) {
+      return
+    }
+
+    commitSessionTabs(currentTabs, nextOrder)
   }
 
   const syncCodexHistoryAfterSessionOpen = async ({
@@ -1190,6 +1410,38 @@ export function useWorkspaceController({
     }
 
     return ''
+  }
+
+  const loadCodexSessionTitlesForProject = async (project, projectSessions = []) => {
+    if (!project?.id || project.runtime !== 'codex') {
+      return {}
+    }
+
+    const normalized = await panels.loadCodexSessions(project)
+    if (!normalized) {
+      return {}
+    }
+
+    const titleByCodexSessionId = Object.fromEntries(
+      (normalized.historySessions || [])
+        .filter((item) => item.sessionId)
+        .map((item) => [item.sessionId, item.title || '']),
+    )
+
+    const titleByPtySessionId = {}
+    projectSessions.forEach((session) => {
+      const title = titleByCodexSessionId[session.codexSessionId || '']
+      if (title) {
+        titleByPtySessionId[session.id] = title
+      }
+    })
+
+    setCodexSessionTitlesByPtySessionId((prev) => ({
+      ...prev,
+      ...titleByPtySessionId,
+    }))
+
+    return titleByPtySessionId
   }
 
   const openSessionRequest = async (project, options = {}) => {
@@ -1262,10 +1514,12 @@ export function useWorkspaceController({
       ].sort((a, b) => b.createdAtMs - a.createdAtMs)
 
       setSessions(nextSessions)
-      setSessionTabs((prev) => {
-        const preservedTabs = preserveTabs ? prev : prev.filter((item) => !item.temporary)
-        return composeSessionTabs(nextSessions, nextProjects, preservedTabs, nextTemporary ? tab : null)
-      })
+      const preservedTabs = preserveTabs
+        ? sessionTabsRef.current
+        : sessionTabsRef.current.filter((item) => !item.temporary)
+      commitSessionTabs(
+        composeSessionTabs(nextSessions, nextProjects, preservedTabs, nextTemporary ? tab : null),
+      )
       setSessionId(data.session_id)
       attachActiveSocket(tab.id)
       clearReconnectNotice(tab.id)
@@ -1284,13 +1538,14 @@ export function useWorkspaceController({
       return data
     } catch {
       if (previousTab) {
-        setSessionTabs(previousTabs)
+        commitSessionTabs(previousTabs, previousTabs.map((tab) => tab.id))
         setSelectedProject(previousProject)
         activateSessionTab(previousTab, { project: previousProject })
         return null
       }
       setStep('select')
       setSessionTabs([])
+      setSessionTabOrder([])
       setSelectedProject(null)
       return null
     }
@@ -1352,7 +1607,7 @@ export function useWorkspaceController({
         await panels.loadCodexSessions(selectedProject)
         const nextCodexSessionId = result.codex_session_id || codexSessionId || ''
         if (nextCodexSessionId) {
-          await loadCodexTimeline(nextCodexSessionId, selectedProject)
+          await loadCodexTimeline(nextCodexSessionId, selectedProject, result.session_id)
         } else {
           lastLoadedCodexSessionIdRef.current = ''
         }
@@ -1373,11 +1628,40 @@ export function useWorkspaceController({
       return
     }
 
-    activateSessionTab(tab)
     const tabProject = projectsRef.current.find((item) => item.id === tab.projectId) || selectedProject
-    if (tabProject?.runtime === 'codex' && tab.codexSessionId) {
-      loadCodexTimeline(tab.codexSessionId, tabProject)
+    logSessionDebug('switch_session_tab', {
+      tabId: tab.id,
+      tabCodexSessionId: tab.codexSessionId || '',
+      activeSessionId: sessionIdRef.current,
+      activeCodexSessionId,
+    })
+    activateSessionTab(tab)
+
+    if (tabProject?.runtime !== 'codex') {
+      return
     }
+
+    if (tab.temporary) {
+      setActiveCodexSessionId('')
+      setCodexTimeline(emptyCodexTimeline)
+      setCodexTimelineLoading(false)
+      setCodexTimelineError('')
+      lastLoadedCodexSessionIdRef.current = ''
+      return
+    }
+
+    if (!tab.codexSessionId) {
+      setActiveCodexSessionId('')
+      setCodexTimeline(emptyCodexTimeline)
+      setCodexTimelineError('')
+      lastLoadedCodexSessionIdRef.current = ''
+      return
+    }
+
+    setActiveCodexSessionId(tab.codexSessionId)
+    setCodexTimeline(emptyCodexTimeline)
+    setCodexTimelineError('')
+    loadCodexTimeline(tab.codexSessionId, tabProject, tab.id)
   }
 
   const leaveSessionView = async () => {
@@ -1386,8 +1670,10 @@ export function useWorkspaceController({
     setConnected(false)
     setSessionId(null)
     setSessionTabs([])
+    setSessionTabOrder([])
     setSelectedProject(null)
     setTerminalReconnectState({})
+    setCodexSessionTitlesByPtySessionId({})
     setActiveCodexSessionId('')
     setCodexTimeline(emptyCodexTimeline)
     setCodexTimelineLoading(false)
@@ -1439,7 +1725,7 @@ export function useWorkspaceController({
       setCloseSessionError('')
       setClosingSession(false)
       setSessions((prev) => prev.filter((item) => item.id !== activeTab.id))
-      setSessionTabs(remainingTabs)
+      commitSessionTabs(remainingTabs)
       setConnected(false)
       setSessionId(null)
       lastLoadedCodexSessionIdRef.current = ''
@@ -1466,8 +1752,10 @@ export function useWorkspaceController({
       setConnected(false)
       setSessionId(null)
       setSessionTabs([])
+      setSessionTabOrder([])
       setSelectedProject(null)
       setTerminalReconnectState({})
+      setCodexSessionTitlesByPtySessionId({})
       setActiveCodexSessionId('')
       setCodexTimeline(emptyCodexTimeline)
       setCodexTimelineLoading(false)
@@ -1589,8 +1877,10 @@ export function useWorkspaceController({
     setConnected(false)
     setSessionId(null)
     setSessionTabs([])
+    setSessionTabOrder([])
     setSelectedProject(null)
     setTerminalReconnectState({})
+    setCodexSessionTitlesByPtySessionId({})
     setActiveCodexSessionId('')
     setCodexTimeline(emptyCodexTimeline)
     setCodexTimelineLoading(false)
@@ -1620,6 +1910,10 @@ export function useWorkspaceController({
   }, [sessionTabs])
 
   useEffect(() => {
+    sessionTabOrderRef.current = sessionTabOrder
+  }, [sessionTabOrder])
+
+  useEffect(() => {
     projectsRef.current = projects
   }, [projects])
 
@@ -1636,14 +1930,12 @@ export function useWorkspaceController({
   }, [step])
 
   useEffect(() => {
-    setSessionTabs((prev) => {
-      if (prev.length === 0) {
-        return prev
-      }
+    const prevTabs = sessionTabsRef.current
+    if (prevTabs.length === 0) {
+      return
+    }
 
-      const next = composeSessionTabs(sessions, projects, prev)
-      return sameSessionTabs(prev, next) ? prev : next
-    })
+    commitSessionTabs(composeSessionTabs(sessions, projects, prevTabs))
   }, [projects, sessions])
 
   useEffect(() => {
@@ -1681,7 +1973,116 @@ export function useWorkspaceController({
   }, [connected, panels.sidebarWidth, panels.sidePanelTab, sessionId, step])
 
   useEffect(() => {
+    if (
+      selectedProject?.runtime !== 'codex'
+      || (!panels.codexLiveSessions.length && !panels.codexSessions.length)
+    ) {
+      return
+    }
+
+    const codexSessionIdByPtySessionId = new Map(
+      panels.codexLiveSessions
+        .filter((item) => item?.sessionId)
+        .map((item) => [item.sessionId, item.codexSessionId || ''])
+        .filter(([, codexSessionId]) => Boolean(codexSessionId)),
+    )
+
+    sessionsRef.current
+      .filter((session) => session.projectId === selectedProject.id && !session.temporary)
+      .forEach((session) => {
+        if (session.codexSessionId && !codexSessionIdByPtySessionId.has(session.id)) {
+          codexSessionIdByPtySessionId.set(session.id, session.codexSessionId)
+        }
+      })
+
+    const usedCodexSessionIds = new Set(
+      Array.from(codexSessionIdByPtySessionId.values()).filter(Boolean),
+    )
+    const fallbackCodexSessions = panels.codexSessions
+      .filter((item) => item?.sessionId && !usedCodexSessionIds.has(item.sessionId))
+      .sort((left, right) => right.updatedAtMs - left.updatedAtMs)
+
+    const projectPersistentSessions = sessionsRef.current
+      .filter((session) => session.projectId === selectedProject.id && !session.temporary)
+      .sort((left, right) => right.createdAtMs - left.createdAtMs)
+
+    projectPersistentSessions.forEach((session) => {
+      if (codexSessionIdByPtySessionId.has(session.id)) {
+        return
+      }
+
+      const fallbackSession = fallbackCodexSessions.shift()
+      if (!fallbackSession?.sessionId) {
+        return
+      }
+
+      codexSessionIdByPtySessionId.set(session.id, fallbackSession.sessionId)
+    })
+
+    logSessionDebug('codex_session_mapping_sync', {
+      projectId: selectedProject.id,
+      mappings: Array.from(codexSessionIdByPtySessionId.entries()).map(([ptySessionId, codexSessionId]) => ({
+        ptySessionId,
+        codexSessionId,
+      })),
+    })
+
+    if (!codexSessionIdByPtySessionId.size) {
+      return
+    }
+
+    setSessions((prev) => {
+      let changed = false
+      const next = prev.map((session) => {
+        const nextCodexSessionId = codexSessionIdByPtySessionId.get(session.id) || session.codexSessionId || ''
+        if ((session.codexSessionId || '') === nextCodexSessionId) {
+          return session
+        }
+
+        changed = true
+        return {
+          ...session,
+          codexSessionId: nextCodexSessionId,
+        }
+      })
+
+      return changed ? next : prev
+    })
+
+    setSessionTabs((prev) => {
+      let changed = false
+      const next = prev.map((tab) => {
+        const nextCodexSessionId = codexSessionIdByPtySessionId.get(tab.id) || tab.codexSessionId || ''
+        if ((tab.codexSessionId || '') === nextCodexSessionId) {
+          return tab
+        }
+
+        changed = true
+        return {
+          ...tab,
+          codexSessionId: nextCodexSessionId,
+        }
+      })
+
+      return changed ? next : prev
+    })
+  }, [panels.codexLiveSessions, panels.codexSessions, selectedProject])
+
+  useEffect(() => {
     if (step === 'select' || selectedProject?.runtime !== 'codex') {
+      setActiveCodexSessionId('')
+      setCodexTimeline(emptyCodexTimeline)
+      setCodexTimelineLoading(false)
+      setCodexTimelineError('')
+      lastLoadedCodexSessionIdRef.current = ''
+      return
+    }
+
+    const activeTab = sessionTabsRef.current.find((tab) => tab.id === sessionIdRef.current) || null
+    if (activeTab?.temporary) {
+      logSessionDebug('codex_timeline_effect_skip_temporary', {
+        activeTabId: activeTab.id,
+      })
       setActiveCodexSessionId('')
       setCodexTimeline(emptyCodexTimeline)
       setCodexTimelineLoading(false)
@@ -1692,6 +2093,9 @@ export function useWorkspaceController({
 
     const availableSessionIds = panels.codexSessions.map((item) => item.sessionId).filter(Boolean)
     if (availableSessionIds.length === 0) {
+      logSessionDebug('codex_timeline_effect_empty_sessions', {
+        activeTabId: activeTab?.id || '',
+      })
       setCodexTimeline(emptyCodexTimeline)
       setCodexTimelineError('')
       setCodexTimelineLoading(false)
@@ -1699,18 +2103,42 @@ export function useWorkspaceController({
       return
     }
 
-    const nextSessionId = availableSessionIds.includes(activeCodexSessionId)
-      ? activeCodexSessionId
-      : availableSessionIds[0]
+    if (activeTab && !activeTab.codexSessionId) {
+      logSessionDebug('codex_timeline_effect_wait_mapping', {
+        activeTabId: activeTab.id,
+        activeCodexSessionId,
+      })
+      setActiveCodexSessionId('')
+      setCodexTimeline(emptyCodexTimeline)
+      setCodexTimelineLoading(false)
+      setCodexTimelineError('')
+      lastLoadedCodexSessionIdRef.current = ''
+      return
+    }
+
+    const nextSessionId = activeTab
+      ? activeTab.codexSessionId || ''
+      : (
+          (availableSessionIds.includes(activeCodexSessionId) ? activeCodexSessionId : '')
+          || availableSessionIds[0]
+        )
+
+    logSessionDebug('codex_timeline_effect_resolve', {
+      activeTabId: activeTab?.id || '',
+      activeTabCodexSessionId: activeTab?.codexSessionId || '',
+      activeCodexSessionId,
+      nextSessionId,
+      availableSessionIds,
+    })
 
     if (nextSessionId !== activeCodexSessionId) {
       setActiveCodexSessionId(nextSessionId)
     }
 
     if (lastLoadedCodexSessionIdRef.current !== nextSessionId) {
-      loadCodexTimeline(nextSessionId, selectedProject)
+      loadCodexTimeline(nextSessionId, selectedProject, activeTab?.id || '')
     }
-  }, [activeCodexSessionId, panels.codexSessions, selectedProject, step])
+  }, [activeCodexSessionId, panels.codexSessions, selectedProject, sessionId, sessionTabs, step])
 
   const totalProjects = projects.length
   const activeSessionCount = sessions.length
@@ -1753,17 +2181,18 @@ export function useWorkspaceController({
   const currentSessionTemporary = Boolean(activeSessionTab?.temporary)
   const currentCodexSessionTab = selectedProject?.runtime === 'codex'
     ? (
-        sessionTabs.find((tab) => tab.id === panels.codexLiveSessions[0]?.sessionId)
+        (activeSessionTab && !activeSessionTab.temporary ? activeSessionTab : null)
         || sessionTabs.find((tab) => tab.projectId === selectedProject.id && !tab.temporary)
         || null
       )
     : null
   const currentCodexLiveSession = selectedProject?.runtime === 'codex'
     ? (
-        panels.codexLiveSessions[0]
+        panels.codexLiveSessions.find((item) => item.sessionId === currentCodexSessionTab?.id)
         || (currentCodexSessionTab
           ? {
               sessionId: currentCodexSessionTab.id,
+              codexSessionId: currentCodexSessionTab.codexSessionId || '',
               cwd: '',
               createdAtMs: 0,
               updatedAtMs: 0,
@@ -1831,7 +2260,6 @@ export function useWorkspaceController({
       onLoadCodexSessions: () => panels.loadCodexSessions(),
       onReturnToCurrentSession: () => {
         const targetTab = currentCodexSessionTab
-          || sessionTabsRef.current.find((tab) => tab.id === currentCodexLiveSession?.sessionId)
           || null
         if (targetTab) {
           activateSessionTab(targetTab, {
@@ -1901,6 +2329,7 @@ export function useWorkspaceController({
     onLeaveSessionView: leaveSessionView,
     onOpenTemporarySession: openTemporarySession,
     onReconnectCurrentSession: reconnectCurrentSession,
+    onReorderSessionTab: reorderSessionTab,
     onSwitchSessionTab: switchSessionTab,
     reconnectNotice: activeReconnectNotice,
     selectedProject,
@@ -1921,6 +2350,7 @@ export function useWorkspaceController({
   return {
     activeSessionCount,
     activatePersistentSession,
+    codexSessionTitlesByPtySessionId,
     connected,
     createProjectError,
     createProjectOpen,
@@ -1933,6 +2363,7 @@ export function useWorkspaceController({
     isEditingProject,
     leaveSessionView,
     loadingProjects,
+    loadCodexSessionTitlesForProject,
     logout,
     newProjectGitUrl,
     newProjectName,
