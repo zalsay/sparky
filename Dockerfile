@@ -89,6 +89,7 @@ RUN printf 'Types: deb\nURIs: %s\nSuites: bookworm bookworm-updates\nComponents:
         bubblewrap \
         chromium \
         curl \
+        default-mysql-client \
         file \
         lsof \
         pkg-config \

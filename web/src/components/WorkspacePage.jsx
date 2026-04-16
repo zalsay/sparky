@@ -5,6 +5,9 @@ import { logSessionDebug, summarizeContentPreview } from '../app/sessionDebug'
 import { WorkspaceShell } from './WorkspaceShell'
 import { WorkspaceTopbar } from './WorkspaceTopbar'
 
+const APP_TITLE = 'Sparky'
+const CODEX_COMPLETION_FLASH_MS = 1000
+
 function MobileCodexComposer({
   connected,
   codexTimelineUpdatedAtMs,
@@ -221,10 +224,17 @@ export function WorkspacePage({
     typeof window !== 'undefined' ? window.innerWidth <= 780 : false
   ))
   const [mobileSidePanelOpen, setMobileSidePanelOpen] = useState(false)
+  const previousCodexBusyRef = useRef(false)
+  const lastCodexCompletionAtRef = useRef(0)
+  const codexCompletionAlertRef = useRef(false)
+  const codexCompletionFlashRef = useRef(true)
+  const codexCompletionTimerRef = useRef(null)
   const codexTimelineItems = Array.isArray(terminalPanelProps?.codexTimeline?.items)
     ? terminalPanelProps.codexTimeline.items
     : []
   const latestCodexItem = codexTimelineItems[codexTimelineItems.length - 1] || null
+  const codexTimelineUpdatedAtMs = Number(terminalPanelProps?.codexTimeline?.updatedAtMs || 0)
+  const currentSessionId = terminalPanelProps?.sessionId || ''
   const codexBusyKinds = new Set(['reasoning', 'tool_call', 'tool_result', 'commentary', 'status'])
   const codexBusy = selectedProject?.runtime === 'codex' && (
     codexLoading
@@ -234,6 +244,46 @@ export function WorkspacePage({
     || (connected && latestCodexItem && codexBusyKinds.has(latestCodexItem.kind))
   )
   const showMobileCodexComposer = isMobileViewport && selectedProject?.runtime === 'codex'
+  const baseTitle = selectedProject?.name ? `${selectedProject.name} · ${APP_TITLE}` : APP_TITLE
+  const updateDocumentTitle = () => {
+    if (typeof document === 'undefined') {
+      return
+    }
+
+    if (codexCompletionAlertRef.current) {
+      document.title = codexCompletionFlashRef.current
+        ? `Codex 已完成 · ${baseTitle}`
+        : `● ${baseTitle}`
+      return
+    }
+
+    document.title = baseTitle
+  }
+
+  const clearCodexCompletionTimer = () => {
+    if (codexCompletionTimerRef.current) {
+      window.clearInterval(codexCompletionTimerRef.current)
+      codexCompletionTimerRef.current = null
+    }
+  }
+
+  const clearCodexCompletionAlert = () => {
+    codexCompletionAlertRef.current = false
+    codexCompletionFlashRef.current = true
+    clearCodexCompletionTimer()
+    updateDocumentTitle()
+  }
+
+  const triggerCodexCompletionAlert = () => {
+    codexCompletionAlertRef.current = true
+    codexCompletionFlashRef.current = true
+    clearCodexCompletionTimer()
+    updateDocumentTitle()
+    codexCompletionTimerRef.current = window.setInterval(() => {
+      codexCompletionFlashRef.current = !codexCompletionFlashRef.current
+      updateDocumentTitle()
+    }, CODEX_COMPLETION_FLASH_MS)
+  }
 
   useEffect(() => {
     const handleResize = () => {
@@ -272,6 +322,77 @@ export function WorkspacePage({
     documentElement.classList.remove('mobile-codex-html')
     return undefined
   }, [showMobileCodexComposer])
+
+  useEffect(() => {
+    clearCodexCompletionAlert()
+    previousCodexBusyRef.current = codexBusy
+    lastCodexCompletionAtRef.current = codexTimelineUpdatedAtMs
+  }, [currentSessionId, selectedProject?.id])
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return undefined
+    }
+
+    const clearAlertIfForeground = () => {
+      if (document.visibilityState === 'visible' && document.hasFocus()) {
+        clearCodexCompletionAlert()
+      }
+    }
+
+    document.addEventListener('visibilitychange', clearAlertIfForeground)
+    window.addEventListener('focus', clearAlertIfForeground)
+    window.addEventListener('pageshow', clearAlertIfForeground)
+
+    return () => {
+      document.removeEventListener('visibilitychange', clearAlertIfForeground)
+      window.removeEventListener('focus', clearAlertIfForeground)
+      window.removeEventListener('pageshow', clearAlertIfForeground)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      previousCodexBusyRef.current = codexBusy
+      return
+    }
+
+    const completionDetected = (
+      previousCodexBusyRef.current
+      && !codexBusy
+      && selectedProject?.runtime === 'codex'
+      && connected
+      && latestCodexItem?.kind === 'assistant'
+      && codexTimelineUpdatedAtMs > lastCodexCompletionAtRef.current
+    )
+
+    if (completionDetected) {
+      const backgrounded = document.visibilityState !== 'visible' || !document.hasFocus()
+      if (backgrounded) {
+        triggerCodexCompletionAlert()
+      }
+      lastCodexCompletionAtRef.current = codexTimelineUpdatedAtMs
+    }
+
+    if (codexBusy) {
+      clearCodexCompletionAlert()
+    }
+
+    previousCodexBusyRef.current = codexBusy
+  }, [codexBusy, codexTimelineUpdatedAtMs, connected, latestCodexItem?.kind, selectedProject?.runtime])
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return undefined
+    }
+
+    updateDocumentTitle()
+
+    return () => {
+      clearCodexCompletionTimer()
+      document.title = APP_TITLE
+    }
+  }, [baseTitle])
 
   return (
     <div className={`app workspace-page ${showMobileCodexComposer ? 'workspace-page-has-mobile-composer' : ''}`}>

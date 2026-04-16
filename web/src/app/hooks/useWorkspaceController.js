@@ -661,7 +661,9 @@ export function useWorkspaceController({
     codexSessionId = '',
     project = selectedProject,
     targetPtySessionId = '',
+    options = {},
   ) => {
+    const background = options.background === true
     if (!auth?.token || !project?.id || project.runtime !== 'codex') {
       setActiveCodexSessionId('')
       setCodexTimeline(emptyCodexTimeline)
@@ -680,8 +682,10 @@ export function useWorkspaceController({
       return null
     }
 
-    setCodexTimelineLoading(true)
-    setCodexTimelineError('')
+    if (!background) {
+      setCodexTimelineLoading(true)
+      setCodexTimelineError('')
+    }
 
     try {
       const response = await fetch(
@@ -728,12 +732,16 @@ export function useWorkspaceController({
       lastLoadedCodexSessionIdRef.current = resolvedId
       return normalized
     } catch (error) {
-      setCodexTimeline(emptyCodexTimeline)
-      setCodexTimelineError(error.message || '加载 Codex 会话详情失败')
-      lastLoadedCodexSessionIdRef.current = ''
+      if (!background) {
+        setCodexTimeline(emptyCodexTimeline)
+        setCodexTimelineError(error.message || '加载 Codex 会话详情失败')
+        lastLoadedCodexSessionIdRef.current = ''
+      }
       return null
     } finally {
-      setCodexTimelineLoading(false)
+      if (!background) {
+        setCodexTimelineLoading(false)
+      }
     }
   }
 
@@ -2137,6 +2145,49 @@ export function useWorkspaceController({
 
     if (lastLoadedCodexSessionIdRef.current !== nextSessionId) {
       loadCodexTimeline(nextSessionId, selectedProject, activeTab?.id || '')
+    }
+  }, [activeCodexSessionId, panels.codexSessions, selectedProject, sessionId, sessionTabs, step])
+
+  useEffect(() => {
+    if (step === 'select' || selectedProject?.runtime !== 'codex') {
+      return undefined
+    }
+
+    const activeTab = sessionTabsRef.current.find((tab) => tab.id === sessionIdRef.current) || null
+    if (activeTab?.temporary) {
+      return undefined
+    }
+
+    const targetSessionId = activeTab?.codexSessionId || activeCodexSessionId || panels.codexSessions[0]?.sessionId || ''
+    if (!targetSessionId) {
+      return undefined
+    }
+
+    let cancelled = false
+    let refreshing = false
+
+    const refreshTimeline = async () => {
+      if (cancelled || refreshing) {
+        return
+      }
+
+      refreshing = true
+      try {
+        await loadCodexTimeline(targetSessionId, selectedProject, activeTab?.id || '', {
+          background: true,
+        })
+      } finally {
+        refreshing = false
+      }
+    }
+
+    const timer = window.setInterval(() => {
+      void refreshTimeline()
+    }, 2500)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
     }
   }, [activeCodexSessionId, panels.codexSessions, selectedProject, sessionId, sessionTabs, step])
 
