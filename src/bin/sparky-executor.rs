@@ -20,8 +20,10 @@ use sparky::internal_api::{
 use sparky::session::SessionSummary;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 const PROXY_WS_MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
+const PROXY_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const EDITOR_NOT_RUNNING_ERRORS: [&str; 2] = ["编辑器未启动", "编辑器已退出，请重新打开文件"];
 
 #[derive(Clone)]
@@ -544,11 +546,15 @@ async fn dev_proxy_root(
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, Error> {
     let (project_id, candidate_id) = path.into_inner();
+    let tail = raw_proxy_tail(
+        req.uri().path(),
+        &format!("/internal/dev/{}/{}/proxy", project_id, candidate_id),
+    );
     dev_proxy(
         state,
         req,
         payload,
-        (project_id, candidate_id, String::new()),
+        (project_id, candidate_id, tail),
     )
     .await
 }
@@ -559,7 +565,12 @@ async fn dev_proxy_tail(
     payload: web::Payload,
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, Error> {
-    dev_proxy(state, req, payload, path.into_inner()).await
+    let (project_id, candidate_id, _) = path.into_inner();
+    let tail = raw_proxy_tail(
+        req.uri().path(),
+        &format!("/internal/dev/{}/{}/proxy", project_id, candidate_id),
+    );
+    dev_proxy(state, req, payload, (project_id, candidate_id, tail)).await
 }
 
 async fn dev_proxy(
@@ -608,7 +619,8 @@ async fn dev_proxy(
     );
 
     if is_websocket_request(&req) {
-        return proxy_http_websocket(req, payload, upstream_url, None).await;
+        let origin_override = upstream_http_origin(&upstream_url);
+        return proxy_http_websocket(req, payload, upstream_url, origin_override).await;
     }
 
     proxy_http(req, payload, upstream_url).await
@@ -685,7 +697,6 @@ fn should_skip_response_header(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
         "connection"
-            | "content-encoding"
             | "content-length"
             | "transfer-encoding"
             | "keep-alive"
@@ -735,13 +746,23 @@ async fn proxy_http(
 
     let forward = copy_forward_headers(
         req.headers(),
-        client.request(req.method().clone(), upstream_url.clone()),
+        client
+            .request(req.method().clone(), upstream_url.clone())
+            .force_close()
+            .no_decompress()
+            .timeout(PROXY_HTTP_TIMEOUT),
     );
 
-    let mut upstream = forward
-        .send_body(body.freeze())
-        .await
-        .map_err(actix_web::error::ErrorBadGateway)?;
+    let mut upstream = forward.send_body(body.freeze()).await.map_err(|error| {
+        log::warn!(
+            "executor dev proxy upstream request failed method={} path={} upstream={}: {}",
+            req.method(),
+            req.uri(),
+            upstream_url,
+            error
+        );
+        actix_web::error::ErrorBadGateway(error)
+    })?;
 
     let status = upstream.status();
     let response_headers = upstream.headers().clone();
@@ -756,7 +777,17 @@ async fn proxy_http(
         .body()
         .limit(64 * 1024 * 1024)
         .await
-        .map_err(actix_web::error::ErrorBadGateway)?;
+        .map_err(|error| {
+            log::warn!(
+                "executor dev proxy upstream body read failed method={} path={} upstream={} status={}: {}",
+                req.method(),
+                req.uri(),
+                upstream_url,
+                status.as_u16(),
+                error
+            );
+            actix_web::error::ErrorBadGateway(error)
+        })?;
 
     if request_uri.contains("/proxy/api/") || !status.is_success() {
         log::info!(
@@ -784,10 +815,6 @@ async fn proxy_http_websocket(
     upstream_url: String,
     origin_override: Option<String>,
 ) -> Result<HttpResponse, Error> {
-    let (response, mut client_ws, client_stream) = actix_ws::handle(&req, payload)?;
-    let request_path = req.uri().path().to_string();
-    let mut client_stream = client_stream.max_frame_size(PROXY_WS_MAX_FRAME_SIZE);
-
     let upstream_ws_url = if let Some(rest) = upstream_url.strip_prefix("http://") {
         format!("ws://{}", rest)
     } else if let Some(rest) = upstream_url.strip_prefix("https://") {
@@ -806,7 +833,7 @@ async fn proxy_http_websocket(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        builder = builder.set_header("sec-websocket-protocol", protocol);
+        builder = builder.protocols([protocol]);
     }
     if let Some(origin) = origin_override.as_deref() {
         if let Some(authority) = origin_authority(origin) {
@@ -826,7 +853,7 @@ async fn proxy_http_websocket(
         builder = builder.set_header(name.clone(), value.clone());
     }
 
-    let (_, mut upstream) = builder.connect().await.map_err(|error| {
+    let (upstream_response, mut upstream) = builder.connect().await.map_err(|error| {
         log::warn!(
             "proxy websocket connect failed for {} protocol={} origin_override={}: {}",
             upstream_ws_url,
@@ -839,6 +866,21 @@ async fn proxy_http_websocket(
         );
         actix_web::error::ErrorBadGateway(error)
     })?;
+    let selected_protocol = upstream_response
+        .headers()
+        .get(actix_web::http::header::SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let (response, mut client_ws, client_stream) =
+        if let Some(protocol) = selected_protocol.as_deref() {
+            actix_ws::handle_with_protocols(&req, payload, &[protocol])?
+        } else {
+            actix_ws::handle(&req, payload)?
+        };
+    let request_path = req.uri().path().to_string();
+    let mut client_stream = client_stream.max_frame_size(PROXY_WS_MAX_FRAME_SIZE);
 
     actix_web::rt::spawn(async move {
         loop {
@@ -947,6 +989,17 @@ fn upstream_http_origin(url: &str) -> Option<String> {
         return None;
     }
     Some(format!("{}://{}", scheme, authority))
+}
+
+fn raw_proxy_tail(request_path: &str, prefix: &str) -> String {
+    if request_path == prefix {
+        return String::new();
+    }
+
+    request_path
+        .strip_prefix(&(prefix.to_string() + "/"))
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn origin_authority(origin: &str) -> Option<&str> {

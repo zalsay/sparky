@@ -49,6 +49,7 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 // ── Global State ────────────────────────────────────────────────────────────────
 
@@ -70,6 +71,7 @@ static EXECUTOR_REMOTE: Lazy<Option<Arc<RemoteExecutorClient>>> = Lazy::new(|| {
 });
 static USER_STORE: OnceCell<Arc<UserStore>> = OnceCell::new();
 const PROXY_WS_MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
+const PROXY_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Deserialize)]
 struct CredentialsRequest {
@@ -1804,7 +1806,19 @@ async fn load_project_codex_sessions(
 }
 
 async fn dev_proxy_root(req: HttpRequest, payload: web::Payload) -> Result<HttpResponse, Error> {
-    dev_proxy(req, payload, String::new()).await
+    let project_id = req
+        .match_info()
+        .get("project_id")
+        .ok_or_else(|| actix_web::error::ErrorBadRequest("missing project id"))?;
+    let candidate_id = req
+        .match_info()
+        .get("entry_id")
+        .ok_or_else(|| actix_web::error::ErrorBadRequest("missing entry id"))?;
+    let tail = raw_proxy_tail(
+        req.uri().path(),
+        &format!("/dev/{}/{}", project_id, candidate_id),
+    );
+    dev_proxy(req, payload, tail).await
 }
 
 async fn dev_proxy_tail(
@@ -1812,7 +1826,11 @@ async fn dev_proxy_tail(
     payload: web::Payload,
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, Error> {
-    let (_, _, tail) = path.into_inner();
+    let (project_id, candidate_id, _) = path.into_inner();
+    let tail = raw_proxy_tail(
+        req.uri().path(),
+        &format!("/dev/{}/{}", project_id, candidate_id),
+    );
     dev_proxy(req, payload, tail).await
 }
 
@@ -2041,7 +2059,8 @@ async fn dev_proxy(
     log::info!("dev proxy request {} -> local {}", req.uri(), upstream_url);
 
     if is_websocket_request(&req) {
-        return proxy_dev_websocket(req, payload, upstream_url, None, &[]).await;
+        let origin_override = upstream_http_origin(&upstream_url);
+        return proxy_dev_websocket(req, payload, upstream_url, origin_override, &[]).await;
     }
 
     let proxy_base = format!("/dev/{}/{}/", project_id, candidate_id);
@@ -2064,14 +2083,24 @@ async fn proxy_dev_http(
 
     let forward = copy_forward_headers(
         req.headers(),
-        client.request(req.method().clone(), upstream_url.clone()),
+        client
+            .request(req.method().clone(), upstream_url.clone())
+            .force_close()
+            .no_decompress()
+            .timeout(PROXY_HTTP_TIMEOUT),
         extra_headers,
     );
 
-    let mut upstream = forward
-        .send_body(body.freeze())
-        .await
-        .map_err(actix_web::error::ErrorBadGateway)?;
+    let mut upstream = forward.send_body(body.freeze()).await.map_err(|error| {
+        log::warn!(
+            "dev proxy upstream request failed method={} path={} upstream={}: {}",
+            req.method(),
+            req.uri(),
+            upstream_url,
+            error
+        );
+        actix_web::error::ErrorBadGateway(error)
+    })?;
 
     let status = upstream.status();
     let content_type = upstream
@@ -2087,7 +2116,17 @@ async fn proxy_dev_http(
         .body()
         .limit(64 * 1024 * 1024)
         .await
-        .map_err(actix_web::error::ErrorBadGateway)?;
+        .map_err(|error| {
+            log::warn!(
+                "dev proxy upstream body read failed method={} path={} upstream={} status={}: {}",
+                req.method(),
+                req.uri(),
+                upstream_url,
+                status.as_u16(),
+                error
+            );
+            actix_web::error::ErrorBadGateway(error)
+        })?;
 
     if request_uri.contains("/api/") || !status.is_success() {
         log::info!(
@@ -2124,10 +2163,6 @@ async fn proxy_dev_websocket(
     origin_override: Option<String>,
     extra_headers: &[(actix_web::http::header::HeaderName, String)],
 ) -> Result<HttpResponse, Error> {
-    let (response, mut client_ws, client_stream) = actix_ws::handle(&req, payload)?;
-    let request_path = req.uri().path().to_string();
-    let mut client_stream = client_stream.max_frame_size(PROXY_WS_MAX_FRAME_SIZE);
-
     let upstream_ws_url = if let Some(rest) = upstream_url.strip_prefix("http://") {
         format!("ws://{}", rest)
     } else if let Some(rest) = upstream_url.strip_prefix("https://") {
@@ -2146,7 +2181,7 @@ async fn proxy_dev_websocket(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        builder = builder.set_header("sec-websocket-protocol", protocol);
+        builder = builder.protocols([protocol]);
     }
     if let Some(origin) = origin_override.as_deref() {
         if let Some(authority) = origin_authority(origin) {
@@ -2169,7 +2204,7 @@ async fn proxy_dev_websocket(
         builder = builder.set_header(name.clone(), value.clone());
     }
 
-    let (_, mut upstream) = builder.connect().await.map_err(|error| {
+    let (upstream_response, mut upstream) = builder.connect().await.map_err(|error| {
         log::warn!(
             "proxy websocket connect failed for {} protocol={} origin_override={}: {}",
             upstream_ws_url,
@@ -2182,6 +2217,21 @@ async fn proxy_dev_websocket(
         );
         actix_web::error::ErrorBadGateway(error)
     })?;
+    let selected_protocol = upstream_response
+        .headers()
+        .get(actix_web::http::header::SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let (response, mut client_ws, client_stream) =
+        if let Some(protocol) = selected_protocol.as_deref() {
+            actix_ws::handle_with_protocols(&req, payload, &[protocol])?
+        } else {
+            actix_ws::handle(&req, payload)?
+        };
+    let request_path = req.uri().path().to_string();
+    let mut client_stream = client_stream.max_frame_size(PROXY_WS_MAX_FRAME_SIZE);
 
     actix_web::rt::spawn(async move {
         loop {
@@ -2292,6 +2342,17 @@ fn upstream_http_origin(url: &str) -> Option<String> {
     Some(format!("{}://{}", scheme, authority))
 }
 
+fn raw_proxy_tail(request_path: &str, prefix: &str) -> String {
+    if request_path == prefix {
+        return String::new();
+    }
+
+    request_path
+        .strip_prefix(&(prefix.to_string() + "/"))
+        .unwrap_or_default()
+        .to_string()
+}
+
 fn origin_authority(origin: &str) -> Option<&str> {
     let (_, rest) = origin.split_once("://")?;
     if rest.is_empty() {
@@ -2332,7 +2393,6 @@ fn should_skip_response_header(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
         "connection"
-            | "content-encoding"
             | "content-length"
             | "transfer-encoding"
             | "keep-alive"
