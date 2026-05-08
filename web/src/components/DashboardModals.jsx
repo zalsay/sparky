@@ -13,6 +13,7 @@ export function DashboardModals({
   newProjectName,
   newProjectPath,
   newProjectRuntime,
+  onProjectRepoPathChange,
   onCloseCreateProject,
   onCloseDeleteProject,
   onDeleteProject,
@@ -20,6 +21,9 @@ export function DashboardModals({
   onProjectNameChange,
   onProjectPathChange,
   onProjectRuntimeChange,
+  projectRepoLoading,
+  projectRepoOptions,
+  selectedProjectRepoPath,
   onSubmitCreateProject,
 }) {
   return (
@@ -37,7 +41,11 @@ export function DashboardModals({
           onProjectGitUrlChange={onProjectGitUrlChange}
           onProjectNameChange={onProjectNameChange}
           onProjectPathChange={onProjectPathChange}
+          onProjectRepoPathChange={onProjectRepoPathChange}
           onProjectRuntimeChange={onProjectRuntimeChange}
+          projectRepoLoading={projectRepoLoading}
+          projectRepoOptions={projectRepoOptions}
+          selectedProjectRepoPath={selectedProjectRepoPath}
           onSubmit={onSubmitCreateProject}
         />
       ) : null}

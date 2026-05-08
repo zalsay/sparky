@@ -2,7 +2,9 @@
 
 use crate::auth::AuthSession;
 use crate::config::ServerConfig;
-use crate::git::{ensure_local_branch_tracking, resolve_runtime_worktree, GitRuntimeContext};
+use crate::git::{
+    ensure_local_branch_tracking, resolve_runtime_worktree_compat, GitRuntimeContext,
+};
 use crate::project::Project;
 use crate::sandbox::{unmount_overlay, OverlayPaths};
 use parking_lot::Mutex;
@@ -274,6 +276,19 @@ impl Session {
         Ok(())
     }
 
+    /// Resize the PTY so full-screen terminal apps can reflow to the visible viewport.
+    pub fn resize(&self, rows: u16, cols: u16) -> Result<(), String> {
+        let pty = self.pty.lock();
+        pty.master
+            .resize(PtySize {
+                rows: rows.max(1),
+                cols: cols.max(2),
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("resize: {}", e))
+    }
+
     /// Check if the child process is still alive.
     pub fn is_alive(&self) -> bool {
         let mut pty = self.pty.lock();
@@ -358,7 +373,7 @@ fn configured_session_worktree(project: &Project) -> String {
 
 fn resolved_session_worktree(project: &Project) -> String {
     let configured = configured_session_worktree(project);
-    resolve_runtime_worktree(Path::new(&configured))
+    resolve_runtime_worktree_compat(Path::new(&configured), project.git_url.as_deref())
         .map(|path| path.display().to_string())
         .unwrap_or(configured)
 }

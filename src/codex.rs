@@ -148,7 +148,12 @@ pub async fn init_schema(pool: &PgPool) -> Result<(), String> {
     )
     .execute(pool)
     .await
-    .map_err(|error| format!("alter bridge_codex_live_sessions add codex_session_id: {}", error))?;
+    .map_err(|error| {
+        format!(
+            "alter bridge_codex_live_sessions add codex_session_id: {}",
+            error
+        )
+    })?;
 
     Ok(())
 }

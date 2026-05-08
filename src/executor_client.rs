@@ -116,6 +116,32 @@ impl RemoteExecutorClient {
         url
     }
 
+    pub fn file_download_url(&self, project_root: &std::path::Path, path: &str) -> String {
+        format!(
+            "{}/internal/files/download?project_root={}&path={}",
+            self.base_url,
+            url_encode_query(&project_root.display().to_string()),
+            url_encode_query(path),
+        )
+    }
+
+    pub fn file_upload_url(&self, project_root: &std::path::Path) -> String {
+        format!(
+            "{}/internal/files/upload?project_root={}",
+            self.base_url,
+            url_encode_query(&project_root.display().to_string()),
+        )
+    }
+
+    pub fn file_delete_url(&self, project_root: &std::path::Path, path: &str) -> String {
+        format!(
+            "{}/internal/files/delete?project_root={}&path={}",
+            self.base_url,
+            url_encode_query(&project_root.display().to_string()),
+            url_encode_query(path),
+        )
+    }
+
     pub async fn list_sessions_for_user(
         &self,
         user_id: &str,

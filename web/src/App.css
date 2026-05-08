@@ -589,6 +589,105 @@ button {
 
 .field-select {
   appearance: none;
+  position: relative;
+  z-index: 1;
+  padding-right: 3.4rem;
+  cursor: pointer;
+}
+
+.field-select-mono {
+  font-family: "JetBrains Mono", "SFMono-Regular", monospace;
+  font-size: 0.78rem;
+}
+
+.field-select-shell {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.field-select-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)),
+    radial-gradient(circle at right center, rgba(50, 240, 140, 0.12), transparent 48%);
+  pointer-events: none;
+}
+
+.field-select-shell .field-input {
+  position: relative;
+  z-index: 1;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.025)),
+    rgba(255, 255, 255, 0.03);
+}
+
+.field-select-shell:hover .field-input:not(:disabled) {
+  border-color: color-mix(in srgb, var(--brand) 26%, var(--border));
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.03)),
+    rgba(255, 255, 255, 0.04);
+}
+
+.field-select-shell:focus-within .field-input {
+  border-color: rgba(50, 240, 140, 0.44);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.03)),
+    rgba(255, 255, 255, 0.045);
+  box-shadow: 0 0 0 4px rgba(50, 240, 140, 0.08);
+}
+
+.field-select-shell__icon {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  bottom: 1px;
+  width: 2.9rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0 calc(var(--radius-sm) - 1px) calc(var(--radius-sm) - 1px) 0;
+  background:
+    linear-gradient(180deg, rgba(50, 240, 140, 0.16), rgba(50, 240, 140, 0.05)),
+    rgba(255, 255, 255, 0.03);
+  color: color-mix(in srgb, var(--brand) 72%, white);
+  pointer-events: none;
+  transition: background-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
+}
+
+.field-select-shell:hover .field-select-shell__icon {
+  color: #dffff1;
+}
+
+.field-select-shell:focus-within .field-select-shell__icon {
+  background:
+    linear-gradient(180deg, rgba(50, 240, 140, 0.22), rgba(50, 240, 140, 0.08)),
+    rgba(255, 255, 255, 0.04);
+  color: #f3fff9;
+}
+
+.field-select-shell__icon svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.field-input:disabled,
+.field-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.field-select-shell:has(.field-select:disabled) .field-select-shell__icon {
+  color: rgba(255, 255, 255, 0.42);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02)),
+    rgba(255, 255, 255, 0.02);
 }
 
 .field-input:focus {
@@ -1656,6 +1755,10 @@ button {
   min-height: 0;
 }
 
+.workspace-page .file-panel-scroll {
+  overflow: hidden;
+}
+
 .file-panel-scroll {
   display: flex;
   flex-direction: column;
@@ -1749,6 +1852,30 @@ button {
   background: rgba(50, 240, 140, 0.08);
   color: var(--text-primary);
   box-shadow: inset 0 0 0 1px rgba(50, 240, 140, 0.18);
+}
+
+.side-panel-repo-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 0.52rem;
+  padding: 0.82rem;
+  border-radius: 0.95rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.028);
+}
+
+.side-panel-repo-selector__heading {
+  gap: 0.14rem;
+}
+
+.side-panel-repo-selector__hint {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.side-panel-repo-selector__hint-error {
+  color: var(--danger);
 }
 
 .side-panel-body {
@@ -2059,9 +2186,72 @@ button {
   position: relative;
   display: flex;
   flex-direction: column;
+  flex: 1;
   gap: 0.25rem;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 0.72rem;
   border-radius: 18px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(50, 240, 140, 0.28) rgba(255, 255, 255, 0.05);
+}
+
+.file-tree-list::-webkit-scrollbar {
+  width: 10px;
+}
+
+.file-tree-list::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 999px;
+}
+
+.file-tree-list::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(50, 240, 140, 0.28), rgba(18, 96, 58, 0.88));
+  border: 2px solid rgba(12, 12, 13, 0.92);
+  border-radius: 999px;
+}
+
+.file-tree-list::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(96, 242, 189, 0.46), rgba(24, 124, 74, 0.94));
+}
+
+.file-upload-input {
+  display: none;
+}
+
+.file-upload-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.38rem;
+  padding: 0.64rem 0.72rem;
+  border: 1px solid rgba(50, 240, 140, 0.18);
+  border-radius: 0.48rem;
+  background: rgba(50, 240, 140, 0.06);
+}
+
+.file-upload-progress__meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+}
+
+.file-upload-progress__track {
+  width: 100%;
+  height: 0.42rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.file-upload-progress__bar {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(50, 240, 140, 0.82), rgba(96, 242, 189, 0.95));
+  transition: width 0.18s ease;
 }
 
 .file-tree-node {
@@ -2090,6 +2280,11 @@ button {
 
 .file-tree-row:hover {
   background: rgba(255, 255, 255, 0.03);
+  color: var(--text-primary);
+}
+
+.file-tree-row.active {
+  background: rgba(50, 240, 140, 0.08);
   color: var(--text-primary);
 }
 
@@ -2167,6 +2362,65 @@ button {
 .file-tree-status {
   color: var(--brand);
   white-space: nowrap;
+  font-size: 0.72rem;
+}
+
+.file-tree-action-menu {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  width: max-content;
+  max-width: calc(100% - 0.72rem - var(--file-tree-depth, 0) * 0.88rem);
+  margin: 0.04rem 0 0.18rem calc(2.95rem + var(--file-tree-depth, 0) * 0.88rem);
+  padding: 0.28rem;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 0.48rem;
+  background: rgba(18, 20, 21, 0.96);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+  z-index: 2;
+}
+
+.file-tree-action {
+  min-width: 3.1rem;
+  padding: 0.32rem 0.56rem;
+  border-radius: 0.36rem;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.file-tree-action:hover,
+.file-tree-action:focus-visible {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text-primary);
+}
+
+.file-tree-action.danger {
+  color: #ff958f;
+}
+
+.file-tree-action.danger:hover,
+.file-tree-action.danger:focus-visible {
+  background: rgba(255, 90, 84, 0.14);
+  color: #ffd1ce;
+}
+
+.file-tree-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.file-delete-path {
+  max-height: 7rem;
+  overflow: auto;
+  padding: 0.58rem 0.66rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.42rem;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  font-family: "JetBrains Mono", "SFMono-Regular", monospace;
+  font-size: 0.76rem;
+  word-break: break-all;
 }
 
 .git-commit-box {
@@ -2498,10 +2752,10 @@ button {
 
 .terminal-host .xterm,
 .terminal-host-canvas .xterm {
-  display: flex;
   width: 100%;
   height: 100%;
   padding: 0.82rem;
+  overflow: hidden;
 }
 
 .terminal-host .xterm-viewport,
@@ -2534,11 +2788,6 @@ button {
 .terminal-host .xterm-viewport::-webkit-scrollbar-thumb:hover,
 .terminal-host-canvas .xterm-viewport::-webkit-scrollbar-thumb:hover {
   background: linear-gradient(180deg, rgba(96, 242, 189, 0.52), rgba(24, 124, 74, 0.96));
-}
-
-.terminal-host .xterm-screen,
-.terminal-host-canvas .xterm-screen {
-  flex: 1;
 }
 
 .terminal-host .xterm-screen canvas,

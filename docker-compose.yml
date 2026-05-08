@@ -11,7 +11,7 @@ x-runtime-env: &runtime-env
   SSH_AUTH_SOCK: /ssh-agent
   SSH_KNOWN_HOSTS_TEMPLATE: /etc/sparky/known_hosts
   SANDBOX_ROOT: /tmp/sp-sandbox
-  DATABASE_URL: ${DATABASE_URL:-postgres://cc_user:cc_pass_2026@host.docker.internal:5435/cc_service}
+  DATABASE_URL: ${DATABASE_URL:-postgres://cc_user:cc_pass_2026@cc-postgres:5432/cc_service}
   DB_MAX_CONNECTIONS: "5"
   SPARKY_BWRAP_UNSHARE_USER: "false"
   ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN}
@@ -65,7 +65,7 @@ services:
     volumes:
       - ./web/dist:/usr/share/nginx/html:ro
 
-  sparky:
+  sparky-server:
     build:
       context: .
       dockerfile: Dockerfile
@@ -83,6 +83,9 @@ services:
       EXECUTOR_BASE_URL: http://sp-executor:3002
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - cc-server-default
     volumes: *server-volumes
 
   sparky-executor:
@@ -108,4 +111,12 @@ services:
       PYTHONUSERBASE: /home/app/.local
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - cc-server-default
     volumes: *executor-volumes
+
+networks:
+  cc-server-default:
+    external: true
+    name: ${CC_SERVER_NETWORK:-cc-server_default}

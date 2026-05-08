@@ -93,6 +93,7 @@ RUN printf 'Types: deb\nURIs: %s\nSuites: bookworm bookworm-updates\nComponents:
         file \
         lsof \
         pkg-config \
+        postgresql-client \
         ripgrep && \
     rm -rf /var/lib/apt/lists/*
 

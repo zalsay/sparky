@@ -82,7 +82,11 @@ function App() {
           onProjectGitUrlChange={workspace.setNewProjectGitUrl}
           onProjectNameChange={workspace.setNewProjectName}
           onProjectPathChange={workspace.onProjectPathInputChange}
+          onProjectRepoPathChange={workspace.onProjectRepoPathChange}
           onProjectRuntimeChange={workspace.setNewProjectRuntime}
+          projectRepoLoading={workspace.projectRepoLoading}
+          projectRepoOptions={workspace.projectRepoOptions}
+          selectedProjectRepoPath={workspace.selectedProjectRepoPath}
           onSubmitCreateProject={workspace.submitCreateProject}
         />
       </>

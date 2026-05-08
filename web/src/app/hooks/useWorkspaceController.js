@@ -75,7 +75,10 @@ export function useWorkspaceController({
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectPath, setNewProjectPath] = useState('')
   const [newProjectGitUrl, setNewProjectGitUrl] = useState('')
-  const [newProjectRuntime, setNewProjectRuntime] = useState('claude')
+  const [newProjectRuntime, setNewProjectRuntime] = useState('codex')
+  const [projectRepoOptions, setProjectRepoOptions] = useState([])
+  const [projectRepoLoading, setProjectRepoLoading] = useState(false)
+  const [selectedProjectRepoPath, setSelectedProjectRepoPath] = useState('')
   const [preferredProjectId, setPreferredProjectId] = useState(() => readStorage(PROJECT_STORAGE_KEY, LEGACY_PROJECT_STORAGE_KEY))
 
   const wsRef = useRef(null)
@@ -89,6 +92,8 @@ export function useWorkspaceController({
   const fitAddonRef = useRef(new Map())
   const pendingOutputRef = useRef(new Map())
   const pendingInputRef = useRef(new Map())
+  const lastMeasuredTerminalSizeRef = useRef(new Map())
+  const lastSentTerminalSizeRef = useRef(new Map())
   const terminalCleanupRef = useRef(new Map())
   const projectsRef = useRef([])
   const sessionsRef = useRef([])
@@ -99,6 +104,7 @@ export function useWorkspaceController({
   const workspaceShellRef = useRef(null)
   const resetPanelsRef = useRef(() => {})
   const lastLoadedCodexSessionIdRef = useRef('')
+  const projectRepoRequestIdRef = useRef(0)
 
   const rememberProject = (projectId) => {
     if (!projectId) {
@@ -156,13 +162,39 @@ export function useWorkspaceController({
 
   const fitTerminal = (sid) => {
     const fitAddon = fitAddonRef.current.get(sid)
-    if (!fitAddon) {
+    const terminal = terminalRef.current.get(sid)
+    if (!fitAddon || !terminal) {
       return
     }
 
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
+        const dimensions = fitAddon.proposeDimensions()
+        if (!dimensions) {
+          return
+        }
+
         fitAddon.fit()
+        lastMeasuredTerminalSizeRef.current.set(sid, dimensions)
+
+        const ws = wsPoolRef.current.get(sid)
+        const lastSent = lastSentTerminalSizeRef.current.get(sid)
+        const hasChanged = !lastSent
+          || lastSent.rows !== dimensions.rows
+          || lastSent.cols !== dimensions.cols
+
+        if (ws?.readyState === WebSocket.OPEN && hasChanged) {
+          sendWsPayload(sid, ws, {
+            type: 'resize',
+            rows: dimensions.rows,
+            cols: dimensions.cols,
+          }, {
+            source: 'fit_terminal',
+            rows: dimensions.rows,
+            cols: dimensions.cols,
+          })
+          lastSentTerminalSizeRef.current.set(sid, dimensions)
+        }
       })
     })
   }
@@ -257,6 +289,8 @@ export function useWorkspaceController({
 
     pendingOutputRef.current.delete(sid)
     pendingInputRef.current.delete(sid)
+    lastMeasuredTerminalSizeRef.current.delete(sid)
+    lastSentTerminalSizeRef.current.delete(sid)
     const cleanup = terminalCleanupRef.current.get(sid)
     if (cleanup) {
       cleanup()
@@ -561,6 +595,7 @@ export function useWorkspaceController({
   resetPanelsRef.current = panels.resetWorkspacePanels
 
   const resetCreateProjectForm = () => {
+    projectRepoRequestIdRef.current += 1
     setCreateProjectOpen(false)
     setCreatingProject(false)
     setCreateProjectError('')
@@ -568,29 +603,125 @@ export function useWorkspaceController({
     setNewProjectName('')
     setNewProjectPath('')
     setNewProjectGitUrl('')
-    setNewProjectRuntime('claude')
+    setNewProjectRuntime('codex')
+    setProjectRepoOptions([])
+    setProjectRepoLoading(false)
+    setSelectedProjectRepoPath('')
   }
 
   const openCreateProjectForm = () => {
+    projectRepoRequestIdRef.current += 1
     setEditingProjectTarget(null)
     setCreateProjectError('')
     setNewProjectName('')
     setNewProjectPath('')
     setNewProjectGitUrl('')
-    setNewProjectRuntime('claude')
+    setNewProjectRuntime('codex')
+    setProjectRepoOptions([])
+    setProjectRepoLoading(false)
+    setSelectedProjectRepoPath('')
     setCreateProjectOpen(true)
   }
 
   const openEditProjectForm = (project) => {
+    projectRepoRequestIdRef.current += 1
     const projectPath = project.bindDirs.find((dir) => dir !== '/tmp') || PROJECT_PATH_PREFIX
     setEditingProjectTarget(project)
     setCreateProjectError('')
     setNewProjectName(project.name || '')
     setNewProjectPath(normalizeProjectPathInput(projectPath))
     setNewProjectGitUrl(project.gitUrl || '')
-    setNewProjectRuntime(project.runtime || 'claude')
+    setNewProjectRuntime('codex')
+    setProjectRepoOptions([])
+    setProjectRepoLoading(false)
+    setSelectedProjectRepoPath(normalizeProjectPathInput(projectPath))
     setCreateProjectOpen(true)
   }
+
+  useEffect(() => {
+    if (!createProjectOpen) {
+      return undefined
+    }
+
+    const normalizedPath = normalizeProjectPathInput(newProjectPath.trim())
+    if (!normalizedPath) {
+      setProjectRepoOptions([])
+      setProjectRepoLoading(false)
+      setSelectedProjectRepoPath('')
+      return undefined
+    }
+
+    const requestId = projectRepoRequestIdRef.current + 1
+    projectRepoRequestIdRef.current = requestId
+    setProjectRepoLoading(true)
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`${API_BASE}/projects/git/repositories`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...authHeaders(),
+          },
+          body: JSON.stringify({
+            path: normalizedPath,
+          }),
+        })
+        const data = await response.json().catch(() => ({}))
+
+        if (response.status === 401) {
+          handleUnauthorized()
+          return
+        }
+
+        if (projectRepoRequestIdRef.current !== requestId) {
+          return
+        }
+
+        if (!response.ok) {
+          setProjectRepoOptions([])
+          setSelectedProjectRepoPath('')
+          return
+        }
+
+        const nextOptions = Array.isArray(data?.repositories)
+          ? data.repositories
+            .map((item) => ({
+              path: normalizeProjectPathInput(item.relative_path || item.path || ''),
+              label: item.relative_path || item.path || '',
+            }))
+            .filter((item) => item.path)
+          : []
+
+        setProjectRepoOptions(nextOptions)
+        setSelectedProjectRepoPath((current) => {
+          if (current && nextOptions.some((item) => item.path === current)) {
+            return current
+          }
+          if (nextOptions.some((item) => item.path === normalizedPath)) {
+            return normalizedPath
+          }
+          if (nextOptions.length === 1) {
+            return nextOptions[0].path
+          }
+          return ''
+        })
+      } catch {
+        if (projectRepoRequestIdRef.current === requestId) {
+          setProjectRepoOptions([])
+          setSelectedProjectRepoPath('')
+        }
+      } finally {
+        if (projectRepoRequestIdRef.current === requestId) {
+          setProjectRepoLoading(false)
+        }
+      }
+    }, 220)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [auth?.token, createProjectOpen, newProjectPath])
 
   const resetDeleteProjectState = () => {
     setDeleteProjectTarget(null)
@@ -1048,6 +1179,7 @@ export function useWorkspaceController({
     if (existingWs) {
       dropSocketById(sid, true)
     }
+    lastSentTerminalSizeRef.current.delete(sid)
 
     const tokenQuery = auth?.token ? `?token=${encodeURIComponent(auth.token)}` : ''
     const ws = new WebSocket(`${WS_BASE}/session/${encodeURIComponent(sid)}/ws${tokenQuery}`)
@@ -1106,6 +1238,7 @@ export function useWorkspaceController({
         }
       }, KEEPALIVE_INTERVAL_MS))
       flushPendingSessionInput(sid, ws)
+      lastSentTerminalSizeRef.current.delete(sid)
 
       if (wsRef.current !== ws) {
         return
@@ -1783,6 +1916,7 @@ export function useWorkspaceController({
 
     const name = newProjectName.trim()
     const projectPath = normalizeProjectPathInput(newProjectPath.trim())
+    const targetProjectPath = selectedProjectRepoPath || projectPath
     const gitUrl = newProjectGitUrl.trim()
 
     if (!name) {
@@ -1792,6 +1926,11 @@ export function useWorkspaceController({
 
     if (!projectPath) {
       setCreateProjectError('请输入项目路径')
+      return
+    }
+
+    if (projectRepoOptions.length > 1 && !selectedProjectRepoPath) {
+      setCreateProjectError('该目录下存在多个 Git 仓库，请先选择具体仓库根目录')
       return
     }
 
@@ -1812,9 +1951,9 @@ export function useWorkspaceController({
           },
           body: JSON.stringify({
             name,
-            path: projectPath,
+            path: targetProjectPath,
             git_url: gitUrl || null,
-            runtime: newProjectRuntime,
+            runtime: 'codex',
           }),
         },
       )
@@ -2323,15 +2462,25 @@ export function useWorkspaceController({
     },
     filePanelProps: {
       editorLoadingPath: panels.editorLoadingPath,
+      fileDeleteLoadingPath: panels.fileDeleteLoadingPath,
+      fileDeleteTarget: panels.fileDeleteTarget,
+      fileDownloadLoadingPath: panels.fileDownloadLoadingPath,
+      fileUploadLoading: panels.fileUploadLoading,
+      fileUploadProgress: panels.fileUploadProgress,
       fileTreeEntries: panels.fileTreeEntries,
       fileTreeError: panels.fileTreeError,
       fileTreeExpanded: panels.fileTreeExpanded,
       fileTreeLoadingPaths: panels.fileTreeLoadingPaths,
       fileTreeNodes: panels.fileTreeNodes,
       fileTreeRoot: panels.fileTreeRoot,
+      onDownloadFile: panels.downloadFile,
+      onCancelDeleteFile: panels.cancelDeleteFile,
+      onConfirmDeleteFile: panels.confirmDeleteFile,
       onOpenEditor: panels.openEditor,
       onRefresh: () => panels.loadFileTree(selectedProject, '', { replace: true }),
+      onRequestDeleteFile: panels.requestDeleteFile,
       onToggleFileTreeDirectory: panels.toggleFileTreeDirectory,
+      onUploadFiles: panels.uploadFiles,
       selectedProjectId: selectedProject?.id,
     },
     gitPanelProps: {
@@ -2350,6 +2499,16 @@ export function useWorkspaceController({
       selectedProjectPath: panels.selectedProjectPath,
     },
     onSelectTab: panels.setSidePanelTab,
+    repoSelectorProps: {
+      enabled: panels.repoSelectionEnabled,
+      repoError: panels.repoError,
+      repoLoading: panels.repoLoading,
+      repoOptions: panels.repoOptions,
+      resolvedRepoPath: panels.resolvedRepoPath,
+      selectedProjectId: selectedProject?.id,
+      selectedRepoPath: panels.selectedRepoPath,
+      onSelectRepoPath: panels.setSelectedRepoPath,
+    },
     selectedProject,
     sidePanelTab: panels.sidePanelTab,
     webDebugPanelProps: {
@@ -2419,8 +2578,12 @@ export function useWorkspaceController({
     newProjectGitUrl,
     newProjectName,
     newProjectPath,
+    projectRepoLoading,
+    projectRepoOptions,
+    selectedProjectRepoPath,
     newProjectRuntime,
     onProjectPathInputChange: (value) => setNewProjectPath(normalizeProjectPathInput(value)),
+    onProjectRepoPathChange: setSelectedProjectRepoPath,
     openCreateProjectForm,
     openEditProjectForm,
     openPrimarySession,

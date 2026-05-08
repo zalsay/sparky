@@ -7,14 +7,21 @@ export function ProjectFormModal({
   newProjectGitUrl,
   newProjectName,
   newProjectPath,
-  newProjectRuntime,
   onClose,
   onProjectGitUrlChange,
   onProjectNameChange,
   onProjectPathChange,
-  onProjectRuntimeChange,
+  onProjectRepoPathChange,
+  projectRepoLoading,
+  projectRepoOptions,
+  selectedProjectRepoPath,
   onSubmit,
 }) {
+  const normalizedProjectPath = newProjectPath.replace(/^\/+/, '').replace(/^projects\/?/, '')
+  const shouldShowRepoSelector = projectRepoLoading || projectRepoOptions.length > 0
+  const needsExplicitRepoSelection = projectRepoOptions.length > 1 && !selectedProjectRepoPath
+  const resolvedRepoDiffersFromInput = selectedProjectRepoPath && selectedProjectRepoPath !== normalizedProjectPath
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-card glass-panel" onClick={(event) => event.stopPropagation()}>
@@ -52,18 +59,67 @@ export function ProjectFormModal({
             />
           </div>
 
+          {shouldShowRepoSelector ? (
+            <>
+              <label className="field-label" htmlFor="project-repo-root">
+                仓库根目录
+              </label>
+              <div className="field-select-shell">
+                <select
+                  id="project-repo-root"
+                  className="field-input field-select field-select-mono"
+                  value={selectedProjectRepoPath}
+                  onChange={(event) => onProjectRepoPathChange(event.target.value)}
+                  disabled={projectRepoLoading || projectRepoOptions.length === 0}
+                >
+                  {projectRepoOptions.length > 1 ? (
+                    <option value="">请选择具体仓库根目录</option>
+                  ) : null}
+                  {projectRepoOptions.map((item) => (
+                    <option key={item.path} value={item.path}>
+                      {PROJECT_PATH_PREFIX}{item.label}
+                    </option>
+                  ))}
+                </select>
+                <span className="field-select-shell__icon" aria-hidden="true">
+                  <svg viewBox="0 0 16 16" fill="none">
+                    <path
+                      d="M4 6.25L8 10.25l4-4"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </span>
+              </div>
+            </>
+          ) : null}
+
           <label className="field-label" htmlFor="project-runtime">
             运行时
           </label>
-          <select
-            id="project-runtime"
-            className="field-input field-select"
-            value={newProjectRuntime}
-            onChange={(event) => onProjectRuntimeChange(event.target.value)}
-          >
-            <option value="claude">Claude Code</option>
-            <option value="codex">OpenAI Codex</option>
-          </select>
+          <div className="field-select-shell">
+            <select
+              id="project-runtime"
+              className="field-input field-select"
+              value="codex"
+              disabled
+            >
+              <option value="codex">OpenAI Codex</option>
+            </select>
+            <span className="field-select-shell__icon" aria-hidden="true">
+              <svg viewBox="0 0 16 16" fill="none">
+                <path
+                  d="M4 6.25L8 10.25l4-4"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </span>
+          </div>
 
           <label className="field-label" htmlFor="project-git-url">
             Git 仓库地址
@@ -82,13 +138,23 @@ export function ProjectFormModal({
               : <>项目会创建在固定目录 <code>{PROJECT_PATH_PREFIX}</code> 下。这里只需要填写后半段路径；填写 Git 地址时会自动 clone 到目标目录。</>}
           </p>
 
+          {projectRepoLoading ? (
+            <p className="form-hint">正在扫描该目录下的 Git 仓库...</p>
+          ) : projectRepoOptions.length > 1 ? (
+            <p className="form-hint">该目录下检测到多个 Git 仓库。请选择要绑定的具体仓库根目录。</p>
+          ) : resolvedRepoDiffersFromInput ? (
+            <p className="form-hint">当前输入路径会绑定到检测到的仓库根目录 <code>{PROJECT_PATH_PREFIX}{selectedProjectRepoPath}</code>。</p>
+          ) : projectRepoOptions.length === 1 && selectedProjectRepoPath ? (
+            <p className="form-hint">已自动定位到仓库根目录 <code>{PROJECT_PATH_PREFIX}{selectedProjectRepoPath}</code>。</p>
+          ) : null}
+
           {createProjectError ? <div className="notice notice-error">{createProjectError}</div> : null}
 
           <div className="modal-actions">
             <button className="ghost-btn" type="button" onClick={onClose} disabled={creatingProject}>
               取消
             </button>
-            <button className="primary-btn" type="submit" disabled={creatingProject}>
+            <button className="primary-btn" type="submit" disabled={creatingProject || needsExplicitRepoSelection}>
               {creatingProject ? (isEditingProject ? '保存中...' : '创建中...') : (isEditingProject ? '保存修改' : '创建项目')}
             </button>
           </div>

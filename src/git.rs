@@ -309,15 +309,83 @@ pub fn has_git_repository(project_root: &Path) -> Result<bool, String> {
     resolve_repo_root(project_root).map(|root| root.is_some())
 }
 
+pub fn discover_git_roots(project_root: &Path) -> Result<Vec<PathBuf>, String> {
+    if !project_root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut roots = discover_nested_repo_roots(project_root)?;
+
+    match repo_root(project_root) {
+        Ok(root) => roots.push(root),
+        Err(error) if is_not_git_repository_error(&error) => {}
+        Err(error) => return Err(error),
+    }
+
+    roots.sort();
+    roots.dedup();
+    Ok(roots)
+}
+
+pub fn resolve_runtime_worktree_compat(
+    project_root: &Path,
+    preferred_remote: Option<&str>,
+) -> Result<PathBuf, String> {
+    if !project_root.exists() {
+        return Ok(project_root.to_path_buf());
+    }
+
+    match repo_root(project_root) {
+        Ok(root) => Ok(root),
+        Err(error) if is_not_git_repository_error(&error) => {
+            let roots = discover_nested_repo_roots(project_root)?;
+            if roots.is_empty() {
+                return Ok(project_root.to_path_buf());
+            }
+
+            if roots.len() == 1 {
+                return Ok(roots
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| project_root.to_path_buf()));
+            }
+
+            if let Some(remote) = preferred_remote.and_then(normalize_git_remote_key) {
+                let matching = roots
+                    .iter()
+                    .filter(|root| repo_matches_remote(root, &remote))
+                    .cloned()
+                    .collect::<Vec<_>>();
+
+                if !matching.is_empty() {
+                    return Ok(pick_preferred_root(project_root, matching));
+                }
+            }
+
+            Ok(pick_preferred_root(project_root, roots))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub fn resolve_runtime_worktree(project_root: &Path) -> Result<PathBuf, String> {
     Ok(resolve_repo_root(project_root)?.unwrap_or_else(|| project_root.to_path_buf()))
 }
 
 fn resolve_repo_root(project_root: &Path) -> Result<Option<PathBuf>, String> {
+    if !project_root.exists() {
+        return Ok(None);
+    }
+
     match repo_root(project_root) {
         Ok(root) => Ok(Some(root)),
         Err(error) if is_not_git_repository_error(&error) => {
-            discover_nested_repo_root(project_root)
+            let roots = discover_nested_repo_roots(project_root)?;
+            match roots.len() {
+                0 => Ok(None),
+                1 => Ok(roots.into_iter().next()),
+                _ => Err("项目目录下存在多个 Git 仓库，请把项目路径指向具体仓库根目录".to_string()),
+            }
         }
         Err(error) => Err(error),
     }
@@ -346,7 +414,75 @@ fn repo_root(project_root: &Path) -> Result<PathBuf, String> {
     Ok(PathBuf::from(root))
 }
 
-fn discover_nested_repo_root(project_root: &Path) -> Result<Option<PathBuf>, String> {
+fn repo_matches_remote(repo_root: &Path, preferred_remote: &str) -> bool {
+    let output = Command::new("git")
+        .args(["-c", "safe.directory=*", "remote", "-v"])
+        .current_dir(repo_root)
+        .output();
+
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+
+    output_text(&output)
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .filter_map(normalize_git_remote_key)
+        .any(|remote| remote == preferred_remote)
+}
+
+fn normalize_git_remote_key(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let normalized = if let Some(rest) = trimmed.strip_prefix("git@") {
+        let (host, path) = rest.split_once(':')?;
+        format!("{}/{}", host, path)
+    } else if let Some((_, rest)) = trimmed.split_once("://") {
+        let without_user = rest.rsplit_once('@').map(|(_, tail)| tail).unwrap_or(rest);
+        without_user.trim_start_matches('/').to_string()
+    } else {
+        trimmed.to_string()
+    };
+
+    Some(
+        normalized
+            .trim_end_matches(".git")
+            .trim_end_matches('/')
+            .to_ascii_lowercase(),
+    )
+}
+
+fn pick_preferred_root(project_root: &Path, roots: Vec<PathBuf>) -> PathBuf {
+    roots
+        .into_iter()
+        .min_by(|left, right| compare_repo_candidates(project_root, left, right))
+        .unwrap_or_else(|| project_root.to_path_buf())
+}
+
+fn compare_repo_candidates(
+    project_root: &Path,
+    left: &PathBuf,
+    right: &PathBuf,
+) -> std::cmp::Ordering {
+    repo_candidate_key(project_root, left).cmp(&repo_candidate_key(project_root, right))
+}
+
+fn repo_candidate_key(project_root: &Path, candidate: &Path) -> (usize, usize, String) {
+    let relative = candidate.strip_prefix(project_root).unwrap_or(candidate);
+    (
+        relative.components().count(),
+        candidate.as_os_str().len(),
+        candidate.display().to_string(),
+    )
+}
+
+fn discover_nested_repo_roots(project_root: &Path) -> Result<Vec<PathBuf>, String> {
     const MAX_DEPTH: usize = 3;
 
     let mut stack = vec![(project_root.to_path_buf(), 0usize)];
@@ -369,15 +505,17 @@ fn discover_nested_repo_root(project_root: &Path) -> Result<Option<PathBuf>, Str
                 continue;
             };
 
-            if !file_type.is_dir() {
-                continue;
-            }
-
             let name = entry.file_name();
             let name = name.to_string_lossy();
 
             if name == ".git" {
-                roots.push(dir.clone());
+                if file_type.is_dir() || file_type.is_file() || file_type.is_symlink() {
+                    roots.push(dir.clone());
+                }
+                continue;
+            }
+
+            if !file_type.is_dir() {
                 continue;
             }
 
@@ -393,12 +531,7 @@ fn discover_nested_repo_root(project_root: &Path) -> Result<Option<PathBuf>, Str
 
     roots.sort();
     roots.dedup();
-
-    match roots.len() {
-        0 => Ok(None),
-        1 => Ok(roots.pop()),
-        _ => Err("项目目录下存在多个 Git 仓库，请把项目路径指向具体仓库根目录".to_string()),
-    }
+    Ok(roots)
 }
 
 fn unavailable_status(project_root: &Path) -> GitStatusSummary {
@@ -681,7 +814,6 @@ fn output_text(output: &std::process::Output) -> String {
 }
 
 fn parse_branch_header(header: &str) -> (String, Option<String>, u32, u32) {
-    let mut branch = None;
     let mut upstream = None;
     let mut ahead = 0u32;
     let mut behind = 0u32;
@@ -693,7 +825,7 @@ fn parse_branch_header(header: &str) -> (String, Option<String>, u32, u32) {
     }
 
     if let Some((left, right)) = text.split_once("...") {
-        branch = Some(left.trim().to_string());
+        let branch = left.trim().to_string();
 
         if let Some((remote, counts)) = right.split_once(" [") {
             upstream = Some(remote.trim().to_string());
@@ -702,23 +834,13 @@ fn parse_branch_header(header: &str) -> (String, Option<String>, u32, u32) {
             upstream = Some(right.trim().to_string());
         }
 
-        return (
-            branch.unwrap_or_else(|| "HEAD".to_string()),
-            upstream,
-            ahead,
-            behind,
-        );
+        return (branch, upstream, ahead, behind);
     }
 
     if let Some((left, counts)) = text.split_once(" [") {
-        branch = Some(left.trim().to_string());
+        let branch = left.trim().to_string();
         parse_ahead_behind(counts.trim_end_matches(']'), &mut ahead, &mut behind);
-        return (
-            branch.unwrap_or_else(|| "HEAD".to_string()),
-            upstream,
-            ahead,
-            behind,
-        );
+        return (branch, upstream, ahead, behind);
     }
 
     (text.trim().to_string(), upstream, ahead, behind)
@@ -732,5 +854,116 @@ fn parse_ahead_behind(text: &str, ahead: &mut u32, behind: &mut u32) {
         } else if let Some(value) = trimmed.strip_prefix("behind ") {
             *behind = value.trim().parse().unwrap_or(0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{discover_git_roots, resolve_runtime_worktree, resolve_runtime_worktree_compat};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new() -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("sparky-git-test-{}", unique));
+            fs::create_dir_all(&path).expect("create temp dir");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn discover_git_roots_includes_git_file_repositories() {
+        let temp = TempDir::new();
+        let repo = temp.path().join("nested");
+        fs::create_dir_all(&repo).expect("create nested repo");
+        fs::write(repo.join(".git"), "gitdir: /tmp/mock").expect("write git file");
+
+        let roots = discover_git_roots(temp.path()).expect("discover git roots");
+
+        assert_eq!(roots, vec![repo]);
+    }
+
+    #[test]
+    fn resolve_runtime_worktree_rejects_ambiguous_nested_repositories() {
+        let temp = TempDir::new();
+        let repo_a = temp.path().join("repo-a");
+        let repo_b = temp.path().join("repo-b");
+
+        fs::create_dir_all(repo_a.join(".git")).expect("create repo-a");
+        fs::create_dir_all(repo_b.join(".git")).expect("create repo-b");
+
+        let error =
+            resolve_runtime_worktree(temp.path()).expect_err("should reject ambiguous repos");
+        assert!(error.contains("多个 Git 仓库"));
+    }
+
+    #[test]
+    fn resolve_runtime_worktree_compat_prefers_shallowest_repository() {
+        let temp = TempDir::new();
+        let repo_a = temp.path().join("repo-a");
+        let repo_b = temp.path().join("nested").join("repo-b");
+
+        fs::create_dir_all(repo_a.join(".git")).expect("create repo-a");
+        fs::create_dir_all(repo_b.join(".git")).expect("create repo-b");
+
+        let root = resolve_runtime_worktree_compat(temp.path(), None)
+            .expect("resolve compatible runtime worktree");
+
+        assert_eq!(root, repo_a);
+    }
+
+    #[test]
+    fn resolve_runtime_worktree_compat_prefers_matching_remote() {
+        let temp = TempDir::new();
+        let repo_a = temp.path().join("repo-a");
+        let repo_b = temp.path().join("repo-b");
+
+        init_git_repo(&repo_a, "https://github.com/example/other.git");
+        init_git_repo(&repo_b, "https://github.com/zalsay/ai-finance.git");
+
+        let root = resolve_runtime_worktree_compat(
+            temp.path(),
+            Some("git@github.com:zalsay/ai-finance.git"),
+        )
+        .expect("resolve compatible runtime worktree");
+
+        assert_eq!(root, repo_b);
+    }
+
+    fn init_git_repo(path: &Path, remote: &str) {
+        fs::create_dir_all(path).expect("create repo dir");
+        let init_status = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(path)
+            .status()
+            .expect("git init");
+        assert!(init_status.success(), "git init failed");
+
+        let remote_status = Command::new("git")
+            .args(["remote", "add", "origin", remote])
+            .current_dir(path)
+            .status()
+            .expect("git remote add");
+        assert!(remote_status.success(), "git remote add failed");
     }
 }

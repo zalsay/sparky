@@ -5,6 +5,7 @@ pub mod dev_server;
 pub mod editor;
 pub mod executor;
 pub mod executor_client;
+pub mod file_upload;
 pub mod git;
 pub mod internal_api;
 pub mod project;

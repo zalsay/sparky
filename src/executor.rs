@@ -502,6 +502,24 @@ async fn run_session_ws(
                                 continue;
                             }
 
+                            if msg_type == "resize" {
+                                let rows = json
+                                    .get("rows")
+                                    .and_then(|v| v.as_u64())
+                                    .and_then(|value| u16::try_from(value).ok())
+                                    .unwrap_or(0);
+                                let cols = json
+                                    .get("cols")
+                                    .and_then(|v| v.as_u64())
+                                    .and_then(|value| u16::try_from(value).ok())
+                                    .unwrap_or(0);
+
+                                if rows > 0 && cols > 0 {
+                                    let _ = session.resize(rows, cols);
+                                }
+                                continue;
+                            }
+
                             let content = json.get("content")
                                 .or_else(|| json.get("input"))
                                 .and_then(|v| v.as_str())

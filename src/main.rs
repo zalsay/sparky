@@ -15,6 +15,7 @@ mod dev_server;
 mod editor;
 mod executor;
 mod executor_client;
+mod file_upload;
 mod git;
 mod internal_api;
 mod project;
@@ -22,7 +23,9 @@ mod sandbox;
 pub mod session;
 
 use actix_files::NamedFile;
+use actix_multipart::Multipart;
 use actix_web::cookie::{Cookie, SameSite};
+use actix_web::http::header::ContentDisposition;
 use actix_web::{delete, get, patch, post, web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use actix_ws::Message;
 use auth::{AuthError, AuthUser, UserStore};
@@ -36,10 +39,13 @@ use dev_server::{
 use editor::{build_editor_url, list_directory, resolve_requested_path};
 use executor::{ExecutorControl, ExecutorRuntime, SessionAccessError};
 use executor_client::{RemoteExecutorClient, RemoteExecutorError};
+use file_upload::{
+    delete_existing_file, file_not_found_message, resolve_existing_file_path, save_multipart_upload,
+};
 use futures_util::{SinkExt, StreamExt};
 use git::{
-    execute_git_action, has_git_repository, load_git_status, resolve_runtime_worktree, GitAction,
-    GitRuntimeContext,
+    discover_git_roots, execute_git_action, has_git_repository, load_git_status,
+    resolve_runtime_worktree, resolve_runtime_worktree_compat, GitAction, GitRuntimeContext,
 };
 use once_cell::sync::{Lazy, OnceCell};
 use project::{Project, ProjectStore};
@@ -95,6 +101,11 @@ struct UpdateProjectRequest {
     runtime: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct DiscoverProjectReposRequest {
+    path: String,
+}
+
 #[derive(Debug)]
 struct PendingRepositoryClone {
     project_id: String,
@@ -106,6 +117,7 @@ struct PendingRepositoryClone {
 struct GitActionRequest {
     action: String,
     message: Option<String>,
+    repo_path: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -122,11 +134,13 @@ struct ResumeCodexSessionRequest {
 #[derive(Debug, Default, Deserialize)]
 struct OpenWebDebugRequest {
     candidate_id: Option<String>,
+    repo_path: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct RestartWebDebugRequest {
     candidate_id: Option<String>,
+    repo_path: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -137,11 +151,18 @@ struct DestroySessionQuery {
 #[derive(Debug, Default, Deserialize)]
 struct FileTreeQuery {
     path: Option<String>,
+    repo_path: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct OpenEditorRequest {
     path: Option<String>,
+    repo_path: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RepoSelectionQuery {
+    repo_path: Option<String>,
 }
 
 fn unauthorized() -> HttpResponse {
@@ -618,6 +639,53 @@ async fn list_projects(req: HttpRequest) -> HttpResponse {
     }))
 }
 
+#[post("/projects/git/repositories")]
+async fn discover_project_repositories(
+    req: HttpRequest,
+    payload: web::Json<DiscoverProjectReposRequest>,
+) -> HttpResponse {
+    match current_user(&req).await {
+        Some(_) => {}
+        None => return unauthorized(),
+    }
+
+    let request = payload.into_inner();
+    let projects_root = config::projects_root();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let target_path = resolve_project_path(&request.path, &projects_root)?;
+        let repositories = discover_git_roots(&target_path)?
+            .into_iter()
+            .map(|root| {
+                let relative = root
+                    .strip_prefix(&projects_root)
+                    .unwrap_or(root.as_path())
+                    .display()
+                    .to_string();
+                serde_json::json!({
+                    "path": root.display().to_string(),
+                    "relative_path": relative,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        Ok::<_, String>(repositories)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(repositories)) => HttpResponse::Ok().json(serde_json::json!({
+            "repositories": repositories
+        })),
+        Ok(Err(error)) => HttpResponse::BadRequest().json(serde_json::json!({
+            "error": error
+        })),
+        Err(error) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("discover project repositories task failed: {}", error)
+        })),
+    }
+}
+
 #[post("/projects")]
 async fn create_project(
     req: HttpRequest,
@@ -764,7 +832,11 @@ async fn update_project(
 }
 
 #[get("/projects/{id}/git/status")]
-async fn project_git_status(req: HttpRequest, path: web::Path<String>) -> HttpResponse {
+async fn project_git_status(
+    req: HttpRequest,
+    path: web::Path<String>,
+    query: web::Query<RepoSelectionQuery>,
+) -> HttpResponse {
     let user = match current_user(&req).await {
         Some(user) => user,
         None => return unauthorized(),
@@ -777,7 +849,7 @@ async fn project_git_status(req: HttpRequest, path: web::Path<String>) -> HttpRe
         }));
     };
 
-    let project_root = match project_worktree_path(&project) {
+    let project_root = match resolve_selected_project_root(&project, query.repo_path.as_deref()) {
         Ok(path) => path,
         Err(error) => {
             return HttpResponse::BadRequest().json(serde_json::json!({
@@ -827,8 +899,9 @@ async fn project_git_action(
         }));
     };
 
-    let action = match parse_git_action(payload.into_inner(), &user.username) {
-        Ok(action) => action,
+    let request = payload.into_inner();
+    let project_root = match resolve_selected_project_root(&project, request.repo_path.as_deref()) {
+        Ok(path) => path,
         Err(error) => {
             return HttpResponse::BadRequest().json(serde_json::json!({
                 "error": error
@@ -836,8 +909,8 @@ async fn project_git_action(
         }
     };
 
-    let project_root = match project_worktree_path(&project) {
-        Ok(path) => path,
+    let action = match parse_git_action(request, &user.username) {
+        Ok(action) => action,
         Err(error) => {
             return HttpResponse::BadRequest().json(serde_json::json!({
                 "error": error
@@ -897,7 +970,7 @@ async fn project_file_tree(
     };
 
     let requested_path = query.path.clone();
-    let project_root = match project_worktree_path(&project) {
+    let project_root = match resolve_selected_project_root(&project, query.repo_path.as_deref()) {
         Ok(path) => path,
         Err(error) => {
             return HttpResponse::BadRequest().json(serde_json::json!({
@@ -919,13 +992,7 @@ async fn project_file_tree(
     }
 
     match tokio::task::spawn_blocking(move || {
-        let root = resolve_runtime_worktree(&project_root)?;
-        let source = if root == project_root {
-            "project"
-        } else {
-            "git"
-        };
-        let listing = list_directory(&root, requested_path.as_deref(), source)?;
+        let listing = list_directory(&project_root, requested_path.as_deref(), "git")?;
         Ok::<_, String>(listing)
     })
     .await
@@ -939,6 +1006,221 @@ async fn project_file_tree(
         Err(error) => HttpResponse::InternalServerError().json(serde_json::json!({
             "error": format!("load file tree task failed: {}", error)
         })),
+    }
+}
+
+#[get("/projects/{id}/files/download")]
+async fn project_file_download(
+    req: HttpRequest,
+    path: web::Path<String>,
+    query: web::Query<FileTreeQuery>,
+) -> Result<HttpResponse, Error> {
+    let user = match current_user(&req).await {
+        Some(user) => user,
+        None => return Ok(unauthorized()),
+    };
+
+    let Some(requested_path) = query
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "请选择要下载的文件"
+        })));
+    };
+
+    let project_id = path.into_inner();
+    let Some(project) = PROJECTS.find_for_user(&user.user_id, &project_id) else {
+        return Ok(HttpResponse::NotFound().json(serde_json::json!({
+            "error": "project not found"
+        })));
+    };
+
+    let project_root = match resolve_selected_project_root(&project, query.repo_path.as_deref()) {
+        Ok(path) => path,
+        Err(error) => {
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": error
+            })))
+        }
+    };
+
+    if let Some(remote) = EXECUTOR_REMOTE.as_ref() {
+        let upstream_url = remote.file_download_url(&project_root, requested_path);
+        return proxy_executor_download(&req, upstream_url).await;
+    }
+
+    Ok(serve_download_file(&req, &project_root, requested_path))
+}
+
+fn serve_download_file(req: &HttpRequest, root: &Path, path: &str) -> HttpResponse {
+    let file_path = match resolve_existing_file_path(root, path) {
+        Ok(path) => path,
+        Err(error) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": error
+            }));
+        }
+    };
+
+    if !file_path.exists() {
+        return HttpResponse::NotFound().json(serde_json::json!({
+            "error": file_not_found_message(root, &file_path)
+        }));
+    }
+
+    if file_path.is_dir() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "请选择文件而不是目录"
+        }));
+    }
+
+    let filename = file_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("download")
+        .to_string();
+
+    match NamedFile::open(file_path) {
+        Ok(file) => file
+            .set_content_disposition(ContentDisposition::attachment(filename))
+            .into_response(req),
+        Err(error) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("open file: {}", error)
+        })),
+    }
+}
+
+async fn proxy_executor_download(
+    req: &HttpRequest,
+    upstream_url: String,
+) -> Result<HttpResponse, Error> {
+    let client = Client::default();
+    let forward = copy_forward_headers(
+        req.headers(),
+        client
+            .get(upstream_url.clone())
+            .force_close()
+            .no_decompress()
+            .timeout(PROXY_HTTP_TIMEOUT),
+        &[],
+    );
+
+    let upstream = forward.send().await.map_err(|error| {
+        log::warn!(
+            "file download upstream request failed path={} upstream={}: {}",
+            req.uri(),
+            upstream_url,
+            error
+        );
+        actix_web::error::ErrorBadGateway(error)
+    })?;
+
+    let status = upstream.status();
+    let response_headers = upstream.headers().clone();
+    let mut response = HttpResponse::build(status);
+    copy_response_headers(&response_headers, &mut response, None);
+    Ok(response.streaming(upstream.map(|chunk| chunk.map_err(actix_web::error::ErrorBadGateway))))
+}
+
+#[post("/projects/{id}/files/upload")]
+async fn project_file_upload(
+    req: HttpRequest,
+    payload: web::Payload,
+    path: web::Path<String>,
+    query: web::Query<RepoSelectionQuery>,
+) -> Result<HttpResponse, Error> {
+    let user = match current_user(&req).await {
+        Some(user) => user,
+        None => return Ok(unauthorized()),
+    };
+
+    let project_id = path.into_inner();
+    let Some(project) = PROJECTS.find_for_user(&user.user_id, &project_id) else {
+        return Ok(HttpResponse::NotFound().json(serde_json::json!({
+            "error": "project not found"
+        })));
+    };
+
+    let project_root = match resolve_selected_project_root(&project, query.repo_path.as_deref()) {
+        Ok(path) => path,
+        Err(error) => {
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": error
+            })))
+        }
+    };
+
+    if let Some(remote) = EXECUTOR_REMOTE.as_ref() {
+        let upstream_url = remote.file_upload_url(&project_root);
+        return proxy_dev_http(req, payload, upstream_url, None, &[]).await;
+    }
+
+    let multipart = Multipart::new(req.headers(), payload);
+    match save_multipart_upload(&project_root, multipart).await {
+        Ok(count) => Ok(HttpResponse::Ok().json(serde_json::json!({
+            "uploaded": count
+        }))),
+        Err(error) => Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": error
+        }))),
+    }
+}
+
+#[delete("/projects/{id}/files/delete")]
+async fn project_file_delete(
+    req: HttpRequest,
+    payload: web::Payload,
+    path: web::Path<String>,
+    query: web::Query<FileTreeQuery>,
+) -> Result<HttpResponse, Error> {
+    let user = match current_user(&req).await {
+        Some(user) => user,
+        None => return Ok(unauthorized()),
+    };
+
+    let Some(requested_path) = query
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "请选择要删除的文件"
+        })));
+    };
+
+    let project_id = path.into_inner();
+    let Some(project) = PROJECTS.find_for_user(&user.user_id, &project_id) else {
+        return Ok(HttpResponse::NotFound().json(serde_json::json!({
+            "error": "project not found"
+        })));
+    };
+
+    let project_root = match resolve_selected_project_root(&project, query.repo_path.as_deref()) {
+        Ok(path) => path,
+        Err(error) => {
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": error
+            })))
+        }
+    };
+
+    if let Some(remote) = EXECUTOR_REMOTE.as_ref() {
+        let upstream_url = remote.file_delete_url(&project_root, requested_path);
+        return proxy_dev_http(req, payload, upstream_url, None, &[]).await;
+    }
+
+    match delete_existing_file(&project_root, requested_path).await {
+        Ok(()) => Ok(HttpResponse::Ok().json(serde_json::json!({
+            "deleted": true
+        }))),
+        Err(error) => Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": error
+        }))),
     }
 }
 
@@ -966,7 +1248,7 @@ async fn project_editor_open(
     };
 
     let request = payload.map(web::Json::into_inner).unwrap_or_default();
-    let root = match project_runtime_root(&project) {
+    let root = match resolve_selected_project_root(&project, request.repo_path.as_deref()) {
         Ok(root) => root,
         Err(error) => {
             return HttpResponse::BadRequest().json(serde_json::json!({
@@ -1048,7 +1330,11 @@ async fn project_editor_open(
 }
 
 #[get("/projects/{id}/web/targets")]
-async fn project_web_targets(req: HttpRequest, path: web::Path<String>) -> HttpResponse {
+async fn project_web_targets(
+    req: HttpRequest,
+    path: web::Path<String>,
+    query: web::Query<RepoSelectionQuery>,
+) -> HttpResponse {
     let user = match current_user(&req).await {
         Some(user) => user,
         None => return unauthorized(),
@@ -1061,7 +1347,7 @@ async fn project_web_targets(req: HttpRequest, path: web::Path<String>) -> HttpR
         }));
     };
 
-    let project_root = match project_runtime_root(&project) {
+    let project_root = match resolve_selected_project_root(&project, query.repo_path.as_deref()) {
         Ok(path) => path,
         Err(error) => {
             return HttpResponse::BadRequest().json(serde_json::json!({
@@ -1125,7 +1411,7 @@ async fn project_web_open(
     };
 
     let request = payload.map(web::Json::into_inner).unwrap_or_default();
-    let project_root = match project_runtime_root(&project) {
+    let project_root = match resolve_selected_project_root(&project, request.repo_path.as_deref()) {
         Ok(path) => path,
         Err(error) => {
             return HttpResponse::BadRequest().json(serde_json::json!({
@@ -1212,7 +1498,7 @@ async fn project_web_restart(
     };
 
     let request = payload.map(web::Json::into_inner).unwrap_or_default();
-    let project_root = match project_runtime_root(&project) {
+    let project_root = match resolve_selected_project_root(&project, request.repo_path.as_deref()) {
         Ok(path) => path,
         Err(error) => {
             return HttpResponse::BadRequest().json(serde_json::json!({
@@ -2576,6 +2862,7 @@ async fn main() -> std::io::Result<()> {
             .service(auth_me)
             .service(auth_logout)
             .service(list_projects)
+            .service(discover_project_repositories)
             .service(create_project)
             .service(update_project)
             .service(delete_project)
@@ -2585,6 +2872,9 @@ async fn main() -> std::io::Result<()> {
             .service(resume_codex_session)
             .service(get_codex_session_timeline)
             .service(project_file_tree)
+            .service(project_file_download)
+            .service(project_file_upload)
+            .service(project_file_delete)
             .service(project_editor_open)
             .service(project_web_targets)
             .service(project_web_open)
@@ -2620,7 +2910,8 @@ fn create_project_inner(
     }
 
     let projects_root = config::projects_root();
-    let project_path = resolve_project_path(&request.path, &projects_root)?;
+    let requested_path = resolve_project_path(&request.path, &projects_root)?;
+    let project_path = resolve_runtime_worktree(&requested_path)?;
     let project_path_str = project_path.to_string_lossy().to_string();
 
     if PROJECTS.path_in_use(user_id, &project_path_str) {
@@ -2666,7 +2957,25 @@ fn project_worktree_path(project: &Project) -> Result<PathBuf, String> {
 
 fn project_runtime_root(project: &Project) -> Result<PathBuf, String> {
     let worktree = project_worktree_path(project)?;
-    resolve_runtime_worktree(&worktree)
+    resolve_runtime_worktree_compat(&worktree, project.git_url.as_deref())
+}
+
+fn resolve_selected_project_root(
+    project: &Project,
+    repo_path: Option<&str>,
+) -> Result<PathBuf, String> {
+    let configured_root = project_worktree_path(project)?;
+    let Some(repo_path) = repo_path.map(str::trim).filter(|value| !value.is_empty()) else {
+        return project_runtime_root(project);
+    };
+
+    let requested_root = resolve_project_path(repo_path, &config::projects_root())?;
+    let discovered_roots = discover_git_roots(&configured_root)?;
+    if discovered_roots.iter().any(|root| root == &requested_root) {
+        return Ok(requested_root);
+    }
+
+    Err("所选 Git 仓库不属于当前项目".to_string())
 }
 
 fn parse_git_action(payload: GitActionRequest, username: &str) -> Result<GitAction, String> {
@@ -2719,7 +3028,8 @@ fn update_project_inner(
     }
 
     let projects_root = config::projects_root();
-    let project_path = resolve_project_path(&request.path, &projects_root)?;
+    let requested_path = resolve_project_path(&request.path, &projects_root)?;
+    let project_path = resolve_runtime_worktree(&requested_path)?;
     let project_path_str = project_path.to_string_lossy().to_string();
 
     if PROJECTS.path_in_use_except(user_id, &project_path_str, Some(project_id)) {

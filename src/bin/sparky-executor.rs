@@ -1,3 +1,6 @@
+use actix_files::NamedFile;
+use actix_multipart::Multipart;
+use actix_web::http::header::ContentDisposition;
 use actix_web::{delete, get, post, web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use actix_ws::Message;
 use awc::Client;
@@ -9,6 +12,9 @@ use sparky::config::ServerConfig;
 use sparky::dev_server::{build_dev_request_path, bytes_to_string};
 use sparky::editor::{build_editor_url, list_directory, resolve_requested_path};
 use sparky::executor::{ExecutorRuntime, SessionAccessError};
+use sparky::file_upload::{
+    delete_existing_file, file_not_found_message, resolve_existing_file_path, save_multipart_upload,
+};
 use sparky::git::{
     execute_git_action, load_git_status, resolve_runtime_worktree, GitRuntimeContext,
 };
@@ -42,6 +48,23 @@ struct DestroySessionQuery {
     user_id: String,
     #[serde(default)]
     allow_persistent: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct FileDownloadQuery {
+    project_root: String,
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FileUploadQuery {
+    project_root: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FileDeleteQuery {
+    project_root: String,
+    path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -359,6 +382,116 @@ async fn file_tree(payload: web::Json<FileTreeRequest>) -> HttpResponse {
     }
 }
 
+#[get("/internal/files/download")]
+async fn file_download(req: HttpRequest, query: web::Query<FileDownloadQuery>) -> HttpResponse {
+    let project_root = Path::new(&query.project_root).to_path_buf();
+    let root = match resolve_runtime_worktree(&project_root) {
+        Ok(root) => root,
+        Err(error) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": error
+            }));
+        }
+    };
+
+    serve_download_file(&req, &root, query.path.as_str())
+}
+
+#[post("/internal/files/upload")]
+async fn file_upload(
+    req: HttpRequest,
+    payload: web::Payload,
+    query: web::Query<FileUploadQuery>,
+) -> HttpResponse {
+    let project_root = Path::new(&query.project_root).to_path_buf();
+    let root = match resolve_runtime_worktree(&project_root) {
+        Ok(root) => root,
+        Err(error) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": error
+            }));
+        }
+    };
+
+    let multipart = Multipart::new(req.headers(), payload);
+    match save_multipart_upload(&root, multipart).await {
+        Ok(count) => HttpResponse::Ok().json(serde_json::json!({
+            "uploaded": count
+        })),
+        Err(error) => HttpResponse::BadRequest().json(serde_json::json!({
+            "error": error
+        })),
+    }
+}
+
+#[delete("/internal/files/delete")]
+async fn file_delete(query: web::Query<FileDeleteQuery>) -> HttpResponse {
+    let requested_path = query.path.trim();
+    if requested_path.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "请选择要删除的文件"
+        }));
+    }
+
+    let project_root = Path::new(&query.project_root).to_path_buf();
+    let root = match resolve_runtime_worktree(&project_root) {
+        Ok(root) => root,
+        Err(error) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": error
+            }));
+        }
+    };
+
+    match delete_existing_file(&root, requested_path).await {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({
+            "deleted": true
+        })),
+        Err(error) => HttpResponse::BadRequest().json(serde_json::json!({
+            "error": error
+        })),
+    }
+}
+
+fn serve_download_file(req: &HttpRequest, root: &Path, path: &str) -> HttpResponse {
+    let file_path = match resolve_existing_file_path(root, path) {
+        Ok(path) => path,
+        Err(error) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": error
+            }));
+        }
+    };
+
+    if !file_path.exists() {
+        return HttpResponse::NotFound().json(serde_json::json!({
+            "error": file_not_found_message(root, &file_path)
+        }));
+    }
+
+    if file_path.is_dir() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "请选择文件而不是目录"
+        }));
+    }
+
+    let filename = file_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("download")
+        .to_string();
+
+    match NamedFile::open(file_path) {
+        Ok(file) => file
+            .set_content_disposition(ContentDisposition::attachment(filename))
+            .into_response(req),
+        Err(error) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("open file: {}", error)
+        })),
+    }
+}
+
 #[post("/internal/git/status")]
 async fn git_status(
     state: web::Data<ExecutorAppState>,
@@ -550,13 +683,7 @@ async fn dev_proxy_root(
         req.uri().path(),
         &format!("/internal/dev/{}/{}/proxy", project_id, candidate_id),
     );
-    dev_proxy(
-        state,
-        req,
-        payload,
-        (project_id, candidate_id, tail),
-    )
-    .await
+    dev_proxy(state, req, payload, (project_id, candidate_id, tail)).await
 }
 
 async fn dev_proxy_tail(
@@ -1046,6 +1173,9 @@ async fn main() -> std::io::Result<()> {
             .service(open_web_target)
             .service(restart_web_target)
             .service(file_tree)
+            .service(file_download)
+            .service(file_upload)
+            .service(file_delete)
             .service(git_status)
             .service(git_action)
             .route(
