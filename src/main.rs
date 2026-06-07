@@ -45,7 +45,7 @@ use file_upload::{
 use futures_util::{SinkExt, StreamExt};
 use git::{
     discover_git_roots, execute_git_action, has_git_repository, load_git_status,
-    resolve_runtime_worktree, resolve_runtime_worktree_compat, GitAction, GitRuntimeContext,
+    resolve_runtime_worktree_compat, GitAction, GitRuntimeContext,
 };
 use once_cell::sync::{Lazy, OnceCell};
 use project::{Project, ProjectStore};
@@ -89,6 +89,7 @@ struct CredentialsRequest {
 struct CreateProjectRequest {
     name: String,
     path: String,
+    repo_path: Option<String>,
     git_url: Option<String>,
     runtime: Option<String>,
 }
@@ -97,6 +98,7 @@ struct CreateProjectRequest {
 struct UpdateProjectRequest {
     name: String,
     path: String,
+    repo_path: Option<String>,
     git_url: Option<String>,
     runtime: Option<String>,
 }
@@ -210,6 +212,7 @@ fn project_payload(project: &Project) -> serde_json::Value {
         "git_url": project.git_url,
         "root_fs": project.root_fs,
         "bind_dirs": project.bind_dirs,
+        "env_vars": project.env_vars,
         "cmd": project.cmd,
         "deletable": !PROJECTS.is_builtin(&project.project_id),
     })
@@ -2911,8 +2914,11 @@ fn create_project_inner(
 
     let projects_root = config::projects_root();
     let requested_path = resolve_project_path(&request.path, &projects_root)?;
-    let project_path = resolve_runtime_worktree(&requested_path)?;
+    let project_path = requested_path;
+    let runtime_worktree =
+        resolve_requested_runtime_worktree(&project_path, request.repo_path.as_deref())?;
     let project_path_str = project_path.to_string_lossy().to_string();
+    let runtime_worktree_str = runtime_worktree.to_string_lossy().to_string();
 
     if PROJECTS.path_in_use(user_id, &project_path_str) {
         return Err("project path already configured".to_string());
@@ -2920,7 +2926,10 @@ fn create_project_inner(
 
     let git_url = normalize_git_url(request.git_url.as_deref());
     let runtime = parse_runtime(request.runtime.as_deref());
-    initialize_project_directory(&project_path, git_url.is_some())?;
+    ensure_project_directory_exists(&project_path)?;
+    if git_url.is_some() {
+        initialize_project_directory(&runtime_worktree, true)?;
+    }
 
     let existing_ids = PROJECTS
         .list_for_user(user_id)
@@ -2932,6 +2941,7 @@ fn create_project_inner(
         &project_id,
         name,
         &project_path_str,
+        runtime_worktree_str.as_str(),
         git_url.clone(),
         runtime,
     );
@@ -2939,7 +2949,7 @@ fn create_project_inner(
     let project = PROJECTS.add_custom_project(user_id, project)?;
     let pending_clone = git_url.map(|git_url| PendingRepositoryClone {
         project_id: project.project_id.clone(),
-        project_path,
+        project_path: runtime_worktree,
         git_url,
     });
 
@@ -2956,6 +2966,14 @@ fn project_worktree_path(project: &Project) -> Result<PathBuf, String> {
 }
 
 fn project_runtime_root(project: &Project) -> Result<PathBuf, String> {
+    let env_vars = project.resolved_env_vars();
+    if let Some(path) = env_vars
+        .get("SPARKY_RUNTIME_WORKTREE")
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Ok(PathBuf::from(path));
+    }
+
     let worktree = project_worktree_path(project)?;
     resolve_runtime_worktree_compat(&worktree, project.git_url.as_deref())
 }
@@ -3029,18 +3047,23 @@ fn update_project_inner(
 
     let projects_root = config::projects_root();
     let requested_path = resolve_project_path(&request.path, &projects_root)?;
-    let project_path = resolve_runtime_worktree(&requested_path)?;
+    let project_path = requested_path;
+    let runtime_worktree =
+        resolve_requested_runtime_worktree(&project_path, request.repo_path.as_deref())?;
     let project_path_str = project_path.to_string_lossy().to_string();
+    let runtime_worktree_str = runtime_worktree.to_string_lossy().to_string();
 
     if PROJECTS.path_in_use_except(user_id, &project_path_str, Some(project_id)) {
         return Err("project path already configured".to_string());
     }
 
     let git_url = normalize_git_url(request.git_url.as_deref());
-    let should_clone = matches!(git_url.as_deref(), Some(_)) && !has_git_repository(&project_path)?;
+    let should_clone =
+        matches!(git_url.as_deref(), Some(_)) && !has_git_repository(&runtime_worktree)?;
 
     if should_clone {
-        initialize_project_directory(&project_path, true)?;
+        ensure_project_directory_exists(&project_path)?;
+        initialize_project_directory(&runtime_worktree, true)?;
     } else {
         ensure_project_directory_exists(&project_path)?;
     }
@@ -3053,6 +3076,7 @@ fn update_project_inner(
             &existing.project_id,
             name,
             &project_path_str,
+            runtime_worktree_str.as_str(),
             git_url.clone(),
             runtime,
         ),
@@ -3061,7 +3085,7 @@ fn update_project_inner(
     let pending_clone = if should_clone {
         git_url.map(|git_url| PendingRepositoryClone {
             project_id: project.project_id.clone(),
-            project_path,
+            project_path: runtime_worktree,
             git_url,
         })
     } else {
@@ -3088,6 +3112,7 @@ fn build_project_template(
     project_id: &str,
     display_name: &str,
     project_path: &str,
+    runtime_worktree: &str,
     git_url: Option<String>,
     runtime: RuntimeKind,
 ) -> Project {
@@ -3117,6 +3142,10 @@ fn build_project_template(
     if matches!(runtime, RuntimeKind::Codex) {
         env_vars.insert("CODEX_HOME".to_string(), "/home/app/.codex".to_string());
         env_vars.insert(
+            "SPARKY_RUNTIME_WORKTREE".to_string(),
+            runtime_worktree.to_string(),
+        );
+        env_vars.insert(
             "OPENAI_API_KEY".to_string(),
             "{{OPENAI_API_KEY}}".to_string(),
         );
@@ -3136,9 +3165,25 @@ fn build_project_template(
         cmd: "/bin/bash".to_string(),
         cmd_args: vec![
             "-lc".to_string(),
-            format!("cd {} && exec {}", shell_escape(project_path), command),
+            format!("cd {} && exec {}", shell_escape(runtime_worktree), command),
         ],
     }
+}
+
+fn resolve_requested_runtime_worktree(
+    project_path: &Path,
+    repo_path: Option<&str>,
+) -> Result<PathBuf, String> {
+    let Some(repo_path) = repo_path.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(project_path.to_path_buf());
+    };
+
+    let runtime_worktree = resolve_project_path(repo_path, &config::projects_root())?;
+    if !runtime_worktree.starts_with(project_path) {
+        return Err("selected repository must stay under project path".to_string());
+    }
+
+    Ok(runtime_worktree)
 }
 
 fn resolve_project_path(input: &str, projects_root: &Path) -> Result<PathBuf, String> {

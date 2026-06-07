@@ -48,6 +48,7 @@ RUN printf 'Types: deb\nURIs: %s\nSuites: bookworm bookworm-updates\nComponents:
         ca-certificates \
         git \
         gosu \
+        libcap2-bin \
         openssh-client \
         tzdata && \
     rm -rf /var/lib/apt/lists/*
@@ -109,15 +110,18 @@ COPY --from=go-runtime /usr/local/go /usr/local/go
 COPY --from=legacy-code-server /usr/local/lib/code-server-4.114.1 /usr/local/lib/code-server-4.114.1
 COPY --from=rust-build /src/target/release/sparky-executor /usr/local/bin/sparky-executor
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN setcap cap_chown,cap_fowner+ep /usr/local/bin/sparky-executor && \
+    getcap /usr/local/bin/sparky-executor
 
 RUN npm config set fetch-retries 5 && \
     npm config set fetch-retry-factor 2 && \
     npm config set fetch-retry-mintimeout 10000 && \
     npm config set fetch-retry-maxtimeout 120000 && \
-    npm config set proxy "${HTTP_PROXY}" && \
-    npm config set https-proxy "${HTTPS_PROXY}" && \
+    npm config delete proxy && \
+    npm config delete https-proxy && \
+    npm config set registry "https://registry.npmmirror.com" && \
     for attempt in 1 2 3; do \
-        npm install -g @anthropic-ai/claude-code@latest @openai/codex@latest chrome-devtools-mcp@latest && break; \
+        npm install -g @openai/codex@latest chrome-devtools-mcp@latest && break; \
         if [ "$attempt" -eq 3 ]; then exit 1; fi; \
         sleep 5; \
     done && \

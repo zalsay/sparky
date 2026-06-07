@@ -1,4 +1,8 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::ffi::CString;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -146,6 +150,7 @@ pub fn execute_git_action(
         return Err("当前项目目录还不是 Git 仓库".to_string());
     };
 
+    repair_git_metadata_ownership(&repo_root, runtime)?;
     align_branch_with_remote_default(&repo_root, runtime)?;
     let status_before = load_git_status(&repo_root, runtime)?;
 
@@ -193,6 +198,7 @@ pub fn ensure_local_branch_tracking(
         return Ok(());
     };
 
+    repair_git_metadata_ownership(&repo_root, runtime)?;
     align_branch_with_remote_default(&repo_root, runtime)?;
 
     if has_upstream(&repo_root, runtime)? {
@@ -217,6 +223,14 @@ pub fn ensure_local_branch_tracking(
     )?;
 
     Ok(())
+}
+
+pub fn repair_runtime_path_ownership(
+    path: &Path,
+    runtime: &GitRuntimeContext,
+) -> Result<(), String> {
+    let target = ownership_target(runtime)?;
+    repair_path_ownership(path, target)
 }
 
 fn align_branch_with_remote_default(
@@ -432,6 +446,120 @@ fn repo_matches_remote(repo_root: &Path, preferred_remote: &str) -> bool {
         .filter_map(|line| line.split_whitespace().nth(1))
         .filter_map(normalize_git_remote_key)
         .any(|remote| remote == preferred_remote)
+}
+
+fn repair_git_metadata_ownership(
+    repo_root: &Path,
+    runtime: &GitRuntimeContext,
+) -> Result<(), String> {
+    let target = ownership_target(runtime)?;
+    let mut git_dirs = BTreeSet::new();
+    git_dirs.insert(git_internal_dir(repo_root, "--absolute-git-dir", runtime)?);
+
+    let common_dir = git_internal_dir(repo_root, "--git-common-dir", runtime)?;
+    git_dirs.insert(common_dir);
+
+    for git_dir in git_dirs {
+        repair_path_ownership(&git_dir, target)?;
+    }
+
+    Ok(())
+}
+
+fn ownership_target(runtime: &GitRuntimeContext) -> Result<(u32, u32), String> {
+    let metadata = std::fs::metadata(&runtime.home_dir).map_err(|error| {
+        format!(
+            "inspect runtime home ownership {}: {}",
+            runtime.home_dir.display(),
+            error
+        )
+    })?;
+    Ok((metadata.uid(), metadata.gid()))
+}
+
+fn git_internal_dir(
+    repo_root: &Path,
+    flag: &str,
+    runtime: &GitRuntimeContext,
+) -> Result<PathBuf, String> {
+    let output = Command::new("git")
+        .args(["-c", "safe.directory=*", "rev-parse", flag])
+        .current_dir(repo_root)
+        .env("HOME", &runtime.home_dir)
+        .output()
+        .map_err(|error| format!("run git: {}", error))?;
+
+    if !output.status.success() {
+        let trimmed = output_text(&output).trim().to_string();
+        return if trimmed.is_empty() {
+            Err(format!("git command failed with status {}", output.status))
+        } else {
+            Err(trimmed)
+        };
+    }
+
+    let value = output_text(&output).trim().to_string();
+    if value.is_empty() {
+        return Err(format!("git rev-parse {} returned an empty path", flag));
+    }
+
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(repo_root.join(path))
+    }
+}
+
+fn repair_path_ownership(path: &Path, target: (u32, u32)) -> Result<(), String> {
+    let mut stack = vec![path.to_path_buf()];
+
+    while let Some(current) = stack.pop() {
+        let metadata = match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("inspect {}: {}", current.display(), error)),
+        };
+
+        if metadata.uid() != target.0 || metadata.gid() != target.1 {
+            chown_path(&current, target)?;
+        }
+
+        if metadata.file_type().is_dir() {
+            let mode = metadata.permissions().mode();
+            if mode & 0o700 != 0o700 {
+                let mut permissions = metadata.permissions();
+                permissions.set_mode(mode | 0o700);
+                std::fs::set_permissions(&current, permissions)
+                    .map_err(|error| format!("chmod {}: {}", current.display(), error))?;
+            }
+
+            let entries = std::fs::read_dir(&current)
+                .map_err(|error| format!("read {}: {}", current.display(), error))?;
+            for entry in entries {
+                let entry =
+                    entry.map_err(|error| format!("read {}: {}", current.display(), error))?;
+                stack.push(entry.path());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn chown_path(path: &Path, target: (u32, u32)) -> Result<(), String> {
+    let path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("path contains an interior NUL byte: {}", path.display()))?;
+    let status = unsafe { libc::lchown(path.as_ptr(), target.0, target.1) };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "repair git metadata ownership failed for {}: {}",
+            path.to_string_lossy(),
+            std::io::Error::last_os_error()
+        ))
+    }
 }
 
 fn normalize_git_remote_key(value: &str) -> Option<String> {

@@ -3,7 +3,8 @@
 use crate::auth::AuthSession;
 use crate::config::ServerConfig;
 use crate::git::{
-    ensure_local_branch_tracking, resolve_runtime_worktree_compat, GitRuntimeContext,
+    ensure_local_branch_tracking, repair_runtime_path_ownership, resolve_runtime_worktree_compat,
+    GitRuntimeContext,
 };
 use crate::project::Project;
 use crate::sandbox::{unmount_overlay, OverlayPaths};
@@ -148,11 +149,21 @@ impl Session {
 
         // Direct command launch: no bwrap, no mount/userns path.
         let runtime_worktree = resolved_session_worktree(project);
-        sync_codex_agents_file(project, &runtime_worktree)?;
         let git_runtime = GitRuntimeContext {
             home_dir: user.home_dir.clone(),
             ssh_auth_sock: cfg.ssh_auth_sock.clone(),
         };
+        fs::create_dir_all(&user.home_dir)
+            .map_err(|error| format!("create runtime home {}: {}", user.home_dir.display(), error))?;
+        let project_root = PathBuf::from(configured_session_worktree(project));
+        repair_runtime_path_ownership(&project_root, &git_runtime).map_err(|error| {
+            format!(
+                "repair project permissions {}: {}",
+                project_root.display(),
+                error
+            )
+        })?;
+        sync_codex_agents_file(project, &runtime_worktree)?;
         if let Err(error) = ensure_local_branch_tracking(Path::new(&runtime_worktree), &git_runtime)
         {
             log::warn!(
@@ -372,6 +383,14 @@ fn configured_session_worktree(project: &Project) -> String {
 }
 
 fn resolved_session_worktree(project: &Project) -> String {
+    let env_vars = project.resolved_env_vars();
+    if let Some(path) = env_vars
+        .get("SPARKY_RUNTIME_WORKTREE")
+        .filter(|value| !value.trim().is_empty())
+    {
+        return path.to_string();
+    }
+
     let configured = configured_session_worktree(project);
     resolve_runtime_worktree_compat(Path::new(&configured), project.git_url.as_deref())
         .map(|path| path.display().to_string())

@@ -40,6 +40,7 @@ export function normalizeProjects(payload) {
         cmd: project.cmd || project.cli_path || 'claude',
         rootFs: project.root_fs || '',
         bindDirs: Array.isArray(project.bind_dirs) ? project.bind_dirs : [],
+        envVars: project.env_vars && typeof project.env_vars === 'object' ? project.env_vars : {},
         provider: project.provider || preset.provider || '自定义',
         accent: project.accent || preset.accent || 'generic',
         order: typeof preset.order === 'number' ? preset.order : 99,

@@ -1,8 +1,8 @@
 x-build-args: &build-args
-  HTTP_PROXY: ${BUILD_HTTP_PROXY:-http://127.0.0.1:7890}
-  HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-http://127.0.0.1:7890}
-  ALL_PROXY: ${BUILD_ALL_PROXY:-socks5://127.0.0.1:7890}
-  NO_PROXY: ${BUILD_NO_PROXY:-127.0.0.1,localhost}
+  HTTP_PROXY: ${BUILD_HTTP_PROXY:-}
+  HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-}
+  ALL_PROXY: ${BUILD_ALL_PROXY:-}
+  NO_PROXY: ${BUILD_NO_PROXY:-127.0.0.1,localhost,host.docker.internal}
 
 x-runtime-env: &runtime-env
   PROJECT_CONFIG_DIR: /etc/sparky
@@ -14,7 +14,6 @@ x-runtime-env: &runtime-env
   DATABASE_URL: ${DATABASE_URL:-postgres://cc_user:cc_pass_2026@cc-postgres:5432/cc_service}
   DB_MAX_CONNECTIONS: "5"
   SPARKY_BWRAP_UNSHARE_USER: "false"
-  ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:7890}
   HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:7890}
@@ -24,10 +23,6 @@ x-runtime-env: &runtime-env
 x-server-volumes: &server-volumes
   - ./config/projects.json:/etc/sparky/projects.json:ro
   - /root/.ssh/known_hosts:/etc/sparky/known_hosts.raw:ro
-  - ./config/claude-user-state.json:/etc/sparky/claude-user-state.json:ro
-  - ./config/claude-settings.json:/etc/sparky/claude-settings.json:ro
-  - ./config/claude-user-state.json:/home/app/.claude.json:ro
-  - ./config/claude-settings.json:/home/app/.claude/settings.json:ro
   - ./codex-config:/home/app/.codex
   - ${HOST_SSH_AUTH_SOCK:-/run/user/0/gcr/ssh}:/ssh-agent
   - ${HOST_DATA_ROOT:-/home/sp-dev/data}/projects:/projects
@@ -35,10 +30,6 @@ x-server-volumes: &server-volumes
 x-executor-volumes: &executor-volumes
   - ./config/projects.json:/etc/sparky/projects.json:ro
   - /root/.ssh/known_hosts:/etc/sparky/known_hosts.raw:ro
-  - ./config/claude-user-state.json:/etc/sparky/claude-user-state.json:ro
-  - ./config/claude-settings.json:/etc/sparky/claude-settings.json:ro
-  - ./config/claude-user-state.json:/home/app/.claude.json:ro
-  - ./config/claude-settings.json:/home/app/.claude/settings.json:ro
   - ./codex-config:/home/app/.codex
   - ${HOST_DATA_ROOT:-/home/sp-dev/data}/go:/home/app/go
   - ${HOST_DATA_ROOT:-/home/sp-dev/data}/go-cache:/home/app/.cache/go-build
@@ -54,6 +45,8 @@ services:
       context: .
       dockerfile: Dockerfile.web
       network: host
+      extra_hosts:
+        - "host.docker.internal=host-gateway"
       args: *build-args
     image: sp-dev-web:latest
     container_name: sp-web
@@ -71,6 +64,8 @@ services:
       dockerfile: Dockerfile
       target: server-runtime
       network: host
+      extra_hosts:
+        - "host.docker.internal=host-gateway"
       args: *build-args
     image: sp-server:latest
     container_name: sp-server
@@ -94,6 +89,8 @@ services:
       dockerfile: Dockerfile
       target: executor-runtime
       network: host
+      extra_hosts:
+        - "host.docker.internal=host-gateway"
       args: *build-args
     image: sp-dev-executor:latest
     container_name: sp-executor

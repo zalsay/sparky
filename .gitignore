@@ -4,3 +4,4 @@ web/node_modules/
 web/dist/
 legacy/dist/
 codex-config/
+tmp/

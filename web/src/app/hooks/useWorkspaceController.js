@@ -626,6 +626,7 @@ export function useWorkspaceController({
   const openEditProjectForm = (project) => {
     projectRepoRequestIdRef.current += 1
     const projectPath = project.bindDirs.find((dir) => dir !== '/tmp') || PROJECT_PATH_PREFIX
+    const runtimeWorktree = project.envVars?.SPARKY_RUNTIME_WORKTREE || projectPath
     setEditingProjectTarget(project)
     setCreateProjectError('')
     setNewProjectName(project.name || '')
@@ -634,7 +635,7 @@ export function useWorkspaceController({
     setNewProjectRuntime('codex')
     setProjectRepoOptions([])
     setProjectRepoLoading(false)
-    setSelectedProjectRepoPath(normalizeProjectPathInput(projectPath))
+    setSelectedProjectRepoPath(normalizeProjectPathInput(runtimeWorktree))
     setCreateProjectOpen(true)
   }
 
@@ -1916,7 +1917,7 @@ export function useWorkspaceController({
 
     const name = newProjectName.trim()
     const projectPath = normalizeProjectPathInput(newProjectPath.trim())
-    const targetProjectPath = selectedProjectRepoPath || projectPath
+    const repoPath = selectedProjectRepoPath || projectPath
     const gitUrl = newProjectGitUrl.trim()
 
     if (!name) {
@@ -1951,7 +1952,8 @@ export function useWorkspaceController({
           },
           body: JSON.stringify({
             name,
-            path: targetProjectPath,
+            path: projectPath,
+            repo_path: repoPath,
             git_url: gitUrl || null,
             runtime: 'codex',
           }),
@@ -2448,6 +2450,7 @@ export function useWorkspaceController({
       currentCodexSession: currentCodexLiveSession,
       hasCodexSessions: panels.hasCodexSessions,
       onLoadCodexSessions: () => panels.loadCodexSessions(),
+      onOpenNewSession: openPrimarySession,
       onReturnToCurrentSession: () => {
         const targetTab = currentCodexSessionTab
           || null
@@ -2458,6 +2461,7 @@ export function useWorkspaceController({
         }
       },
       onResumeCodexSession: resumeCodexSession,
+      openingNewSession: step === 'connecting',
       selectedProjectId: selectedProject?.id,
     },
     filePanelProps: {

@@ -141,9 +141,9 @@ export function ProjectFormModal({
           {projectRepoLoading ? (
             <p className="form-hint">正在扫描该目录下的 Git 仓库...</p>
           ) : projectRepoOptions.length > 1 ? (
-            <p className="form-hint">该目录下检测到多个 Git 仓库。请选择要绑定的具体仓库根目录。</p>
+            <p className="form-hint">该目录下检测到多个 Git 仓库。项目目录会作为 executor 权限范围，所选仓库只作为运行和 Git 操作根目录。</p>
           ) : resolvedRepoDiffersFromInput ? (
-            <p className="form-hint">当前输入路径会绑定到检测到的仓库根目录 <code>{PROJECT_PATH_PREFIX}{selectedProjectRepoPath}</code>。</p>
+            <p className="form-hint">运行和 Git 操作会定位到仓库根目录 <code>{PROJECT_PATH_PREFIX}{selectedProjectRepoPath}</code>，executor 权限仍覆盖项目路径。</p>
           ) : projectRepoOptions.length === 1 && selectedProjectRepoPath ? (
             <p className="form-hint">已自动定位到仓库根目录 <code>{PROJECT_PATH_PREFIX}{selectedProjectRepoPath}</code>。</p>
           ) : null}

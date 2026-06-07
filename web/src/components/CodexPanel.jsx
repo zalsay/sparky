@@ -8,8 +8,10 @@ export function CodexPanel({
   currentCodexSession,
   hasCodexSessions,
   onLoadCodexSessions,
+  onOpenNewSession,
   onReturnToCurrentSession,
   onResumeCodexSession,
+  openingNewSession,
   selectedProjectId,
 }) {
   return (
@@ -36,6 +38,14 @@ export function CodexPanel({
               disabled={codexLoading || codexResumeLoading !== '' || !hasCodexSessions}
             >
               {codexResumeLoading === '__latest__' ? '恢复中...' : '恢复最近'}
+            </button>
+            <button
+              className="primary-btn git-btn"
+              type="button"
+              onClick={onOpenNewSession}
+              disabled={!selectedProjectId || openingNewSession}
+            >
+              {openingNewSession ? '创建中...' : '新建会话'}
             </button>
           </div>
         </div>
