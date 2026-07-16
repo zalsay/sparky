@@ -17,7 +17,7 @@ function itemClassName(kind) {
     case 'reasoning':
       return 'codex-conversation-item codex-conversation-item-reasoning'
     case 'commentary':
-      return 'codex-conversation-item codex-conversation-item-commentary'
+      return 'codex-conversation-item codex-conversation-item-assistant'
     case 'error':
       return 'codex-conversation-item codex-conversation-item-error'
     default:
@@ -51,7 +51,7 @@ function itemDisplayLabel(item) {
     return '你'
   }
 
-  if (item.kind === 'assistant') {
+  if (item.kind === 'assistant' || item.kind === 'commentary') {
     return 'Codex'
   }
 
@@ -106,12 +106,17 @@ function isResolvedTransitionItem(item) {
   return item.title === '任务开始' || String(item.text || '').includes('Codex 已开始处理当前请求')
 }
 
-function buildDisplayItems(items) {
+function isThinkingPlaceholder(item) {
+  return item?.kind === 'reasoning'
+    && String(item.text || '').trim() === 'Codex 正在组织推理过程'
+}
+
+function buildDisplayState(items) {
   if (!Array.isArray(items) || items.length === 0) {
-    return []
+    return { items: [], thinking: false }
   }
 
-  return items.filter((item, index) => {
+  const resolvedItems = items.filter((item, index) => {
     if (!isResolvedTransitionItem(item)) {
       return true
     }
@@ -129,6 +134,14 @@ function buildDisplayItems(items) {
 
     return true
   })
+
+  const lastThinkingIndex = items.findLastIndex(isThinkingPlaceholder)
+  const lastSettledIndex = items.findLastIndex((item) => item.kind === 'assistant' || item.kind === 'error')
+
+  return {
+    items: resolvedItems.filter((item) => !isThinkingPlaceholder(item)),
+    thinking: lastThinkingIndex > lastSettledIndex,
+  }
 }
 
 function renderItemBody(item) {
@@ -164,7 +177,8 @@ export function CodexConversationPanel({
   const scrollRef = useRef(null)
   const autoScrollAttemptsRef = useRef(0)
   const autoScrollTimerRef = useRef(null)
-  const items = useMemo(() => buildDisplayItems(codexTimeline?.items || []), [codexTimeline?.items])
+  const displayState = useMemo(() => buildDisplayState(codexTimeline?.items || []), [codexTimeline?.items])
+  const { items, thinking } = displayState
   const timelineUpdatedAtMs = Number(codexTimeline?.updatedAtMs || 0)
 
   const clearAutoScrollTimer = () => {
@@ -227,7 +241,7 @@ export function CodexConversationPanel({
     }
 
     requestAutoScrollToBottom(12)
-  }, [sessionId, items.length, timelineUpdatedAtMs, codexTimelineLoading])
+  }, [sessionId, items.length, thinking, timelineUpdatedAtMs, codexTimelineLoading])
 
   useEffect(() => () => {
     clearAutoScrollTimer()
@@ -248,7 +262,7 @@ export function CodexConversationPanel({
           <div className="codex-conversation-state">正在读取 Codex 时间线...</div>
         ) : codexTimelineError ? (
           <div className="codex-conversation-state codex-conversation-state-error">{codexTimelineError}</div>
-        ) : items.length === 0 ? (
+        ) : items.length === 0 && !thinking ? (
           <div className="codex-conversation-state">当前会话还没有可展示的结构化输出。</div>
         ) : (
           <div className="codex-conversation-list">
@@ -258,9 +272,16 @@ export function CodexConversationPanel({
                   <span className="codex-conversation-item-label">{itemDisplayLabel(item)}</span>
                   <span className="codex-conversation-item-time">{formatClockTime(item.timestamp)}</span>
                 </div>
-                {renderItemBody(item)}
+                <div className="codex-conversation-item-body">
+                  {renderItemBody(item)}
+                </div>
               </article>
             ))}
+            {thinking ? (
+              <div className="codex-conversation-thinking" role="status" aria-live="polite">
+                <span className="codex-conversation-thinking__label">思考中...</span>
+              </div>
+            ) : null}
           </div>
         )}
       </div>

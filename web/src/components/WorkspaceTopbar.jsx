@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import { BRAND_LOGO_SRC } from '../app/constants'
 import { runtimeLabel } from '../app/data'
 
@@ -21,6 +22,7 @@ export function WorkspaceTopbar({
   connected,
   isMobileViewport,
   mobileSidePanelOpen,
+  mobileSessionActions,
   onLeaveSessionView,
   onOpenPrimarySession,
   onResumeCodexSession,
@@ -29,8 +31,30 @@ export function WorkspaceTopbar({
   sidePanelTab,
   step,
 }) {
+  const functionMenuRef = useRef(null)
+  const [functionMenuOpen, setFunctionMenuOpen] = useState(false)
   const isCodexProject = selectedProject?.runtime === 'codex'
   const connectionLabel = connected ? '已连接' : step === 'connecting' ? '连接中' : '已断开'
+
+  useEffect(() => {
+    if (!functionMenuOpen) return undefined
+    const closeMenu = (event) => {
+      if (event.type === 'keydown' && event.key !== 'Escape') return
+      if (event.type === 'pointerdown' && functionMenuRef.current?.contains(event.target)) return
+      setFunctionMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', closeMenu)
+    document.addEventListener('keydown', closeMenu)
+    return () => {
+      document.removeEventListener('pointerdown', closeMenu)
+      document.removeEventListener('keydown', closeMenu)
+    }
+  }, [functionMenuOpen])
+
+  const runMobileAction = (action) => {
+    setFunctionMenuOpen(false)
+    action?.()
+  }
 
   if (isMobileViewport) {
     return (
@@ -70,6 +94,47 @@ export function WorkspaceTopbar({
             <span className={`workspace-mobile-tag workspace-mobile-tag-status ${connected ? 'is-online' : 'is-offline'}`}>
               {connectionLabel}
             </span>
+            {isCodexProject ? (
+              <div className="workspace-mobile-function-menu" ref={functionMenuRef}>
+                <button
+                  type="button"
+                  className={`toolbar-btn toolbar-btn-icon workspace-mobile-topbar-icon-btn ${functionMenuOpen ? 'active' : ''}`}
+                  onClick={() => setFunctionMenuOpen((value) => !value)}
+                  aria-label={functionMenuOpen ? '关闭会话功能' : '打开会话功能'}
+                  aria-expanded={functionMenuOpen}
+                  aria-haspopup="menu"
+                  title="会话功能"
+                >
+                  <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                    <path d="M5 4.5h2.5V7H5V4.5zm7.5 0H15V7h-2.5V4.5zM5 12.5h2.5V15H5v-2.5zm7.5 0H15V15h-2.5v-2.5z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                  </svg>
+                </button>
+                {functionMenuOpen ? (
+                  <div className="workspace-mobile-function-popover" role="menu">
+                    <button type="button" role="menuitem" onClick={() => runMobileAction(mobileSessionActions?.onScrollToBottom)} disabled={!mobileSessionActions?.sessionId}>
+                      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 4.25v9.1M6.3 10.7L10 14.45l3.7-3.75M5.25 16h9.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                      <span>滚动到底部</span>
+                    </button>
+                    <button type="button" role="menuitem" onClick={() => runMobileAction(mobileSessionActions?.onRefreshTimeline)}>
+                      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M15.5 7.5A6 6 0 106.3 15M15.5 4.75v4h-4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                      <span>刷新会话</span>
+                    </button>
+                    <button type="button" role="menuitem" onClick={() => runMobileAction(mobileSessionActions?.onOpenRawTerminal)} disabled={!mobileSessionActions?.sessionId}>
+                      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4.5 5.75h11A1.25 1.25 0 0116.75 7v6a1.25 1.25 0 01-1.25 1.25h-11A1.25 1.25 0 013.25 13V7A1.25 1.25 0 014.5 5.75zM6.25 8.4L8.1 10l-1.85 1.6M9.9 11.6H13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                      <span>原始终端</span>
+                    </button>
+                    <button type="button" role="menuitem" onClick={() => runMobileAction(mobileSessionActions?.onOpenTemporarySession)} disabled={!selectedProject?.id || step === 'connecting'}>
+                      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 4.5v11M4.5 10h11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>
+                      <span>新建临时终端</span>
+                    </button>
+                    <button className="is-danger" type="button" role="menuitem" onClick={() => runMobileAction(mobileSessionActions?.onDestroyCurrentSession)} disabled={!mobileSessionActions?.sessionId}>
+                      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M6 6l8 8M14 6l-8 8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>
+                      <span>{mobileSessionActions?.currentSessionTemporary ? '关闭临时终端' : '关闭主会话'}</span>
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             <button
               type="button"
               className={`toolbar-btn toolbar-btn-icon workspace-mobile-panel-toggle workspace-mobile-topbar-icon-btn ${mobileSidePanelOpen ? 'active' : ''}`}

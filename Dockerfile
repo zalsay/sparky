@@ -96,10 +96,12 @@ RUN printf 'Types: deb\nURIs: %s\nSuites: bookworm bookworm-updates\nComponents:
         curl \
         default-mysql-client \
         file \
+        jq \
         lsof \
         pkg-config \
         postgresql-client \
-        ripgrep && \
+        ripgrep \
+        rsync && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=node-runtime /usr/local/bin /usr/local/bin

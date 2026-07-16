@@ -112,6 +112,7 @@ function MobilePtyManager({
   sessionTabs,
   step,
   variant = 'panel',
+  showActions = true,
 }) {
   if (!sessionTabs.length) {
     return null
@@ -123,7 +124,7 @@ function MobilePtyManager({
     <div className={`mobile-pty-manager mobile-pty-manager-${variant}`}>
       <div className="mobile-pty-manager__header">
         <span className="eyebrow">会话列表</span>
-        <div className="mobile-pty-manager__actions">
+        {showActions ? <div className="mobile-pty-manager__actions">
           {variant === 'panel' ? (
             <>
               <button
@@ -192,7 +193,7 @@ function MobilePtyManager({
               <path d="M14 6l-8 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
             </svg>
           </button>
-        </div>
+        </div> : null}
       </div>
       <div className="terminal-tabs mobile-pty-manager__tabs" role="tablist" aria-label="移动端会话列表">
         {sessionTabs.map((tab) => (
@@ -542,6 +543,20 @@ export function TerminalPanel({
     }
   }, [currentSessionTemporary, isCodexMobile, showRawTerminal, sessionId])
 
+  useEffect(() => {
+    const scrollToBottom = () => setScrollToBottomRequest((value) => value + 1)
+    const openRawTerminal = () => {
+      autoRawTerminalRef.current = false
+      setShowRawTerminal(true)
+    }
+    window.addEventListener('sparky:scroll-mobile-session-bottom', scrollToBottom)
+    window.addEventListener('sparky:open-mobile-raw-terminal', openRawTerminal)
+    return () => {
+      window.removeEventListener('sparky:scroll-mobile-session-bottom', scrollToBottom)
+      window.removeEventListener('sparky:open-mobile-raw-terminal', openRawTerminal)
+    }
+  }, [])
+
   if (isCodexMobile) {
     return (
       <section className="terminal-panel glass-panel terminal-panel-codex-mobile">
@@ -562,6 +577,7 @@ export function TerminalPanel({
           sessionTabs={sessionTabs}
           step={step}
           variant="panel"
+          showActions={false}
         />
 
         {showRawTerminal ? (

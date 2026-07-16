@@ -16,7 +16,6 @@ function MobileCodexComposer({
   sessionId,
 }) {
   const inputRef = useRef(null)
-  const [composerOpen, setComposerOpen] = useState(false)
   const [value, setValue] = useState('')
   const [sendCoolingDown, setSendCoolingDown] = useState(false)
   const cooldownTimerRef = useRef(null)
@@ -32,7 +31,6 @@ function MobileCodexComposer({
   useEffect(() => {
     setValue('')
     setSendCoolingDown(false)
-    setComposerOpen(false)
     lastSentAtRef.current = 0
     clearCooldownTimer()
   }, [sessionId])
@@ -51,26 +49,6 @@ function MobileCodexComposer({
       clearCooldownTimer()
     }
   }, [codexTimelineUpdatedAtMs, sendCoolingDown])
-
-  useEffect(() => {
-    if (!composerOpen) {
-      return
-    }
-
-    logSessionDebug('mobile_composer_open', {
-      sessionId,
-      connected,
-    })
-
-    const timer = window.setTimeout(() => {
-      inputRef.current?.focus()
-      inputRef.current?.select()
-    }, 30)
-
-    return () => {
-      window.clearTimeout(timer)
-    }
-  }, [composerOpen])
 
   const sendInput = () => {
     const content = value.trim()
@@ -109,7 +87,6 @@ function MobileCodexComposer({
     }
 
     setValue('')
-    setComposerOpen(false)
     const sentAt = Date.now()
     lastSentAtRef.current = sentAt
     setSendCoolingDown(true)
@@ -125,80 +102,44 @@ function MobileCodexComposer({
   }
 
   return (
-    <>
-      <button
-        type="button"
-        className="mobile-codex-composer-fab"
+    <form
+      className="mobile-codex-composer"
+      onSubmit={(event) => {
+        event.preventDefault()
+        sendInput()
+      }}
+    >
+      <textarea
+        ref={inputRef}
+        className="mobile-codex-composer__input"
+        rows={1}
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault()
+            sendInput()
+          }
+        }}
+        enterKeyHint="send"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+        placeholder={connected ? '向 Codex 发送消息' : '正在连接 Codex…'}
         disabled={!sessionId || !connected}
-        aria-label="打开输入框"
-        title={!sessionId || !connected ? '等待 PTY 连接后可发送' : '打开输入框'}
-        onClick={() => setComposerOpen(true)}
+        aria-label="向 Codex 发送消息"
+      />
+      <button
+        type="submit"
+        className="mobile-codex-composer__send"
+        disabled={!sessionId || !connected || !value.trim() || sendCoolingDown}
+        aria-label={sendCoolingDown ? '发送中' : '发送'}
       >
         <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-          <path
-            d="M3.75 10.2L15.8 4.9c.58-.26 1.14.3.88.88L11.38 17.8c-.23.54-1.01.5-1.18-.07l-1-3.53a1 1 0 00-.68-.68l-3.53-1c-.56-.16-.61-.94-.07-1.17z"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M8.8 11.2l4.05-4.05"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-          />
+          <path d="M10 15.5v-11M5.5 9l4.5-4.5L14.5 9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
-      {composerOpen ? (
-        <div
-          className="mobile-codex-composer-modal-backdrop"
-          onClick={() => setComposerOpen(false)}
-        >
-          <div
-            className="mobile-codex-composer-modal glass-panel"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <span className="eyebrow">发送到当前会话</span>
-            <input
-              ref={inputRef}
-              type="text"
-              className="mobile-codex-composer__input"
-              value={value}
-              onChange={(event) => setValue(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  sendInput()
-                }
-              }}
-              enterKeyHint="send"
-              autoCapitalize="off"
-              autoCorrect="off"
-              spellCheck={false}
-              placeholder={connected ? '输入内容，回车发送' : '等待 PTY 连接后可发送'}
-              disabled={!sessionId || !connected}
-            />
-            <div className="mobile-codex-composer-modal__actions">
-              <button
-                type="button"
-                className="ghost-btn"
-                onClick={() => setComposerOpen(false)}
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                className="primary-btn"
-                disabled={!sessionId || !connected || !value.trim() || sendCoolingDown}
-                onClick={sendInput}
-              >
-                {sendCoolingDown ? '发送中...' : '发送'}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </>
+    </form>
   )
 }
 
@@ -405,6 +346,15 @@ export function WorkspacePage({
         codexBusy={codexBusy}
         isMobileViewport={isMobileViewport}
         mobileSidePanelOpen={mobileSidePanelOpen}
+        mobileSessionActions={{
+          currentSessionTemporary: terminalPanelProps?.currentSessionTemporary,
+          onDestroyCurrentSession: terminalPanelProps?.onDestroyCurrentSession,
+          onOpenRawTerminal: () => window.dispatchEvent(new Event('sparky:open-mobile-raw-terminal')),
+          onOpenTemporarySession: terminalPanelProps?.onOpenTemporarySession,
+          onRefreshTimeline: terminalPanelProps?.onRefreshCodexTimeline,
+          onScrollToBottom: () => window.dispatchEvent(new Event('sparky:scroll-mobile-session-bottom')),
+          sessionId: terminalPanelProps?.sessionId,
+        }}
         onLeaveSessionView={onLeaveSessionView}
         onOpenPrimarySession={onOpenPrimarySession}
         onResumeCodexSession={onResumeCodexSession}

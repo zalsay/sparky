@@ -362,16 +362,6 @@ export function DashboardPage({
             })}
           </div>
 
-          {isMobileViewport ? (
-            <div className="dashboard-mobile-project-actions">
-              <button className="primary-btn section-create-btn" onClick={onOpenCreateProjectForm}>
-                新建项目
-              </button>
-              <button className="secondary-btn" onClick={onLoadWorkspaceState} disabled={loadingProjects}>
-                {loadingProjects ? '刷新中...' : '刷新'}
-              </button>
-            </div>
-          ) : null}
         </section>
 
         {!isMobileViewport ? (
@@ -413,6 +403,16 @@ export function DashboardPage({
           </section>
         ) : null}
       </main>
+      {isMobileViewport ? (
+        <div className="dashboard-mobile-project-actions">
+          <button className="primary-btn section-create-btn" onClick={onOpenCreateProjectForm}>
+            新建项目
+          </button>
+          <button className="secondary-btn" onClick={onLoadWorkspaceState} disabled={loadingProjects}>
+            {loadingProjects ? '刷新中...' : '刷新'}
+          </button>
+        </div>
+      ) : null}
       {sessionPickerProject ? (
         <ProjectSessionPickerModal
           codexSessionTitlesByPtySessionId={sessionPickerProject.titleMap || codexSessionTitlesByPtySessionId}
