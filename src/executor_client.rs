@@ -2,9 +2,10 @@ use crate::auth::AuthSession;
 use crate::git::{GitAction, GitStatusSummary};
 use crate::internal_api::{
     CreateExecutorSessionRequest, ExecutorSessionResponse, ExecutorSessionsResponse,
-    ExecutorUserPayload, FileTreeRequest, FileTreeResponse, GitActionRequest, GitActionResponse,
-    GitStatusRequest, GitStatusResponse, OpenEditorRequest, OpenEditorResponse, OpenWebRequest,
-    OpenWebResponse, WebTargetsRequest, WebTargetsResponse,
+    ExecutorUserPayload, FileContentRequest, FileContentResponse, FileTreeRequest,
+    FileTreeResponse, GitActionRequest, GitActionResponse, GitStatusRequest, GitStatusResponse,
+    OpenEditorRequest, OpenEditorResponse, OpenWebRequest, OpenWebResponse, SaveFileContentRequest,
+    SaveFileContentResponse, WebTargetsRequest, WebTargetsResponse,
 };
 use crate::project::Project;
 use crate::session::{LaunchOverride, SessionSummary};
@@ -274,6 +275,34 @@ impl RemoteExecutorClient {
         };
 
         let url = format!("{}/internal/files/tree", self.base_url);
+        self.post_json(url.as_str(), &request).await
+    }
+
+    pub async fn read_file_content(
+        &self,
+        project_root: &std::path::Path,
+        path: &str,
+    ) -> Result<FileContentResponse, RemoteExecutorError> {
+        let request = FileContentRequest {
+            project_root: project_root.display().to_string(),
+            path: path.to_string(),
+        };
+        let url = format!("{}/internal/files/content", self.base_url);
+        self.post_json(url.as_str(), &request).await
+    }
+
+    pub async fn save_file_content(
+        &self,
+        project_root: &std::path::Path,
+        path: &str,
+        content: &str,
+    ) -> Result<SaveFileContentResponse, RemoteExecutorError> {
+        let request = SaveFileContentRequest {
+            project_root: project_root.display().to_string(),
+            path: path.to_string(),
+            content: content.to_string(),
+        };
+        let url = format!("{}/internal/files/content/save", self.base_url);
         self.post_json(url.as_str(), &request).await
     }
 

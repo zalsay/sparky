@@ -12,6 +12,20 @@ server {
     client_max_body_size 2048m;
     resolver 127.0.0.11 valid=5s ipv6=off;
     set $server_upstream ${SERVER_UPSTREAM};
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_min_length 1024;
+    gzip_comp_level 5;
+    gzip_types
+        application/json
+        application/javascript
+        application/xml
+        image/svg+xml
+        text/css
+        text/javascript
+        text/plain
+        text/xml;
 
     location = /health {
         proxy_pass $server_upstream;

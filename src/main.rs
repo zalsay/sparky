@@ -156,6 +156,13 @@ struct FileTreeQuery {
     repo_path: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SaveFileContentPayload {
+    content: String,
+    path: String,
+    repo_path: Option<String>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct OpenEditorRequest {
     path: Option<String>,
@@ -1010,6 +1017,91 @@ async fn project_file_tree(
             "error": format!("load file tree task failed: {}", error)
         })),
     }
+}
+
+#[get("/projects/{id}/files/content")]
+async fn project_file_content(
+    req: HttpRequest,
+    path: web::Path<String>,
+    query: web::Query<FileTreeQuery>,
+) -> HttpResponse {
+    let user = match current_user(&req).await {
+        Some(user) => user,
+        None => return unauthorized(),
+    };
+    let Some(requested_path) = query
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({ "error": "请选择要打开的文件" }));
+    };
+    let project_id = path.into_inner();
+    let Some(project) = PROJECTS.find_for_user(&user.user_id, &project_id) else {
+        return HttpResponse::NotFound().json(serde_json::json!({ "error": "project not found" }));
+    };
+    let project_root = match resolve_selected_project_root(&project, query.repo_path.as_deref()) {
+        Ok(path) => path,
+        Err(error) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({ "error": error }))
+        }
+    };
+
+    if let Some(remote) = EXECUTOR_REMOTE.as_ref() {
+        return match remote
+            .read_file_content(&project_root, requested_path)
+            .await
+        {
+            Ok(response) => HttpResponse::Ok().json(response),
+            Err(error) => remote_executor_error_response(error),
+        };
+    }
+
+    HttpResponse::ServiceUnavailable()
+        .json(serde_json::json!({ "error": "文件编辑需要 executor 服务" }))
+}
+
+#[post("/projects/{id}/files/content")]
+async fn project_save_file_content(
+    req: HttpRequest,
+    path: web::Path<String>,
+    payload: web::Json<SaveFileContentPayload>,
+) -> HttpResponse {
+    let user = match current_user(&req).await {
+        Some(user) => user,
+        None => return unauthorized(),
+    };
+    let request = payload.into_inner();
+    let requested_path = request.path.trim();
+    if requested_path.is_empty() {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({ "error": "请选择要保存的文件" }));
+    }
+    let project_id = path.into_inner();
+    let Some(project) = PROJECTS.find_for_user(&user.user_id, &project_id) else {
+        return HttpResponse::NotFound().json(serde_json::json!({ "error": "project not found" }));
+    };
+    let project_root = match resolve_selected_project_root(&project, request.repo_path.as_deref()) {
+        Ok(path) => path,
+        Err(error) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({ "error": error }))
+        }
+    };
+
+    if let Some(remote) = EXECUTOR_REMOTE.as_ref() {
+        return match remote
+            .save_file_content(&project_root, requested_path, request.content.as_str())
+            .await
+        {
+            Ok(response) => HttpResponse::Ok().json(response),
+            Err(error) => remote_executor_error_response(error),
+        };
+    }
+
+    HttpResponse::ServiceUnavailable()
+        .json(serde_json::json!({ "error": "文件编辑需要 executor 服务" }))
 }
 
 #[get("/projects/{id}/files/download")]
@@ -2875,6 +2967,8 @@ async fn main() -> std::io::Result<()> {
             .service(resume_codex_session)
             .service(get_codex_session_timeline)
             .service(project_file_tree)
+            .service(project_file_content)
+            .service(project_save_file_content)
             .service(project_file_download)
             .service(project_file_upload)
             .service(project_file_delete)

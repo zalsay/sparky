@@ -52,6 +52,12 @@ export function useWorkspacePanels({
   const [fileTreeLoadingPaths, setFileTreeLoadingPaths] = useState({})
   const [fileTreeError, setFileTreeError] = useState('')
   const [editorLoadingPath, setEditorLoadingPath] = useState('')
+  const [fileEditorPath, setFileEditorPath] = useState('')
+  const [fileEditorContent, setFileEditorContent] = useState('')
+  const [fileEditorSavedContent, setFileEditorSavedContent] = useState('')
+  const [fileEditorSize, setFileEditorSize] = useState(0)
+  const [fileEditorError, setFileEditorError] = useState('')
+  const [fileEditorSaving, setFileEditorSaving] = useState(false)
   const [fileDownloadLoadingPath, setFileDownloadLoadingPath] = useState('')
   const [fileUploadLoading, setFileUploadLoading] = useState(false)
   const [fileUploadProgress, setFileUploadProgress] = useState(0)
@@ -127,6 +133,12 @@ export function useWorkspacePanels({
     setFileTreeLoadingPaths({})
     setFileTreeError('')
     setEditorLoadingPath('')
+    setFileEditorPath('')
+    setFileEditorContent('')
+    setFileEditorSavedContent('')
+    setFileEditorSize(0)
+    setFileEditorError('')
+    setFileEditorSaving(false)
     setFileDownloadLoadingPath('')
     setFileUploadLoading(false)
     setFileUploadProgress(0)
@@ -494,6 +506,91 @@ export function useWorkspacePanels({
       setFileTreeError(error.message || '打开编辑器失败')
     } finally {
       setEditorLoadingPath('')
+    }
+  }
+
+  const openFileEditor = async (path = '') => {
+    if (!selectedProject?.id || !path) {
+      return
+    }
+
+    const targetPath = String(path)
+    setEditorLoadingPath(targetPath)
+    setFileEditorError('')
+
+    try {
+      const search = buildProjectSearch(selectedProject, { path: targetPath })
+      const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(selectedProject.id)}/files/content${search}`, {
+        headers: authHeaders(),
+      })
+      const data = await response.json().catch(() => ({}))
+
+      if (response.status === 401) {
+        onUnauthorized()
+        return
+      }
+      if (!response.ok) {
+        throw new Error(data.error || '打开文件失败')
+      }
+
+      const content = typeof data.content === 'string' ? data.content : ''
+      setFileEditorPath(targetPath)
+      setFileEditorContent(content)
+      setFileEditorSavedContent(content)
+      setFileEditorSize(Number(data.size) || new Blob([content]).size)
+    } catch (error) {
+      setFileTreeError(error.message || '打开文件失败')
+    } finally {
+      setEditorLoadingPath('')
+    }
+  }
+
+  const closeFileEditor = () => {
+    setFileEditorPath('')
+    setFileEditorContent('')
+    setFileEditorSavedContent('')
+    setFileEditorSize(0)
+    setFileEditorError('')
+    setFileEditorSaving(false)
+  }
+
+  const saveFileEditor = async () => {
+    if (!selectedProject?.id || !fileEditorPath || fileEditorSaving) {
+      return
+    }
+
+    setFileEditorSaving(true)
+    setFileEditorError('')
+
+    try {
+      const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(selectedProject.id)}/files/content`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders(),
+        },
+        body: JSON.stringify({
+          content: fileEditorContent,
+          path: fileEditorPath,
+          repo_path: selectedRepoPath || null,
+        }),
+      })
+      const data = await response.json().catch(() => ({}))
+
+      if (response.status === 401) {
+        onUnauthorized()
+        return
+      }
+      if (!response.ok) {
+        throw new Error(data.error || '保存文件失败')
+      }
+
+      setFileEditorSavedContent(fileEditorContent)
+      setFileEditorSize(Number(data.size) || new Blob([fileEditorContent]).size)
+    } catch (error) {
+      setFileEditorError(error.message || '保存文件失败')
+    } finally {
+      setFileEditorSaving(false)
     }
   }
 
@@ -895,6 +992,12 @@ export function useWorkspacePanels({
     fileDeleteLoadingPath,
     fileDeleteTarget,
     fileDownloadLoadingPath,
+    fileEditorContent,
+    fileEditorError,
+    fileEditorPath,
+    fileEditorSavedContent,
+    fileEditorSaving,
+    fileEditorSize,
     fileUploadLoading,
     fileUploadProgress,
     fileTreeEntries,
@@ -920,6 +1023,9 @@ export function useWorkspacePanels({
     cancelDeleteFile,
     confirmDeleteFile,
     downloadFile,
+    closeFileEditor,
+    openFileEditor,
+    saveFileEditor,
     uploadFiles,
     openEditor,
     openWebDebug,
@@ -939,6 +1045,7 @@ export function useWorkspacePanels({
     setCodexResumeLoading,
     setCommitMessage,
     setFileTreeError,
+    setFileEditorContent,
     setEditorLoadingPath,
     setGitActionResult,
     setGitError,

@@ -16,5 +16,6 @@ FROM docker.xuanyuan.run/library/nginx:1.29-alpine AS web-runtime
 
 COPY deploy/nginx/web.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=web-build /src/web/dist /usr/share/nginx/html
+RUN chmod -R a+rX /usr/share/nginx/html
 
 EXPOSE 80

@@ -140,6 +140,44 @@ pub struct FileTreeResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileContentRequest {
+    pub project_root: String,
+    pub path: String,
+}
+
+impl FileContentRequest {
+    pub fn project_root_path(&self) -> &Path {
+        Path::new(&self.project_root)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileContentResponse {
+    pub content: String,
+    pub path: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveFileContentRequest {
+    pub project_root: String,
+    pub path: String,
+    pub content: String,
+}
+
+impl SaveFileContentRequest {
+    pub fn project_root_path(&self) -> &Path {
+        Path::new(&self.project_root)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveFileContentResponse {
+    pub path: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitStatusRequest {
     pub user: ExecutorUserPayload,
     pub project_root: String,

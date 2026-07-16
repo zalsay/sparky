@@ -7,6 +7,9 @@ FROM docker.xuanyuan.run/library/python:3.12-bookworm AS python-runtime
 FROM docker.xuanyuan.run/library/golang:1.26-bookworm AS go-runtime
 
 
+FROM docker.xuanyuan.run/library/docker:29.1-cli AS docker-cli
+
+
 FROM docker.xuanyuan.run/library/rust:1.90-bookworm AS rust-build
 
 ARG HTTP_PROXY
@@ -75,6 +78,7 @@ EXPOSE 3001
 
 FROM runtime-base AS executor-runtime
 
+ARG CODEX_VERSION=0.144.4
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG ALL_PROXY
@@ -107,6 +111,8 @@ COPY --from=python-runtime /usr/local/include /usr/local/include
 COPY --from=python-runtime /usr/local/lib /usr/local/lib
 COPY --from=python-runtime /usr/local/share /usr/local/share
 COPY --from=go-runtime /usr/local/go /usr/local/go
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins /usr/local/libexec/docker/cli-plugins
 COPY --from=legacy-code-server /usr/local/lib/code-server-4.114.1 /usr/local/lib/code-server-4.114.1
 COPY --from=rust-build /src/target/release/sparky-executor /usr/local/bin/sparky-executor
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
@@ -121,7 +127,7 @@ RUN npm config set fetch-retries 5 && \
     npm config delete https-proxy && \
     npm config set registry "https://registry.npmmirror.com" && \
     for attempt in 1 2 3; do \
-        npm install -g @openai/codex@latest chrome-devtools-mcp@latest && break; \
+        npm install -g "@openai/codex@${CODEX_VERSION}" chrome-devtools-mcp@latest && break; \
         if [ "$attempt" -eq 3 ]; then exit 1; fi; \
         sleep 5; \
     done && \

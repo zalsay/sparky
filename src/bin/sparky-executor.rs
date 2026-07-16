@@ -19,9 +19,10 @@ use sparky::git::{
     execute_git_action, load_git_status, resolve_runtime_worktree, GitRuntimeContext,
 };
 use sparky::internal_api::{
-    CreateExecutorSessionRequest, FileTreeRequest, FileTreeResponse, GitActionRequest,
-    GitActionResponse, GitStatusRequest, GitStatusResponse, OpenEditorRequest, OpenEditorResponse,
-    OpenWebRequest, OpenWebResponse, WebTargetsRequest, WebTargetsResponse,
+    CreateExecutorSessionRequest, FileContentRequest, FileContentResponse, FileTreeRequest,
+    FileTreeResponse, GitActionRequest, GitActionResponse, GitStatusRequest, GitStatusResponse,
+    OpenEditorRequest, OpenEditorResponse, OpenWebRequest, OpenWebResponse, SaveFileContentRequest,
+    SaveFileContentResponse, WebTargetsRequest, WebTargetsResponse,
 };
 use sparky::session::SessionSummary;
 use std::path::{Path, PathBuf};
@@ -31,6 +32,7 @@ use std::time::Duration;
 const PROXY_WS_MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 const PROXY_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const EDITOR_NOT_RUNNING_ERRORS: [&str; 2] = ["编辑器未启动", "编辑器已退出，请重新打开文件"];
+const MAX_EDITABLE_FILE_SIZE: u64 = 2 * 1024 * 1024;
 
 #[derive(Clone)]
 struct ExecutorAppState {
@@ -380,6 +382,79 @@ async fn file_tree(payload: web::Json<FileTreeRequest>) -> HttpResponse {
             "error": error
         })),
     }
+}
+
+#[post("/internal/files/content")]
+async fn file_content(payload: web::Json<FileContentRequest>) -> HttpResponse {
+    let request = payload.into_inner();
+    let root = match resolve_runtime_worktree(request.project_root_path()) {
+        Ok(root) => root,
+        Err(error) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({ "error": error }))
+        }
+    };
+
+    match read_editable_file(&root, request.path.as_str()) {
+        Ok(response) => HttpResponse::Ok().json(response),
+        Err(error) => HttpResponse::BadRequest().json(serde_json::json!({ "error": error })),
+    }
+}
+
+#[post("/internal/files/content/save")]
+async fn save_file_content(payload: web::Json<SaveFileContentRequest>) -> HttpResponse {
+    let request = payload.into_inner();
+    let root = match resolve_runtime_worktree(request.project_root_path()) {
+        Ok(root) => root,
+        Err(error) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({ "error": error }))
+        }
+    };
+
+    match write_editable_file(&root, request.path.as_str(), request.content.as_str()) {
+        Ok(response) => HttpResponse::Ok().json(response),
+        Err(error) => HttpResponse::BadRequest().json(serde_json::json!({ "error": error })),
+    }
+}
+
+fn read_editable_file(root: &Path, path: &str) -> Result<FileContentResponse, String> {
+    let file_path = resolve_existing_file_path(root, path)?;
+    let metadata =
+        std::fs::metadata(&file_path).map_err(|error| format!("读取文件信息失败: {}", error))?;
+    if !metadata.is_file() {
+        return Err("请选择普通文件".to_string());
+    }
+    if metadata.len() > MAX_EDITABLE_FILE_SIZE {
+        return Err("文件超过 2 MiB，无法在网页编辑器中打开".to_string());
+    }
+    let bytes = std::fs::read(&file_path).map_err(|error| format!("读取文件失败: {}", error))?;
+    let content = String::from_utf8(bytes).map_err(|_| "仅支持 UTF-8 文本文件".to_string())?;
+    Ok(FileContentResponse {
+        content,
+        path: path.to_string(),
+        size: metadata.len(),
+    })
+}
+
+fn write_editable_file(
+    root: &Path,
+    path: &str,
+    content: &str,
+) -> Result<SaveFileContentResponse, String> {
+    if content.len() as u64 > MAX_EDITABLE_FILE_SIZE {
+        return Err("文件超过 2 MiB，无法保存".to_string());
+    }
+    let file_path = resolve_existing_file_path(root, path)?;
+    let metadata =
+        std::fs::metadata(&file_path).map_err(|error| format!("读取文件信息失败: {}", error))?;
+    if !metadata.is_file() {
+        return Err("请选择普通文件".to_string());
+    }
+    std::fs::write(&file_path, content.as_bytes())
+        .map_err(|error| format!("保存文件失败: {}", error))?;
+    Ok(SaveFileContentResponse {
+        path: path.to_string(),
+        size: content.len() as u64,
+    })
 }
 
 #[get("/internal/files/download")]
@@ -1173,6 +1248,8 @@ async fn main() -> std::io::Result<()> {
             .service(open_web_target)
             .service(restart_web_target)
             .service(file_tree)
+            .service(file_content)
+            .service(save_file_content)
             .service(file_download)
             .service(file_upload)
             .service(file_delete)

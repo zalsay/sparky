@@ -15,13 +15,15 @@ x-runtime-env: &runtime-env
   DB_MAX_CONNECTIONS: "5"
   SPARKY_BWRAP_UNSHARE_USER: "false"
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-  HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:7890}
-  HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:7890}
-  ALL_PROXY: ${ALL_PROXY:-socks5://host.docker.internal:7890}
+  HTTP_PROXY: ${HTTP_PROXY:-}
+  HTTPS_PROXY: ${HTTPS_PROXY:-}
+  ALL_PROXY: ${ALL_PROXY:-}
   NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost,host.docker.internal}
 
 x-server-volumes: &server-volumes
   - ./config/projects.json:/etc/sparky/projects.json:ro
+  - ./config/claude-user-state.json:/etc/sparky/claude-user-state.json:ro
+  - ./config/claude-settings.json:/etc/sparky/claude-settings.json:ro
   - /root/.ssh/known_hosts:/etc/sparky/known_hosts.raw:ro
   - ./codex-config:/home/app/.codex
   - ${HOST_SSH_AUTH_SOCK:-/run/user/0/gcr/ssh}:/ssh-agent
@@ -29,6 +31,8 @@ x-server-volumes: &server-volumes
 
 x-executor-volumes: &executor-volumes
   - ./config/projects.json:/etc/sparky/projects.json:ro
+  - ./config/claude-user-state.json:/etc/sparky/claude-user-state.json:ro
+  - ./config/claude-settings.json:/etc/sparky/claude-settings.json:ro
   - /root/.ssh/known_hosts:/etc/sparky/known_hosts.raw:ro
   - ./codex-config:/home/app/.codex
   - ${HOST_DATA_ROOT:-/home/sp-dev/data}/go:/home/app/go
@@ -38,6 +42,7 @@ x-executor-volumes: &executor-volumes
   - ${HOST_DATA_ROOT:-/home/sp-dev/data}/uv-cache:/home/app/.cache/uv
   - ${HOST_SSH_AUTH_SOCK:-/run/user/0/gcr/ssh}:/ssh-agent
   - ${HOST_DATA_ROOT:-/home/sp-dev/data}/projects:/projects
+  - ${HOST_DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
 
 services:
   sparky-web:

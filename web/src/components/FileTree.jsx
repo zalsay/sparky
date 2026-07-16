@@ -1,6 +1,32 @@
 import { useEffect, useRef, useState } from 'react'
 import { SetiFileIcon, SetiFolderIcon, TreeChevronIcon } from '../app/seti.jsx'
 
+function copyWithTextarea(value) {
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  const copied = document.execCommand('copy')
+  textarea.remove()
+  if (!copied) throw new Error('复制失败')
+}
+
+async function copyToClipboard(value) {
+  if (!navigator.clipboard?.writeText) {
+    copyWithTextarea(value)
+    return
+  }
+
+  try {
+    await navigator.clipboard.writeText(value)
+  } catch {
+    copyWithTextarea(value)
+  }
+}
+
 function FileTreeNode({
   depth,
   fileDeleteLoadingPath,
@@ -17,6 +43,7 @@ function FileTreeNode({
 }) {
   const actionMenuRef = useRef(null)
   const [actionMenuOpen, setActionMenuOpen] = useState(false)
+  const [copyStatus, setCopyStatus] = useState('')
   const isDirectory = entry.kind === 'directory'
   const expanded = Boolean(fileTreeExpanded[entry.path])
   const loading = Boolean(fileTreeLoadingPaths[entry.path])
@@ -48,6 +75,12 @@ function FileTreeNode({
     }
   }, [actionMenuOpen])
 
+  useEffect(() => {
+    if (!copyStatus) return undefined
+    const timeout = window.setTimeout(() => setCopyStatus(''), 1600)
+    return () => window.clearTimeout(timeout)
+  }, [copyStatus])
+
   return (
     <div className="file-tree-node" key={entry.path} ref={actionMenuRef}>
       <button
@@ -75,9 +108,26 @@ function FileTreeNode({
         {!isDirectory && opening ? <span className="file-tree-status">打开中...</span> : null}
         {!isDirectory && downloading ? <span className="file-tree-status">下载中...</span> : null}
         {!isDirectory && deleting ? <span className="file-tree-status">删除中...</span> : null}
+        {!isDirectory && copyStatus ? <span className="file-tree-status">{copyStatus}</span> : null}
       </button>
       {!isDirectory && actionMenuOpen ? (
         <div className="file-tree-action-menu" role="menu" style={{ '--file-tree-depth': depth }}>
+          <button
+            type="button"
+            className="file-tree-action"
+            role="menuitem"
+            onClick={async () => {
+              setActionMenuOpen(false)
+              try {
+                await copyToClipboard(entry.path)
+                setCopyStatus('已复制')
+              } catch {
+                setCopyStatus('复制失败')
+              }
+            }}
+          >
+            复制相对路径
+          </button>
           <button
             type="button"
             className="file-tree-action"

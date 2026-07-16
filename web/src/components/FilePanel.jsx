@@ -1,11 +1,18 @@
 import { useRef } from 'react'
 import { FileTree } from './FileTree'
+import { MonacoFileDrawer } from './MonacoFileDrawer'
 
 export function FilePanel({
   editorLoadingPath,
   fileDeleteLoadingPath,
   fileDeleteTarget,
   fileDownloadLoadingPath,
+  fileEditorContent,
+  fileEditorError,
+  fileEditorPath,
+  fileEditorSavedContent,
+  fileEditorSaving,
+  fileEditorSize,
   fileUploadLoading,
   fileUploadProgress,
   fileTreeEntries,
@@ -15,13 +22,17 @@ export function FilePanel({
   fileTreeNodes,
   fileTreeRoot,
   onDownloadFile,
+  onCloseFileEditor,
   onCancelDeleteFile,
   onConfirmDeleteFile,
   onOpenEditor,
+  onOpenFileEditor,
   onRefresh,
   onRequestDeleteFile,
   onToggleFileTreeDirectory,
   onUploadFiles,
+  onSaveFileEditor,
+  onFileEditorContentChange,
   selectedProjectId,
 }) {
   const fileInputRef = useRef(null)
@@ -127,7 +138,7 @@ export function FilePanel({
               fileTreeLoadingPaths={fileTreeLoadingPaths}
               fileTreeNodes={fileTreeNodes}
               onDownloadFile={onDownloadFile}
-              onOpenFile={onOpenEditor}
+              onOpenFile={onOpenFileEditor}
               onRequestDeleteFile={onRequestDeleteFile}
               onToggleDirectory={onToggleFileTreeDirectory}
             />
@@ -160,6 +171,18 @@ export function FilePanel({
           </div>
         </div>
       ) : null}
+      <MonacoFileDrawer
+        content={fileEditorContent}
+        error={fileEditorError}
+        onChange={onFileEditorContentChange}
+        onClose={onCloseFileEditor}
+        onSave={onSaveFileEditor}
+        open={Boolean(fileEditorPath)}
+        path={fileEditorPath}
+        saving={fileEditorSaving}
+        savedContent={fileEditorSavedContent}
+        size={fileEditorSize}
+      />
     </div>
   )
 }

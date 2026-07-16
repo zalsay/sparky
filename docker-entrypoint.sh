@@ -6,6 +6,17 @@ chown -R app:app /projects /home/app/.ssh /home/app/go /home/app/.local /home/ap
 if [ -d /home/app/.codex ]; then
     chown -R app:app /home/app/.codex
 fi
+
+if [ -S /var/run/docker.sock ]; then
+    docker_gid=$(stat -c '%g' /var/run/docker.sock)
+    docker_group=$(getent group "$docker_gid" | cut -d: -f1 || true)
+    if [ -z "$docker_group" ]; then
+        docker_group=docker-host
+        groupadd -g "$docker_gid" "$docker_group"
+    fi
+    usermod -aG "$docker_group" app
+fi
+
 mkdir -p /home/app/.local/share/sparky/code-server
 chown -R app:app /home/app/.local/share /home/app/.local/share/sparky /home/app/.local/share/sparky/code-server
 
