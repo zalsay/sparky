@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "updatedAt": "2026-07-31T06:10:07.418Z",
-  "tier": "ultra",
+  "updatedAt": "2026-07-31T12:35:25.967Z",
+  "tier": "mega",
   "presetTier": "low",
-  "pressure": 0.9867266666666665,
+  "pressure": 1,
   "config": {
     "fastGatePct": 50,
     "thresholdTokens": 150000,
@@ -17,95 +17,95 @@
   "session": {
     "id": "sess_019fb5b2aef8750d",
     "state": "mega-compact: ready",
-    "persistedThisSession": false,
-    "lastCheckpointId": null,
-    "lastCompactedFrom": 0,
-    "lastCompactedTokens": 0,
-    "dedupSkips": 0,
-    "dedupAttempts": 0
+    "persistedThisSession": true,
+    "lastCheckpointId": "chkpt_005",
+    "lastCompactedFrom": 155,
+    "lastCompactedTokens": 122,
+    "dedupSkips": 302,
+    "dedupAttempts": 303
   },
   "context": {
-    "tokens": 148009,
-    "percent": 49.33633333333333,
+    "tokens": 238045,
+    "percent": 79.34833333333333,
     "contextWindow": 300000
   },
   "trigger": {
     "armed": false,
     "ready": false,
-    "currentTokens": 148009,
+    "currentTokens": 238045,
     "thresholdTokens": 150000,
     "fastGatePct": 50,
     "tierPct": 0.5,
     "effectiveThresholdPct": 50
   },
   "store": {
-    "checkpointCount": 3,
-    "totalTokenEstimate": 415,
-    "lastCheckpointId": "chkpt_003",
-    "lastSummary": "Conversation: 14 messages (0 user, 4 assistant, 10 tool). Tools: bash, edit, read.\nCurrent work: 已改为复用本机 pi 的扩展，不再对每个 PTY 执行 `pi install`。 \nKey files: src-tauri/src/lib.rs, src-tauri/src/pty.rs, ui/src/App.tsx, src-tauri/src/agent.rs, src/lib.rs.\nPending work:\n  • 655-            this.settingsManager.setProjectPackages(nextPackages);",
+    "checkpointCount": 5,
+    "totalTokenEstimate": 657,
+    "lastCheckpointId": "chkpt_005",
+    "lastSummary": "Conversation: 179 messages (4 user, 90 assistant, 84 tool). Tools: bash, edit, read.\nUser requests:\n  • [mega-compact] continue from the compacted context above.\n  • 还是没有显示页面，你在start-dev上增加日志排查\n  • 但是又把标签栏遮挡住了，继续看日志排查\nKey files: src-tauri/capabilities/default.json, ui/src/App.tsx, dist/assets/webviewWindow-DQRo7US8.js, dist/assets/index-CDDIW659.js, dist/assets/webview-CqfrrfEH.js.",
     "injectedCount": 0,
     "dedupHitRate": 0,
-    "storageDedupRate": 0.9824561403508771,
-    "tokensSaved": 384945,
-    "originalTokens": 385360,
-    "dedupAttempts": 171,
-    "dedupCollapsed": 168
+    "storageDedupRate": 0.990530303030303,
+    "tokensSaved": 699151,
+    "originalTokens": 699808,
+    "dedupAttempts": 528,
+    "dedupCollapsed": 523
   },
   "crew": {
     "activeAgents": 0,
-    "currentTurn": 12
+    "currentTurn": 3
   },
   "repo": {
-    "checkpointCount": 3,
-    "totalTokenEstimate": 415,
-    "originalTokens": 385360,
+    "checkpointCount": 5,
+    "totalTokenEstimate": 657,
+    "originalTokens": 699808,
     "sessionCount": 1,
-    "tokensSaved": 34220958,
-    "dedupAttempts": 171,
-    "dedupCollapsed": 168,
-    "storageDedupRate": 0.9824561403508771
+    "tokensSaved": 173123979,
+    "dedupAttempts": 528,
+    "dedupCollapsed": 523,
+    "storageDedupRate": 0.990530303030303
   },
   "compression": {
     "session": {
-      "tokensIn": -384945,
-      "tokensOut": 415,
-      "tokensFreed": 0,
-      "compressionPct": 0,
-      "dedupPct": 0
+      "tokensIn": 118594893,
+      "tokensOut": 657,
+      "tokensFreed": 119294044,
+      "compressionPct": 1.0058952875820715,
+      "dedupPct": 0.9966996699669967
     },
     "repo": {
-      "tokensIn": 33836013,
-      "tokensOut": 415,
-      "tokensFreed": 34220958,
-      "compressionPct": 1.0113767836653804,
-      "dedupPct": 0.9824561403508771
+      "tokensIn": 172424828,
+      "tokensOut": 657,
+      "tokensFreed": 173123979,
+      "compressionPct": 1.0040548162820264,
+      "dedupPct": 0.990530303030303
     }
   },
   "integrity": {
-    "regionsRetained": 3,
-    "compressedOriginalBytes": 139484,
+    "regionsRetained": 5,
+    "compressedOriginalBytes": 231284,
     "regionsWithoutBlob": 0,
     "bytesPermanentlyDeleted": 0,
     "duplicatesCollapsed": 0
   },
   "cacheHits": {
-    "session": 0,
-    "total": 168,
-    "sessionTokensSaved": 0,
-    "totalTokensSaved": 16800
+    "session": 302,
+    "total": 523,
+    "sessionTokensSaved": 117771824,
+    "totalTokensSaved": 52300
   },
   "compacts": {
-    "session": 0,
-    "total": 3
+    "session": 303,
+    "total": 5
   },
   "timeSaved": {
     "compact": {
-      "sessionSec": 0,
-      "totalSec": 34220.958
+      "sessionSec": 119294.044,
+      "totalSec": 173123.979
     },
     "cacheHit": {
-      "sessionSec": 0,
-      "totalSec": 16.8
+      "sessionSec": 117771.824,
+      "totalSec": 52.3
     }
   },
   "model": {
@@ -116,9 +116,9 @@
     "outputRate": 0
   },
   "diag": {
-    "ctxFastGate": 40,
-    "liveTrimFires": 0,
-    "liveTrimReplays": 0
+    "ctxFastGate": 311,
+    "liveTrimFires": 412,
+    "liveTrimReplays": 123
   },
   "retries": {
     "errorRetryCount": 0,
@@ -127,6 +127,6 @@
     "errorRetryHardStop": false,
     "sessionRetryCount": 0,
     "sessionMax": 3,
-    "poisonedCount": 0
+    "poisonedCount": 1
   }
 }

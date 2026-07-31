@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { Form, Input, InputNumber, Button, Card, Divider, Tag, Table, Empty, List, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, FileAddOutlined, CameraOutlined, DownloadOutlined, AppstoreAddOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import type { Webview as TauriWebview } from '@tauri-apps/api/webview';
+import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi';
 import { open } from '@tauri-apps/plugin-dialog';
 
 import TerminalComponent from './components/Terminal';
@@ -106,6 +108,14 @@ interface Project {
   default_provider_id?: string;
 }
 
+interface IDETab {
+  id: string;
+  title: string;
+  url: string;
+  type: 'code-server' | 'webview';
+  closable?: boolean;
+}
+
 interface HookRecord {
   id: number;
   event_name: string;
@@ -140,6 +150,123 @@ const LAST_ACTIVE_MENU_STORAGE_KEY = 'sparky-last-active-menu';
 const LAST_SELECTED_PROJECT_PATH_STORAGE_KEY = 'sparky-last-selected-project-path';
 const TERMINAL_TABS_STORAGE_KEY = 'sparky-terminal-tabs';
 const ACTIVE_TERMINAL_ID_STORAGE_KEY = 'sparky-active-terminal-id';
+const IDE_TABS_STORAGE_KEY = 'sparky-ide-tabs';
+const ACTIVE_IDE_TAB_STORAGE_KEY = 'sparky-active-ide-tab-id';
+const IDE_WEBVIEW_DATA_DIRECTORY = 'browser-data';
+const IDE_TAB_BAR_HEIGHT = 32;
+const DEFAULT_SPLITTER_SIZES: string[] = ['50%', '50%'];
+
+const normalizeSplitterSizes = (value: unknown): number[] | string[] => {
+  if (!Array.isArray(value) || value.length < 2) return [...DEFAULT_SPLITTER_SIZES];
+  const first = typeof value[0] === 'number' ? value[0] : Number.parseFloat(String(value[0]));
+  if (!Number.isFinite(first) || first <= 0) return [...DEFAULT_SPLITTER_SIZES];
+  return value as number[] | string[];
+};
+
+const readStoredSplitterSizes = (): number[] | string[] => {
+  try {
+    const saved = localStorage.getItem('sparkySplitterSizes');
+    return saved ? normalizeSplitterSizes(JSON.parse(saved)) : [...DEFAULT_SPLITTER_SIZES];
+  } catch {
+    return [...DEFAULT_SPLITTER_SIZES];
+  }
+};
+
+const readStoredIdeTabs = (): Record<string, IDETab[]> => {
+  try {
+    const raw = localStorage.getItem(IDE_TABS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed).flatMap(([projectPath, value]) => {
+        if (!Array.isArray(value)) return [];
+        const tabs = value.filter((tab): tab is Partial<IDETab> => Boolean(tab && typeof tab === 'object'))
+          .filter((tab) => typeof tab.id === 'string' && typeof tab.title === 'string' && typeof tab.url === 'string')
+          .filter((tab) => /^https?:\/\//i.test(tab.url as string))
+          .map((tab) => ({
+            id: tab.id as string,
+            title: tab.title as string,
+            url: tab.url as string,
+            type: 'webview' as const,
+            closable: tab.closable !== false,
+          }));
+        return tabs.length > 0 ? [[projectPath, tabs]] : [];
+      }),
+    );
+  } catch {
+    return {};
+  }
+};
+
+const readStoredActiveIdeTabs = (): Record<string, string> => {
+  try {
+    const raw = localStorage.getItem(ACTIVE_IDE_TAB_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, value]) => typeof value === 'string'),
+    ) as Record<string, string>;
+  } catch {
+    return {};
+  }
+};
+
+const ideWebviewRuntimeKey = (projectPath: string, tabId: string) => `${projectPath}::${tabId}`;
+
+const ideWebviewHash = (value: string) => {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+const ideWebviewLabel = (projectPath: string, tabId: string) => (
+  `sparky-ide-${ideWebviewHash(projectPath)}-${tabId.replace(/[^a-zA-Z0-9_:-]/g, '-')}`
+);
+
+const IDE_LAYOUT_DEBUG = false;
+const IDE_LAYOUT_LOG_PREFIXES = [
+  'layout-',
+  'native-geometry-',
+  'native-bounds-',
+  'native-coordinate-',
+  'native-webview-shown',
+  'native-webview-hidden',
+  'bridge-bounds-update-',
+];
+
+const logIdeDebug = (message: string, details?: Record<string, unknown>) => {
+  const isLayoutLog = IDE_LAYOUT_LOG_PREFIXES.some(prefix => message.startsWith(prefix));
+  if (!IDE_LAYOUT_DEBUG && isLayoutLog && !message.includes('failed')) return;
+
+  let line = `[IDE_DEBUG] ${message}`;
+  if (details) {
+    try {
+      line += ` ${JSON.stringify(details)}`;
+    } catch {
+      line += ' {details_unserializable}';
+    }
+  }
+  console.info(line);
+  if (isTauri()) {
+    void invoke('ide_debug_log', { message: line }).catch(error => {
+      console.warn('[IDE_DEBUG] failed to forward log to Tauri', error);
+    });
+  }
+};
+
+const ideWebviewDataStoreIdentifier = (tabId: string): number[] => (
+  Array.from({ length: 16 }, (_, index) => {
+    let hash = (2166136261 ^ index) >>> 0;
+    for (let offset = index; offset < tabId.length; offset += 16) {
+      hash ^= tabId.charCodeAt(offset);
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return (hash >>> 24) & 0xff;
+  })
+);
 
 const ModelListInput = ({ value = [], onChange }: { value?: string[], onChange?: (val: string[]) => void }) => {
   const [inputValue, setInputValue] = useState('');
@@ -204,21 +331,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     agentType?: AgentType;
   }
 
-  interface IDETab {
-    id: string;
-    title: string;
-    url: string;
-    type: 'code-server' | 'webview';
-    closable?: boolean;
-  }
-
   const [projectTerminals, setProjectTerminals] = useState<Record<string, TerminalTab[]>>({});
-  const [ideTabs, setIdeTabs] = useState<Record<string, IDETab[]>>({});
-  const [activeIdeTabId, setActiveIdeTabId] = useState<Record<string, string>>({});
+  const [ideTabs, setIdeTabs] = useState<Record<string, IDETab[]>>(readStoredIdeTabs);
+  const [activeIdeTabId, setActiveIdeTabId] = useState<Record<string, string>>(readStoredActiveIdeTabs);
   const [newTabModalOpen, setNewTabModalOpen] = useState(false);
   const [newTabUrl, setNewTabUrl] = useState('');
   const [tabLoadErrors, setTabLoadErrors] = useState<Record<string, boolean>>({});
   const [ideTabReloadKeys, setIdeTabReloadKeys] = useState<Record<string, number>>({});
+  const [capturingScreenshot, setCapturingScreenshot] = useState(false);
   const [recentProjectUrls, setRecentProjectUrls] = useState<Record<string, string[]>>({});
   const [providers, setProviders] = useState<AIProvider[]>([]);
 
@@ -279,6 +399,11 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const watchedModelIds = Form.useWatch('model_ids', providerForm);
 
   const terminalRefs = useRef<Record<string, { scrollToBottom: () => void }>>({});
+  const ideWebviewsRef = useRef<Record<string, TauriWebview>>({});
+  const ideWebviewOpeningRef = useRef<Set<string>>(new Set());
+  const ideWebviewSyncGenerationRef = useRef(0);
+  const browserViewportRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const browserLayoutFrameRef = useRef<number | null>(null);
   const inputBufferRef = useRef<Record<string, string>>({});
   const [lastCommand, setLastCommand] = useState<Record<string, string>>({});
   const [wsConnected, setWsConnected] = useState(false);
@@ -288,13 +413,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const hasRestoredSelectionRef = useRef(false);
   const hasRestoredTerminalStateRef = useRef(false);
   const sidebarCollapsed = false;
-  const [splitterSizes, setSplitterSizes] = useState<number[] | string[]>(() => {
-    try {
-      const saved = localStorage.getItem('sparkySplitterSizes');
-      if (saved) return JSON.parse(saved);
-    } catch { /* ignore */ }
-    return ['50%', '50%'];
-  });
+  const [splitterSizes, setSplitterSizes] = useState<number[] | string[]>(readStoredSplitterSizes);
   const recentUrlsForProject = selectedProject ? (recentProjectUrls[selectedProject.path] || []) : [];
 
   useEffect(() => {
@@ -359,6 +478,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [ideRestarting, setIdeRestarting] = useState(false);
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const [alwaysOnTopLoading, setAlwaysOnTopLoading] = useState(false);
+  const codeServerUrl = selectedProject
+    ? `http://localhost:${codeServerPort}/?folder=${encodeURIComponent(selectedProject.path)}`
+    : '';
 
   // IDE Plugins state
   const [idePlugins, setIdePlugins] = useState<string[]>([]);
@@ -421,6 +543,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   useEffect(() => {
     localStorage.setItem('sparky-last-agent-by-project', JSON.stringify(lastAgentByProject));
   }, [lastAgentByProject]);
+
+  useEffect(() => {
+    localStorage.setItem(IDE_TABS_STORAGE_KEY, JSON.stringify(ideTabs));
+  }, [ideTabs]);
+
+  useEffect(() => {
+    localStorage.setItem(ACTIVE_IDE_TAB_STORAGE_KEY, JSON.stringify(activeIdeTabId));
+  }, [activeIdeTabId]);
 
   // Dependency check
   const [missingDependencies, setMissingDependencies] = useState<{ code_server: boolean } | null>(null);
@@ -767,6 +897,455 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     }
   };
 
+  const removeIdeTabState = (projectPath: string, tabId: string) => {
+    setIdeTabs(prev => {
+      const currentTabs = prev[projectPath] || [];
+      const nextTabs = currentTabs.filter(tab => tab.id !== tabId);
+      if (nextTabs.length === currentTabs.length) return prev;
+
+      setActiveIdeTabId(prevActive => {
+        if (prevActive[projectPath] !== tabId) return prevActive;
+        return {
+          ...prevActive,
+          [projectPath]: nextTabs[nextTabs.length - 1]?.id || 'code-server',
+        };
+      });
+      return { ...prev, [projectPath]: nextTabs };
+    });
+
+    setTabLoadErrors(prev => {
+      if (!(tabId in prev)) return prev;
+      const next = { ...prev };
+      delete next[tabId];
+      return next;
+    });
+
+    setIdeTabReloadKeys(prev => {
+      if (!(tabId in prev)) return prev;
+      const next = { ...prev };
+      delete next[tabId];
+      return next;
+    });
+  };
+
+  const disposeIdeWebview = (runtimeKey: string) => {
+    delete ideWebviewsRef.current[runtimeKey];
+    delete browserViewportRefs.current[runtimeKey];
+  };
+
+  const destroyIdeWebview = async (projectPath: string, tabId: string) => {
+    const runtimeKey = ideWebviewRuntimeKey(projectPath, tabId);
+    const webview = ideWebviewsRef.current[runtimeKey];
+    disposeIdeWebview(runtimeKey);
+    await invoke('browser_unregister_target', { target_id: runtimeKey }).catch(() => undefined);
+    if (!webview) return;
+    try {
+      await webview.close();
+    } catch (error) {
+      console.warn(`Failed to destroy IDE webview ${runtimeKey}:`, error);
+    }
+  };
+
+  const removeIdeTab = async (projectPath: string, tabId: string) => {
+    removeIdeTabState(projectPath, tabId);
+    await destroyIdeWebview(projectPath, tabId);
+  };
+
+  useEffect(() => {
+    return () => {
+      const entries = Object.entries(ideWebviewsRef.current);
+      ideWebviewsRef.current = {};
+      browserViewportRefs.current = {};
+      void Promise.all(entries.flatMap(([runtimeKey, webview]) => [
+        invoke('browser_unregister_target', { target_id: runtimeKey }).catch(() => undefined),
+        webview.close().catch(() => undefined),
+      ]));
+    };
+  }, []);
+
+  const getBrowserViewport = (runtimeKey: string) => browserViewportRefs.current[runtimeKey];
+
+  const getIdeWebviewRect = (viewport: HTMLDivElement) => {
+    const viewportRect = viewport.getBoundingClientRect();
+    const tabsRoot = viewport.closest('.terminal-tabs-inner');
+    const tabsRootRect = tabsRoot?.getBoundingClientRect();
+    const baseRect = viewportRect.width > 1 && viewportRect.height > 1
+      ? viewportRect
+      : tabsRootRect || viewportRect;
+    const tabNav = tabsRoot?.querySelector('.ant-tabs-nav');
+    const tabNavRect = tabNav?.getBoundingClientRect();
+    const tabBarHeight = Math.max(IDE_TAB_BAR_HEIGHT, tabNavRect?.height ?? 0);
+    const tabBarTop = tabsRootRect?.top ?? baseRect.top;
+    const tabBarBottom = Math.max(
+      tabNavRect?.bottom ?? 0,
+      tabBarTop + tabBarHeight,
+    );
+    const top = Math.max(baseRect.top, tabBarBottom + IDE_TAB_BAR_HEIGHT);
+    const bottom = Math.min(baseRect.bottom, tabsRootRect?.bottom ?? baseRect.bottom);
+    return {
+      left: baseRect.left,
+      top,
+      width: baseRect.width,
+      height: Math.max(0, bottom - top),
+      debug: {
+        baseSource: baseRect === viewportRect ? 'viewport' : 'tabs-root-fallback',
+        viewport: {
+          top: viewportRect.top,
+          bottom: viewportRect.bottom,
+          left: viewportRect.left,
+          width: viewportRect.width,
+          height: viewportRect.height,
+        },
+        tabsRoot: tabsRootRect ? {
+          top: tabsRootRect.top,
+          bottom: tabsRootRect.bottom,
+          left: tabsRootRect.left,
+          width: tabsRootRect.width,
+          height: tabsRootRect.height,
+        } : null,
+        tabNav: tabNavRect ? {
+          top: tabNavRect.top,
+          bottom: tabNavRect.bottom,
+          left: tabNavRect.left,
+          width: tabNavRect.width,
+          height: tabNavRect.height,
+        } : null,
+        tabBarBottom,
+        safeTopInset: IDE_TAB_BAR_HEIGHT,
+      },
+    };
+  };
+
+  const updateIdeWebviewLayout = async (runtimeKey: string, show: boolean) => {
+    const webview = ideWebviewsRef.current[runtimeKey];
+    const viewport = getBrowserViewport(runtimeKey);
+    if (!webview || !viewport) {
+      logIdeDebug('layout-skip-missing-target-or-viewport', {
+        runtimeKey,
+        hasWebview: Boolean(webview),
+        hasViewport: Boolean(viewport),
+        show,
+      });
+      if (webview && !show) {
+        await webview.hide().catch(error => logIdeDebug('hide-missing-viewport-failed', {
+          runtimeKey,
+          error: String(error),
+        }));
+      }
+      return;
+    }
+
+    const rect = getIdeWebviewRect(viewport);
+    logIdeDebug('layout-measured', {
+      runtimeKey,
+      show,
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      debug: rect.debug,
+      viewport: {
+        x: Math.round(viewport.getBoundingClientRect().left),
+        y: Math.round(viewport.getBoundingClientRect().top),
+        width: Math.round(viewport.getBoundingClientRect().width),
+        height: Math.round(viewport.getBoundingClientRect().height),
+      },
+    });
+    if (rect.width <= 1 || rect.height <= 1) {
+      logIdeDebug('layout-skip-invalid-rect', { runtimeKey, show });
+      if (!show) await webview.hide().catch(error => logIdeDebug('hide-failed', { runtimeKey, error: String(error) }));
+      return;
+    }
+
+    try {
+      await webview.setPosition(new LogicalPosition(rect.left, rect.top));
+      await webview.setSize(new LogicalSize(rect.width, rect.height));
+      const [nativePosition, nativeSize] = await Promise.all([
+        webview.position(),
+        webview.size(),
+      ]);
+      logIdeDebug('native-geometry-readback', {
+        runtimeKey,
+        x: nativePosition.x,
+        y: nativePosition.y,
+        width: nativeSize.width,
+        height: nativeSize.height,
+      });
+      logIdeDebug('native-bounds-set', {
+        runtimeKey,
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      });
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      const currentWindow = getCurrentWindow();
+      const [innerPosition, scaleFactor] = await Promise.all([
+        currentWindow.innerPosition(),
+        currentWindow.scaleFactor(),
+      ]);
+      logIdeDebug('native-coordinate-context', {
+        runtimeKey,
+        innerX: innerPosition.x,
+        innerY: innerPosition.y,
+        scaleFactor,
+        cssX: rect.left,
+        cssY: rect.top,
+        cssWidth: rect.width,
+        cssHeight: rect.height,
+      });
+      await invoke('browser_update_target_bounds', {
+        target_id: runtimeKey,
+        x: Math.round(innerPosition.x + rect.left * scaleFactor),
+        y: Math.round(innerPosition.y + rect.top * scaleFactor),
+        width: Math.max(1, Math.round(rect.width * scaleFactor)),
+        height: Math.max(1, Math.round(rect.height * scaleFactor)),
+      }).catch(error => {
+        logIdeDebug('bridge-bounds-update-failed', { runtimeKey, error: String(error) });
+      });
+    } catch (error) {
+      logIdeDebug('native-layout-failed', { runtimeKey, error: String(error) });
+    } finally {
+      try {
+        if (show) {
+          await webview.show();
+          logIdeDebug('native-webview-shown', { runtimeKey });
+        } else {
+          await webview.hide();
+          logIdeDebug('native-webview-hidden', { runtimeKey });
+        }
+      } catch (error) {
+        logIdeDebug('native-visibility-failed', { runtimeKey, show, error: String(error) });
+      }
+    }
+  };
+
+  const waitForIdeLayout = () => new Promise<void>(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+
+  const stabilizeIdeWebviewLayout = async (runtimeKey: string, show: boolean) => {
+    logIdeDebug('layout-stabilize-start', { runtimeKey, show });
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      await waitForIdeLayout();
+      logIdeDebug('layout-stabilize-attempt', { runtimeKey, show, attempt: attempt + 1 });
+      await updateIdeWebviewLayout(runtimeKey, show);
+    }
+    logIdeDebug('layout-stabilize-end', { runtimeKey, show });
+  };
+
+  const hasBlockingOverlay = () => {
+    const selectors = [
+      '.ant-modal-wrap',
+      '.ant-dropdown:not(.ant-dropdown-hidden)',
+      '.ant-select-dropdown:not(.ant-select-dropdown-hidden)',
+      '.ant-popover:not(.ant-popover-hidden)',
+    ];
+    return selectors.some(selector => Array.from(document.querySelectorAll(selector)).some(element => {
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    }));
+  };
+
+  const openIdeWebview = async (
+    tab: IDETab,
+    projectPath: string,
+    showWindow: boolean,
+    syncGeneration?: number,
+  ) => {
+    if (!tauriAvailable) {
+      logIdeDebug('open-skip-tauri-unavailable', { tabId: tab.id });
+      return;
+    }
+
+    const runtimeKey = ideWebviewRuntimeKey(projectPath, tab.id);
+    const isStaleSync = () => (
+      syncGeneration !== undefined && syncGeneration !== ideWebviewSyncGenerationRef.current
+    );
+    if (isStaleSync()) {
+      logIdeDebug('open-skip-stale-sync', {
+        runtimeKey,
+        syncGeneration,
+        currentGeneration: ideWebviewSyncGenerationRef.current,
+      });
+      return;
+    }
+    logIdeDebug('open-start', {
+      runtimeKey,
+      tabId: tab.id,
+      type: tab.type,
+      url: tab.url,
+      showWindow,
+    });
+    const existingWebview = ideWebviewsRef.current[runtimeKey];
+    if (existingWebview) {
+      logIdeDebug('open-existing-webview', { runtimeKey, label: existingWebview.label, showWindow });
+      await stabilizeIdeWebviewLayout(runtimeKey, showWindow);
+      return;
+    }
+
+    if (ideWebviewOpeningRef.current.has(runtimeKey)) {
+      logIdeDebug('open-wait-already-opening', { runtimeKey, syncGeneration });
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        if (isStaleSync()) return;
+        const readyWebview = ideWebviewsRef.current[runtimeKey];
+        if (readyWebview) {
+          logIdeDebug('open-use-webview-after-wait', { runtimeKey, attempt: attempt + 1 });
+          await stabilizeIdeWebviewLayout(runtimeKey, showWindow);
+          return;
+        }
+        if (!ideWebviewOpeningRef.current.has(runtimeKey)) break;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      if (ideWebviewOpeningRef.current.has(runtimeKey)) {
+        logIdeDebug('open-wait-timeout', { runtimeKey, syncGeneration });
+        return;
+      }
+    }
+    ideWebviewOpeningRef.current.add(runtimeKey);
+
+    try {
+      await waitForIdeLayout();
+      const { Webview } = await import('@tauri-apps/api/webview');
+      const label = ideWebviewLabel(projectPath, tab.id);
+      logIdeDebug('open-resolved-label', { runtimeKey, label });
+      const foundWebview = await Webview.getByLabel(label);
+      logIdeDebug('open-lookup-complete', { runtimeKey, found: Boolean(foundWebview) });
+      let webview = foundWebview;
+
+      if (!webview) {
+        await invoke('create_ide_webview', {
+          label,
+          project_path: projectPath,
+          tab_id: tab.id,
+          url: tab.url,
+          data_directory: IDE_WEBVIEW_DATA_DIRECTORY,
+          data_store_identifier: ideWebviewDataStoreIdentifier(`${projectPath}:${tab.id}`),
+        });
+        logIdeDebug('open-native-webview-created-requested', { runtimeKey, label });
+        for (let attempt = 0; attempt < 40 && !webview; attempt += 1) {
+          webview = await Webview.getByLabel(label);
+          if (!webview) {
+            await new Promise(resolve => setTimeout(resolve, 25));
+          }
+        }
+        if (webview) {
+          logIdeDebug('open-native-webview-created', { runtimeKey, label });
+        }
+      }
+
+      if (!webview) {
+        throw new Error(`Native IDE webview was not created: ${label}`);
+      }
+
+      if (isStaleSync()) {
+        logIdeDebug('open-discard-stale-created-webview', {
+          runtimeKey,
+          syncGeneration,
+          currentGeneration: ideWebviewSyncGenerationRef.current,
+        });
+        await webview.close().catch(error => {
+          logIdeDebug('open-discard-close-failed', { runtimeKey, error: String(error) });
+        });
+        return;
+      }
+
+      ideWebviewsRef.current[runtimeKey] = webview;
+      logIdeDebug('open-webview-registered-in-frontend', { runtimeKey, label });
+      await invoke('browser_register_target', {
+        target_id: runtimeKey,
+        project_path: projectPath,
+        tab_id: tab.id,
+        webview_label: label,
+        title: tab.title,
+        url: tab.url,
+      });
+      logIdeDebug('open-browser-target-registered', { runtimeKey });
+      if (isStaleSync()) {
+        logIdeDebug('open-discard-stale-registered-webview', {
+          runtimeKey,
+          syncGeneration,
+          currentGeneration: ideWebviewSyncGenerationRef.current,
+        });
+        disposeIdeWebview(runtimeKey);
+        await invoke('browser_unregister_target', { target_id: runtimeKey }).catch(error => {
+          logIdeDebug('open-discard-unregister-failed', { runtimeKey, error: String(error) });
+        });
+        await webview.close().catch(error => {
+          logIdeDebug('open-discard-close-failed', { runtimeKey, error: String(error) });
+        });
+        return;
+      }
+      await stabilizeIdeWebviewLayout(runtimeKey, showWindow);
+      setTabLoadErrors(prev => ({ ...prev, [tab.id]: false }));
+      logIdeDebug('open-complete', { runtimeKey, showWindow });
+    } catch (error) {
+      logIdeDebug('open-failed', { runtimeKey, error: String(error) });
+      console.error(`Failed to open IDE webview ${runtimeKey}:`, error);
+      setTabLoadErrors(prev => ({ ...prev, [tab.id]: true }));
+      messageApi.error(`打开页面失败: ${String(error)}`);
+    } finally {
+      ideWebviewOpeningRef.current.delete(runtimeKey);
+      logIdeDebug('open-finished', { runtimeKey });
+    }
+  };
+
+  const focusIdeWebview = async (tabId: string) => {
+    if (!selectedProject) return;
+    const tab = (ideTabs[selectedProject.path] || []).find(item => item.id === tabId);
+    if (!tab) return;
+    setActiveIdeTabId(prev => ({ ...prev, [selectedProject.path]: tabId }));
+    const runtimeKey = ideWebviewRuntimeKey(selectedProject.path, tabId);
+    await openIdeWebview(tab, selectedProject.path, true);
+    await ideWebviewsRef.current[runtimeKey]?.setFocus().catch(() => undefined);
+  };
+
+  const handleCaptureAndSendScreenshot = async () => {
+    if (!tauriAvailable || !selectedProject || capturingScreenshot) return;
+
+    const terminalId = activeTerminalId[selectedProject.path];
+    if (!terminalId || terminalId === 'detail') {
+      messageApi.warning('请先激活一个终端');
+      return;
+    }
+
+    setCapturingScreenshot(true);
+    try {
+      const activeTabId = activeIdeTabId[selectedProject.path] || 'code-server';
+      const activeTab = (ideTabs[selectedProject.path] || []).find(tab => tab.id === activeTabId);
+      if (activeTab) {
+        await focusIdeWebview(activeTab.id);
+      } else {
+        const codeServerTab: IDETab = {
+          id: 'code-server',
+          title: 'Code Server',
+          url: codeServerUrl,
+          type: 'code-server',
+          closable: false,
+        };
+        await openIdeWebview(codeServerTab, selectedProject.path, true);
+      }
+      await new Promise(resolve => setTimeout(resolve, 150));
+
+      const screenshotPath = await invoke<string>('browser_capture_screenshot', {
+        target_id: ideWebviewRuntimeKey(selectedProject.path, activeTabId),
+      });
+      await invoke('pty_write', {
+        terminal_id: terminalId,
+        data: `请查看截图：${screenshotPath}`,
+      });
+      messageApi.success('截图路径已发送到终端输入框');
+    } catch (error) {
+      if (String(error) !== 'SCREENSHOT_CANCELLED') {
+        console.error('Failed to capture and send screenshot:', error);
+        messageApi.error(`截图失败: ${String(error)}`);
+      }
+    } finally {
+      setCapturingScreenshot(false);
+    }
+  };
+
   const fetchRecentProjectUrls = async (projectPath: string) => {
     try {
       const urls = await invoke<string[]>('get_recent_project_urls', { project_path: projectPath });
@@ -815,12 +1394,17 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     }
     const normalizedUrl = parsedUrl.toString();
     const newTab: IDETab = {
-      id: `webview-${Date.now()}`,
+      id: `webview-${crypto.randomUUID()}`,
       title: parsedUrl.hostname || 'New Tab',
       url: normalizedUrl,
       type: 'webview',
       closable: true
     };
+    logIdeDebug('open-tab-created', {
+      projectPath: selectedProject.path,
+      tabId: newTab.id,
+      url: normalizedUrl,
+    });
     setIdeTabs(prev => ({
       ...prev,
       [selectedProject.path]: [...(prev[selectedProject.path] || []), newTab]
@@ -832,6 +1416,235 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     pushRecentProjectUrl(selectedProject.path, normalizedUrl);
     recordRecentProjectUrl(selectedProject.path, normalizedUrl);
   };
+
+  useEffect(() => {
+    if (!tauriAvailable) return;
+    const unlistenPromise = listen<{ projectPath: string; sourceTabId: string; url: string }>('ide-new-window', (event) => {
+      const { projectPath, url, sourceTabId } = event.payload;
+      logIdeDebug('open-event-received', {
+        projectPath,
+        sourceTabId,
+        url,
+        selectedProjectPath: selectedProject?.path,
+      });
+      if (!selectedProject || projectPath !== selectedProject.path || !/^https?:\/\//i.test(url)) {
+        logIdeDebug('open-event-ignored', {
+          projectPath,
+          sourceTabId,
+          url,
+          selectedProjectPath: selectedProject?.path,
+        });
+        return;
+      }
+      logIdeDebug('new-window-opened-as-ide-tab', {
+        projectPath,
+        sourceTabId,
+        url,
+      });
+      createIdeTabFromUrl(url);
+    });
+    return () => {
+      unlistenPromise.then(unlisten => unlisten());
+    };
+  }, [tauriAvailable, selectedProject?.path]);
+
+  useEffect(() => {
+    if (!tauriAvailable) return;
+
+    const syncIdeWebviews = async () => {
+      const syncGeneration = ++ideWebviewSyncGenerationRef.current;
+      logIdeDebug('sync-start', {
+        syncGeneration,
+        activeMenu,
+        projectPath: selectedProject?.path,
+        activeTabId: selectedProject ? (activeIdeTabId[selectedProject.path] || 'code-server') : undefined,
+        codeServerConnected,
+      });
+      const currentProjectPrefix = activeMenu === 'project-detail' && selectedProject
+        ? `${selectedProject.path}::`
+        : null;
+      const staleEntries = Object.entries(ideWebviewsRef.current).filter(([runtimeKey]) => (
+        !currentProjectPrefix || !runtimeKey.startsWith(currentProjectPrefix)
+      ));
+      if (staleEntries.length > 0) {
+        logIdeDebug('sync-closing-stale-project-webviews', {
+          syncGeneration,
+          count: staleEntries.length,
+          runtimeKeys: staleEntries.map(([runtimeKey]) => runtimeKey),
+        });
+        await Promise.all(staleEntries.map(async ([runtimeKey, webview]) => {
+          disposeIdeWebview(runtimeKey);
+          await invoke('browser_unregister_target', { target_id: runtimeKey }).catch(error => {
+            logIdeDebug('sync-unregister-stale-failed', { syncGeneration, runtimeKey, error: String(error) });
+          });
+          await webview.close().catch(error => {
+            logIdeDebug('sync-close-stale-failed', { syncGeneration, runtimeKey, error: String(error) });
+          });
+        }));
+      }
+
+      const currentWebviews = Object.values(ideWebviewsRef.current);
+      logIdeDebug('sync-hiding-existing-webviews', { syncGeneration, count: currentWebviews.length });
+      await Promise.all(
+        currentWebviews.map(webview => webview.hide().catch(error => {
+          logIdeDebug('sync-hide-failed', { syncGeneration, label: webview.label, error: String(error) });
+        })),
+      );
+
+      if (activeMenu !== 'project-detail' || !selectedProject || !codeServerUrl) {
+        logIdeDebug('sync-skip-context', {
+          syncGeneration,
+          activeMenu,
+          hasProject: Boolean(selectedProject),
+          hasCodeServerUrl: Boolean(codeServerUrl),
+        });
+        return;
+      }
+      const projectPath = selectedProject.path;
+      const tabs: IDETab[] = [
+        {
+          id: 'code-server',
+          title: 'Code Server',
+          url: codeServerUrl,
+          type: 'code-server',
+          closable: false,
+        },
+        ...(ideTabs[projectPath] || []),
+      ];
+      const activeTabId = activeIdeTabId[projectPath] || 'code-server';
+      const tabsToOpen = tabs.filter(tab => tab.id !== 'code-server' || codeServerConnected === true);
+      logIdeDebug('sync-plan', {
+        syncGeneration,
+        projectPath,
+        activeTabId,
+        tabs: tabs.map(tab => ({ id: tab.id, type: tab.type })),
+        tabsToOpen: tabsToOpen.map(tab => tab.id),
+      });
+      if (tabsToOpen.length === 0) {
+        logIdeDebug('sync-skip-no-tabs', { syncGeneration });
+        return;
+      }
+      await Promise.all(
+        tabsToOpen.map(tab => openIdeWebview(tab, projectPath, false, syncGeneration)),
+      );
+      logIdeDebug('sync-open-pass-complete', {
+        syncGeneration,
+        activeRuntimeKey: ideWebviewRuntimeKey(projectPath, activeTabId),
+        knownRuntimeKeys: Object.keys(ideWebviewsRef.current),
+      });
+      if (syncGeneration !== ideWebviewSyncGenerationRef.current) {
+        logIdeDebug('sync-skip-stale-generation', { syncGeneration, currentGeneration: ideWebviewSyncGenerationRef.current });
+        return;
+      }
+      if (activeTabId === 'code-server' && codeServerConnected !== true) {
+        logIdeDebug('sync-skip-code-server-not-connected', { syncGeneration });
+        return;
+      }
+      const activeRuntimeKey = ideWebviewRuntimeKey(projectPath, activeTabId);
+      for (let attempt = 0; attempt < 20 && !ideWebviewsRef.current[activeRuntimeKey]; attempt += 1) {
+        logIdeDebug('sync-wait-active-webview', { syncGeneration, activeRuntimeKey, attempt: attempt + 1 });
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      if (syncGeneration !== ideWebviewSyncGenerationRef.current) {
+        logIdeDebug('sync-skip-stale-after-wait', { syncGeneration, currentGeneration: ideWebviewSyncGenerationRef.current });
+        return;
+      }
+      if (!ideWebviewsRef.current[activeRuntimeKey]) {
+        logIdeDebug('sync-active-webview-missing', { syncGeneration, activeRuntimeKey });
+      }
+      await stabilizeIdeWebviewLayout(activeRuntimeKey, true);
+      const terminalId = activeTerminalId[projectPath];
+      if (terminalId && terminalId !== 'detail') {
+        await invoke('browser_bind_target', {
+          terminal_id: terminalId,
+          target_id: activeRuntimeKey,
+        }).catch(error => {
+          logIdeDebug('sync-bind-target-failed', { syncGeneration, activeRuntimeKey, terminalId, error: String(error) });
+        });
+      }
+      logIdeDebug('sync-complete', { syncGeneration, activeRuntimeKey });
+    };
+
+    void syncIdeWebviews();
+  }, [activeMenu, activeIdeTabId, activeTerminalId, ideTabs, selectedProject, tauriAvailable, codeServerUrl, codeServerConnected]);
+
+  useEffect(() => {
+    if (!tauriAvailable) return;
+    const scheduleLayout = () => {
+      if (browserLayoutFrameRef.current !== null) return;
+      browserLayoutFrameRef.current = requestAnimationFrame(() => {
+        browserLayoutFrameRef.current = null;
+        const activeProjectPath = selectedProject?.path;
+        const activeTabId = activeProjectPath ? (activeIdeTabId[activeProjectPath] || 'code-server') : null;
+        if (!activeProjectPath || !activeTabId) return;
+        void updateIdeWebviewLayout(
+          ideWebviewRuntimeKey(activeProjectPath, activeTabId),
+          activeMenu === 'project-detail',
+        );
+      });
+    };
+    const resizeObserver = new ResizeObserver(scheduleLayout);
+    const observedNodes = new Set<Element>();
+    Object.values(browserViewportRefs.current).forEach(node => {
+      if (!node) return;
+      observedNodes.add(node);
+      const tabsRoot = node.closest('.terminal-tabs-inner');
+      if (tabsRoot) {
+        observedNodes.add(tabsRoot);
+        const tabNav = tabsRoot.querySelector('.ant-tabs-nav');
+        if (tabNav) observedNodes.add(tabNav);
+      }
+    });
+    observedNodes.forEach(node => resizeObserver.observe(node));
+    window.addEventListener('resize', scheduleLayout);
+    scheduleLayout();
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', scheduleLayout);
+      if (browserLayoutFrameRef.current !== null) {
+        cancelAnimationFrame(browserLayoutFrameRef.current);
+        browserLayoutFrameRef.current = null;
+      }
+    };
+  }, [activeMenu, activeIdeTabId, activeTerminalId, ideTabs, selectedProject, tauriAvailable, codeServerUrl, codeServerConnected]);
+
+  useEffect(() => {
+    if (!tauriAvailable || !selectedProject) return;
+    const terminalId = activeTerminalId[selectedProject.path];
+    const activeTabId = activeIdeTabId[selectedProject.path] || 'code-server';
+    if (!terminalId || terminalId === 'detail') return;
+    void invoke('browser_bind_target', {
+      terminal_id: terminalId,
+      target_id: ideWebviewRuntimeKey(selectedProject.path, activeTabId),
+    }).catch(() => undefined);
+  }, [activeIdeTabId, activeTerminalId, selectedProject, tauriAvailable, codeServerConnected, ideTabs]);
+
+  useEffect(() => {
+    if (!tauriAvailable) return;
+    let scheduled = false;
+    const syncOverlayVisibility = () => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        if (!selectedProject) return;
+        const activeTabId = activeIdeTabId[selectedProject.path] || 'code-server';
+        void updateIdeWebviewLayout(
+          ideWebviewRuntimeKey(selectedProject.path, activeTabId),
+          activeMenu === 'project-detail' && !hasBlockingOverlay(),
+        );
+      });
+    };
+    const observer = new MutationObserver(syncOverlayVisibility);
+    observer.observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'aria-hidden'],
+    });
+    syncOverlayVisibility();
+    return () => observer.disconnect();
+  }, [activeIdeTabId, activeMenu, selectedProject, tauriAvailable, newTabModalOpen, testModalOpen, providerModalOpen, createTerminalModalOpen]);
 
   const toggleAlwaysOnTop = async () => {
     if (!tauriAvailable) return;
@@ -1162,6 +1975,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
         for (const t of pTerminals) {
           await invoke('pty_kill', { terminal_id: t.id });
         }
+        const browserTabIds = ['code-server', ...(ideTabs[selectedProject.path] || []).map(tab => tab.id)];
+        await Promise.all(browserTabIds.map(tabId => destroyIdeWebview(selectedProject.path, tabId)));
       }
       messageApi.success(`项目 ${selectedProject.name} 已关闭`);
       // Update UI optimistically
@@ -1702,9 +2517,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const activeProjectTerminal = selectedProject
     ? (projectTerminals[selectedProject.path] || []).find(term => term.id === activeTerminalId[selectedProject.path])
     : undefined;
-  const codeServerUrl = selectedProject
-    ? `http://localhost:${codeServerPort}/?folder=${encodeURIComponent(selectedProject.path)}`
-    : '';
   const activeAgentType = normalizeAgentType(activeProjectTerminal?.agentType);
   const isClaudeAgent = activeAgentType === 'claude';
 
@@ -1778,9 +2590,11 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                     <div className={`ide-status-capsule ${codeServerConnected ? 'connected' : 'loading'}`}>
                       <img src={codeIcon} alt="IDE" className="ide-capsule-icon" style={{ opacity: codeServerConnected ? 1 : 0.5 }} />
                       <span className="ide-capsule-label">
-                        {codeServerConnected ? "IDE 已就绪" : "IDE 启动中"}
+                        {codeServerConnected === false ? "IDE 不可用" : codeServerConnected ? "IDE 已就绪" : "IDE 启动中"}
                       </span>
-                      {!codeServerConnected ? (
+                      {codeServerConnected === false ? (
+                        <WarningOutlined style={{ fontSize: 11, color: '#faad14' }} />
+                      ) : !codeServerConnected ? (
                         <LoadingOutlined style={{ fontSize: 11, color: 'var(--text-tertiary)' }} />
                       ) : (
                         <span className="ide-capsule-dot" />
@@ -2308,62 +3122,30 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                   <Splitter
                     style={{ height: '100%', width: '100%' }}
                     onResize={(sizes) => {
-                      setSplitterSizes(sizes);
-                      localStorage.setItem('sparkySplitterSizes', JSON.stringify(sizes));
+                      const nextSizes = normalizeSplitterSizes(sizes);
+                      setSplitterSizes(nextSizes);
+                      localStorage.setItem('sparkySplitterSizes', JSON.stringify(nextSizes));
                     }}
                   >
                     <Splitter.Panel size={splitterSizes[0]} collapsible min="30%" max="80%">
                       <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)' }}>
                         {/* IDE 标签页 */}
-                        {ideRestarting ? (
-                          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', padding: 24, textAlign: 'center', gap: 16 }}>
-                            <LoadingOutlined style={{ fontSize: 48, color: 'var(--text-secondary)' }} spin />
-                            <div>
-                              <h3 style={{ color: 'var(--text-primary)', margin: 0, marginBottom: 8 }}>IDE 重启中</h3>
-                              <p style={{ margin: 0 }}>正在重新连接 IDE 服务</p>
-                            </div>
-                          </div>
-                        ) : codeServerStarting || codeServerConnected === null ? (
-                          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', padding: 24, textAlign: 'center', gap: 16 }}>
-                            <LoadingOutlined style={{ fontSize: 48, color: 'var(--text-secondary)' }} spin />
-                            <div>
-                              <h3 style={{ color: 'var(--text-primary)', margin: 0, marginBottom: 8 }}>正在启动 Code Server...</h3>
-                              <p style={{ margin: 0 }}>正在连接 IDE 服务</p>
-                            </div>
-                          </div>
-                        ) : codeServerConnected === false ? (
-                          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', padding: 24, textAlign: 'center', gap: 16 }}>
-                            <WarningOutlined style={{ fontSize: 48, color: '#faad14' }} />
-                            <div>
-                              <h3 style={{ color: 'var(--text-primary)', margin: 0, marginBottom: 8 }}>IDE 连接失败</h3>
-                              <p style={{ margin: 0 }}>无法连接到 IDE 服务</p>
-                            </div>
-                            <div style={{ display: 'flex', gap: 12 }}>
-                              <Button
-                                type="primary"
-                                icon={<ReloadOutlined />}
-                                onClick={async () => {
-                                  const connected = await invoke<boolean>('check_code_server_connection');
-                                  setCodeServerConnected(connected);
-                                }}
-                              >
-                                重试连接
-                              </Button>
-                              <Button
-                                icon={<MenuOutlined />}
-                                onClick={() => {
-                                  setSplitterSizes(['0%', '100%']);
-                                  localStorage.setItem('sparkySplitterSizes', JSON.stringify(['0%', '100%']));
-                                }}
-                              >
-                                收起 IDE
-                              </Button>
-                            </div>
-                          </div>
-                        ) : (
-                          <Tabs
+                        <Tabs
                             type="editable-card"
                             size="small"
+                            addIcon={<Tooltip title="新建标签页"><FileAddOutlined /></Tooltip>}
+                            tabBarExtraContent={(
+                              <Tooltip title="截图并发送到终端">
+                                <Button
+                                  type="text"
+                                  size="small"
+                                  loading={capturingScreenshot}
+                                  disabled={!tauriAvailable || !activeTerminalId[selectedProject.path] || activeTerminalId[selectedProject.path] === 'detail'}
+                                  icon={<CameraOutlined />}
+                                  onClick={() => void handleCaptureAndSendScreenshot()}
+                                />
+                              </Tooltip>
+                            )}
                             activeKey={activeIdeTabId[selectedProject.path] || 'code-server'}
                             onChange={(key) => setActiveIdeTabId(prev => ({ ...prev, [selectedProject.path]: key }))}
                             onEdit={(targetKey, action) => {
@@ -2371,27 +3153,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 setNewTabUrl('');
                                 setNewTabModalOpen(true);
                               } else if (action === 'remove' && typeof targetKey === 'string' && targetKey !== 'code-server') {
-                                setIdeTabs(prev => {
-                                  const currentTabs = prev[selectedProject.path] || [];
-                                  const nextTabs = currentTabs.filter(tab => tab.id !== targetKey);
-                                  setActiveIdeTabId(prevActive => {
-                                    if (prevActive[selectedProject.path] !== targetKey) return prevActive;
-                                    const nextActive = nextTabs[nextTabs.length - 1]?.id || 'code-server';
-                                    return { ...prevActive, [selectedProject.path]: nextActive };
-                                  });
-                                  return { ...prev, [selectedProject.path]: nextTabs };
-                                });
-                                setTabLoadErrors(prev => {
-                                  const next = { ...prev };
-                                  delete next[targetKey];
-                                  return next;
-                                });
-                                setIdeTabReloadKeys(prev => {
-                                  if (!(targetKey in prev)) return prev;
-                                  const next = { ...prev };
-                                  delete next[targetKey];
-                                  return next;
-                                });
+                                void removeIdeTab(selectedProject.path, targetKey);
                               }
                             }}
                             style={{ flex: 1, display: 'flex', flexDirection: 'column', marginTop: 0 }}
@@ -2407,25 +3169,52 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 ),
                                 closable: false,
                                 children: (
-                                  <div style={{ flex: 1, display: 'flex', minHeight: 0, position: 'relative' }}>
-                                    <iframe
-                                      key={`code-server-${codeServerPort}-${selectedProject.path}`}
-                                      src={codeServerUrl}
-                                      title="Code Server"
-                                      style={{
-                                        flex: 1,
-                                        width: '100%',
-                                        height: '100%',
-                                        border: 'none',
-                                        display: 'block',
-                                        background: 'var(--bg-primary)'
-                                      }}
-                                      allow="clipboard-read *; clipboard-write *; display-capture *"
-                                      onLoad={() => setTabLoadErrors(prev => ({ ...prev, 'code-server': false }))}
-                                      onError={() => setTabLoadErrors(prev => ({ ...prev, 'code-server': true }))}
-                                    />
-                                    {tabLoadErrors['code-server'] && (
-                                      <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.45)', color: '#fff', padding: 16, textAlign: 'center' }}>
+                                  <div
+                                    className="ide-browser-viewport"
+                                    ref={(node) => {
+                                      browserViewportRefs.current[ideWebviewRuntimeKey(selectedProject.path, 'code-server')] = node;
+                                    }}
+                                  >
+                                    {(ideRestarting || codeServerStarting || codeServerConnected === null) && (
+                                      <div className="ide-browser-error">
+                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+                                          <LoadingOutlined style={{ fontSize: 32 }} spin />
+                                          <span>{ideRestarting ? 'IDE 重启中...' : '正在启动 Code Server...'}</span>
+                                        </div>
+                                      </div>
+                                    )}
+                                    {codeServerConnected === false && !ideRestarting && (
+                                      <div className="ide-browser-error">
+                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+                                          <WarningOutlined style={{ fontSize: 40, color: '#faad14' }} />
+                                          <div>IDE 连接失败，自定义标签页仍可继续使用。</div>
+                                          <Button
+                                            type="primary"
+                                            size="small"
+                                            icon={<ReloadOutlined />}
+                                            onClick={async () => {
+                                              const connected = await invoke<boolean>('check_code_server_connection');
+                                              setCodeServerConnected(connected);
+                                            }}
+                                          >
+                                            重试连接
+                                          </Button>
+                                        </div>
+                                      </div>
+                                    )}
+                                    {!tauriAvailable && codeServerConnected !== false && !ideRestarting && !codeServerStarting && (
+                                      <iframe
+                                        key={`code-server-${codeServerPort}-${selectedProject.path}`}
+                                        src={codeServerUrl}
+                                        title="Code Server"
+                                        style={{ width: '100%', height: '100%', border: 'none', display: 'block', background: 'var(--bg-primary)' }}
+                                        allow="clipboard-read *; clipboard-write *; display-capture *"
+                                        onLoad={() => setTabLoadErrors(prev => ({ ...prev, 'code-server': false }))}
+                                        onError={() => setTabLoadErrors(prev => ({ ...prev, 'code-server': true }))}
+                                      />
+                                    )}
+                                    {tabLoadErrors['code-server'] && codeServerConnected !== false && (
+                                      <div className="ide-browser-error">
                                         Code Server 页面加载失败，请检查 IDE 服务状态。
                                       </div>
                                     )}
@@ -2443,11 +3232,20 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                       onMouseDown={(event) => event.stopPropagation()}
                                       onClick={(event) => {
                                         event.stopPropagation();
-                                        setIdeTabReloadKeys(prev => ({
-                                          ...prev,
-                                          [tab.id]: (prev[tab.id] || 0) + 1
-                                        }));
                                         setTabLoadErrors(prev => ({ ...prev, [tab.id]: false }));
+                                        if (tauriAvailable) {
+                                          void invoke('browser_reload_target', {
+                                            target_id: ideWebviewRuntimeKey(selectedProject.path, tab.id),
+                                          }).catch(error => {
+                                            console.warn('Failed to reload browser target:', error);
+                                            setTabLoadErrors(prev => ({ ...prev, [tab.id]: true }));
+                                          });
+                                        } else {
+                                          setIdeTabReloadKeys(prev => ({
+                                            ...prev,
+                                            [tab.id]: (prev[tab.id] || 0) + 1
+                                          }));
+                                        }
                                       }}
                                     />
                                   </Tooltip>
@@ -2455,30 +3253,25 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                               ),
                               closable: tab.closable !== false,
                               children: (
-                                <div style={{ flex: 1, display: 'flex', minHeight: 0, position: 'relative' }}>
-                                  <iframe
-                                    key={`${tab.id}-${ideTabReloadKeys[tab.id] || 0}`}
-                                    src={tab.url}
-                                    title={tab.title}
-                                    style={{
-                                      flex: 1,
-                                      width: '100%',
-                                      height: '100%',
-                                      border: 'none',
-                                      borderRight: '1px solid var(--border-color)',
-                                      display: 'block',
-                                      background: 'var(--bg-primary)'
-                                    }}
-                                    allow="clipboard-read *; clipboard-write *; display-capture *"
-                                    onLoad={() => {
-                                      setTabLoadErrors(prev => ({ ...prev, [tab.id]: false }));
-                                    }}
-                                    onError={() => {
-                                      setTabLoadErrors(prev => ({ ...prev, [tab.id]: true }));
-                                    }}
-                                  />
+                                <div
+                                  className="ide-browser-viewport"
+                                  ref={(node) => {
+                                    browserViewportRefs.current[ideWebviewRuntimeKey(selectedProject.path, tab.id)] = node;
+                                  }}
+                                >
+                                  {!tauriAvailable && (
+                                    <iframe
+                                      key={`${tab.id}-${ideTabReloadKeys[tab.id] || 0}`}
+                                      src={tab.url}
+                                      title={tab.title}
+                                      style={{ width: '100%', height: '100%', border: 'none', display: 'block', background: 'var(--bg-primary)' }}
+                                      allow="clipboard-read *; clipboard-write *; display-capture *"
+                                      onLoad={() => setTabLoadErrors(prev => ({ ...prev, [tab.id]: false }))}
+                                      onError={() => setTabLoadErrors(prev => ({ ...prev, [tab.id]: true }))}
+                                    />
+                                  )}
                                   {tabLoadErrors[tab.id] && (
-                                    <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.45)', color: '#fff', padding: 16, textAlign: 'center' }}>
+                                    <div className="ide-browser-error">
                                       页面加载失败或被禁止嵌入，请尝试其他 URL。
                                     </div>
                                   )}
@@ -2486,7 +3279,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                               )
                             }))]}
                           />
-                        )}
                       </div>
                     </Splitter.Panel >
                     <Splitter.Panel size={splitterSizes[1]} collapsible min="20%" max="80%">
@@ -2713,7 +3505,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                     <Card size="small" className="mcp-status-card" variant="borderless">
                                       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                          <span style={{ fontWeight: 500 }}>Chrome DevTools MCP 状态</span>
+                                          <span style={{ fontWeight: 500 }}>Sparky Browser MCP 状态</span>
                                           <Button
                                             size="small"
                                             icon={<ReloadOutlined />}
@@ -2722,7 +3514,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                               if (!tauriAvailable) return;
                                               setMcpLoading(true);
                                               try {
-                                                const status = await invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status');
+                                                const status = await invoke<{ installed: boolean; running: boolean; path: string }>('get_browser_mcp_status');
                                                 setMcpStatus(status);
                                               } catch (err) {
                                                 messageApi.error(`检查失败: ${err}`);
@@ -2757,14 +3549,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         if (!tauriAvailable || !selectedProject) return;
                                         setMcpStarting(true);
                                         try {
-                                          // 1. Check & start MCP if not running
+                                          // 1. Tauri starts the embedded browser MCP server during app setup.
                                           try {
-                                            const status = await invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status');
+                                            const status = await invoke<{ installed: boolean; running: boolean; path: string }>('get_browser_mcp_status');
                                             setMcpStatus(status);
-                                            if (!status.installed) {
-                                              messageApi.warning('chrome-devtools-mcp 未安装，但仍可进入测试会话');
-                                            }
-                                            // 运行状态检查已移除，不再尝试启动或报错
                                           } catch (err) {
                                             console.warn("MCP check failed:", err);
                                           }
@@ -2859,13 +3647,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                     >
                                       开启 MCP 测试
                                     </Button>
-                                    {!mcpStatus?.installed && (
-                                      <div style={{ padding: '12px 16px', background: 'var(--bg-secondary, #f5f5f5)', borderRadius: 8, fontSize: 13 }}>
-                                        <strong>安装说明：</strong>
-                                        <br />
-                                        请运行以下命令安装 chrome-devtools-mcp：
-                                        <pre style={{ margin: '8px 0 0', padding: '8px 12px', background: 'var(--bg-tertiary, #e8e8e8)', borderRadius: 4, fontSize: 12 }}>
-                                          npm install -g chrome-devtools-mcp</pre>
+                                    {mcpStatus?.running && (
+                                      <div style={{ padding: '10px 12px', background: 'var(--bg-secondary, #f5f5f5)', borderRadius: 8, fontSize: 12, color: 'var(--text-secondary)' }}>
+                                        Endpoint: <code>{mcpStatus.path}</code>
                                       </div>
                                     )}
                                   </div>
@@ -3070,6 +3854,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                             <Tabs
                               type="editable-card"
                               size="small"
+                              addIcon={<Tooltip title="新建终端"><PlusOutlined /></Tooltip>}
                               tabBarExtraContent={
                                 <Space size="small" style={{ marginRight: 8, display: 'flex', alignItems: 'center' }}>
                                   <Tooltip title={fullAuth[selectedProject.path] ? `${agentLabel(activeAgentType)} 完全授权模式` : '安全模式 (进行权限管控)'}>
@@ -3106,7 +3891,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                       onClick={() => {
                                         setTestModalOpen(true);
                                         if (tauriAvailable) {
-                                          invoke<{ installed: boolean; running: boolean; path: string }>('check_mcp_status').then(setMcpStatus).catch(() => { });
+                                          invoke<{ installed: boolean; running: boolean; path: string }>('get_browser_mcp_status').then(setMcpStatus).catch(() => { });
                                         }
                                       }} icon={<ExperimentOutlined />} />
                                   </Tooltip>

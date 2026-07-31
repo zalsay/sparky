@@ -24,5 +24,15 @@ fn main() {
         }
     }
 
-    tauri_build::build()
+    tauri_build::try_build(
+        tauri_build::Attributes::new().plugin(
+            "browser-bridge",
+            tauri_build::InlinedPlugin::new().commands(&[
+                "browser_bridge_response",
+                "browser_debug_log",
+                "browser_link_open",
+            ]),
+        ),
+    )
+    .expect("failed to build Tauri application");
 }

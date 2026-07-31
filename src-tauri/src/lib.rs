@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::collections::HashMap;
 use std::path::PathBuf;
+#[cfg(target_os = "macos")]
+use std::process::Command;
 
 fn get_code_server_path() -> PathBuf {
     dirs::home_dir()
@@ -17,14 +19,16 @@ use tokio::sync::{mpsc, Mutex};
 use rusqlite::{params, Connection, OptionalExtension};
 use base64::Engine as _;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 mod websocket;
 use websocket::FeishuWsClient;
 
 mod feishu_client;
 
 mod agent;
+mod browser_bridge;
 mod pty;
+use crate::browser_bridge::BrowserMcpState;
 use crate::pty::{PtyManager, pty_spawn, pty_write, pty_kill, pty_resize, pty_exists, get_terminal_active_process, get_terminal_agent_command, get_terminal_session_id, get_agent_session_history, prepare_agent_session};
 
 mod web_agent;
@@ -1170,6 +1174,48 @@ fn get_recent_project_urls(project_path: String) -> Result<Vec<String>, String> 
 }
 
 #[tauri::command(rename_all = "snake_case")]
+async fn capture_page_screenshot(app: tauri::AppHandle) -> Result<String, String> {
+    let screenshot_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Resolve screenshot directory failed: {}", error))?
+        .join("screenshots");
+    fs::create_dir_all(&screenshot_dir)
+        .map_err(|error| format!("Create screenshot directory failed: {}", error))?;
+
+    let screenshot_path = screenshot_dir.join(format!(
+        "page-{}.png",
+        uuid::Uuid::new_v4()
+    ));
+
+    tokio::task::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        {
+            let status = Command::new("/usr/sbin/screencapture")
+                .args(["-x", "-i", "-t", "png"])
+                .arg(&screenshot_path)
+                .status()
+                .map_err(|error| format!("Start macOS screenshot failed: {}", error))?;
+
+            if !status.success() || !screenshot_path.is_file() {
+                let _ = fs::remove_file(&screenshot_path);
+                return Err("SCREENSHOT_CANCELLED".to_string());
+            }
+
+            return Ok(screenshot_path.to_string_lossy().to_string());
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = screenshot_path;
+            Err("当前平台暂不支持页面截图".to_string())
+        }
+    })
+    .await
+    .map_err(|error| format!("Screenshot task failed: {}", error))?
+}
+
+#[tauri::command(rename_all = "snake_case")]
 fn get_terminal_history(project_path: String) -> Result<Vec<String>, String> {
     let conn = open_db()?;
     let mut stmt = conn
@@ -1781,13 +1827,6 @@ fn open_folder(path: String) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct McpStatus {
-    installed: bool,
-    running: bool,
-    path: String,
-}
-
 #[tauri::command(rename_all = "snake_case")]
 fn run_curl_command(command: String, cwd: String) -> Result<String, String> {
     let output = std::process::Command::new("sh")
@@ -1806,74 +1845,6 @@ fn run_curl_command(command: String, cwd: String) -> Result<String, String> {
         Ok(format!("{}\n\n[stderr]\n{}", stdout, stderr))
     } else {
         Ok(stdout)
-    }
-}
-
-#[tauri::command(rename_all = "snake_case")]
-fn check_mcp_status() -> Result<McpStatus, String> {
-    // Check if chrome-devtools-mcp is installed
-    // Use login shell (-lc) so user's PATH (including npm global bin) is available in release builds
-    let which_output = std::process::Command::new("sh")
-        .arg("-lc")
-        .arg("which chrome-devtools-mcp 2>/dev/null || echo ''")
-        .output()
-        .map_err(|e| format!("Failed to check MCP installation: {}", e))?;
-    let path = String::from_utf8_lossy(&which_output.stdout).trim().to_string();
-    let installed = !path.is_empty();
-
-    // Check if chrome-devtools-mcp is running
-    let pgrep_output = std::process::Command::new("sh")
-        .arg("-lc")
-        .arg("pgrep -f chrome-devtools-mcp 2>/dev/null")
-        .output()
-        .map_err(|e| format!("Failed to check MCP process: {}", e))?;
-    let running = pgrep_output.status.success()
-        && !String::from_utf8_lossy(&pgrep_output.stdout).trim().is_empty();
-
-    Ok(McpStatus {
-        installed,
-        running,
-        path,
-    })
-}
-
-#[tauri::command(rename_all = "snake_case")]
-fn start_mcp_server() -> Result<String, String> {
-    // First check if already running
-    let pgrep_output = std::process::Command::new("sh")
-        .arg("-lc")
-        .arg("pgrep -f chrome-devtools-mcp 2>/dev/null")
-        .output()
-        .map_err(|e| format!("Failed to check MCP process: {}", e))?;
-
-    if pgrep_output.status.success()
-        && !String::from_utf8_lossy(&pgrep_output.stdout).trim().is_empty()
-    {
-        return Ok("chrome-devtools-mcp 已经在运行中".to_string());
-    }
-
-    // Start chrome-devtools-mcp in background
-    // Use login shell so PATH includes npm global bin
-    std::process::Command::new("sh")
-        .arg("-lc")
-        .arg("nohup chrome-devtools-mcp > /tmp/chrome-devtools-mcp.log 2>&1 &")
-        .spawn()
-        .map_err(|e| format!("Failed to start MCP server: {}", e))?;
-
-    // Wait a moment for startup
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    // Verify it started
-    let verify = std::process::Command::new("sh")
-        .arg("-lc")
-        .arg("pgrep -f chrome-devtools-mcp 2>/dev/null")
-        .output()
-        .map_err(|e| format!("Failed to verify MCP process: {}", e))?;
-
-    if verify.status.success() && !String::from_utf8_lossy(&verify.stdout).trim().is_empty() {
-        Ok("chrome-devtools-mcp 启动成功".to_string())
-    } else {
-        Err("chrome-devtools-mcp 启动失败，请检查日志: /tmp/chrome-devtools-mcp.log".to_string())
     }
 }
 
@@ -3262,6 +3233,245 @@ fn check_code_server_connection() -> bool {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+fn ide_open_webview_link(
+    app: tauri::AppHandle,
+    project_path: String,
+    tab_id: String,
+    url: String,
+    kind: String,
+) -> Result<(), String> {
+    let parsed_url = url::Url::parse(&url).map_err(|error| format!("Invalid opened URL: {}", error))?;
+    if !matches!(parsed_url.scheme(), "http" | "https") {
+        return Err("Only http and https opened URLs are allowed".to_string());
+    }
+    log::info!(
+        "[IDE_OPEN] command kind={} source_tab={} url={}",
+        kind,
+        tab_id,
+        parsed_url,
+    );
+    app.emit(
+        "ide-new-window",
+        serde_json::json!({
+            "projectPath": project_path,
+            "sourceTabId": tab_id,
+            "url": parsed_url.to_string(),
+        }),
+    )
+    .map_err(|error| format!("Emit IDE new-window event failed: {}", error))?;
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn create_ide_webview(
+    app: tauri::AppHandle,
+    label: String,
+    project_path: String,
+    tab_id: String,
+    url: String,
+    data_directory: String,
+    data_store_identifier: Vec<u8>,
+) -> Result<(), String> {
+    let parsed_url = url::Url::parse(&url).map_err(|error| format!("Invalid IDE URL: {}", error))?;
+    if !matches!(parsed_url.scheme(), "http" | "https") {
+        return Err("Only http and https IDE URLs are allowed".to_string());
+    }
+
+    let window = app
+        .get_window("main")
+        .ok_or_else(|| "Main window not found".to_string())?;
+    let data_directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Resolve IDE webview data directory failed: {}", error))?
+        .join(&label)
+        .join(data_directory);
+    fs::create_dir_all(&data_directory)
+        .map_err(|error| format!("Create IDE webview data directory failed: {}", error))?;
+
+    let new_window_app = app.clone();
+    let new_window_project_path = project_path.clone();
+    let new_window_tab_id = tab_id.clone();
+    let source_json = serde_json::to_string(&label)
+        .map_err(|error| format!("Serialize IDE webview label failed: {}", error))?;
+    let project_path_json = serde_json::to_string(&project_path)
+        .map_err(|error| format!("Serialize IDE project path failed: {}", error))?;
+    let tab_id_json = serde_json::to_string(&tab_id)
+        .map_err(|error| format!("Serialize IDE tab ID failed: {}", error))?;
+    let initialization_script = format!(
+        r#"
+(() => {{
+  if (window.__SPARKY_IDE_LINK_HANDLER__) return;
+  window.__SPARKY_IDE_LINK_HANDLER__ = true;
+  const source = {source_json};
+  const projectPath = {project_path_json};
+  const tabId = {tab_id_json};
+
+  const getInvoke = () => {{
+    const internals = window.__TAURI_INTERNALS__;
+    return internals && typeof internals.invoke === 'function'
+      ? internals.invoke.bind(internals)
+      : null;
+  }};
+
+  const resolveUrl = (rawUrl) => {{
+    if (!rawUrl) return null;
+    try {{
+      const resolved = new URL(String(rawUrl), location.href);
+      return /^https?:$/i.test(resolved.protocol) ? resolved.href : null;
+    }} catch (_) {{
+      return null;
+    }}
+  }};
+
+  const report = (kind, value) => {{
+    const message = '[IDE_OPEN] ' + kind + ' source=' + source + ' url=' + String(value || '');
+    try {{ console.info(message); }} catch (_) {{}}
+    const invoke = getInvoke();
+    return invoke ? invoke('plugin:browser-bridge|browser_debug_log', {{ message }}).catch(() => undefined) : Promise.resolve();
+  }};
+
+  const requestOpen = (kind, rawUrl) => {{
+    const resolved = resolveUrl(rawUrl);
+    if (!resolved) {{
+      void report('invalid-url', rawUrl);
+      return;
+    }}
+    void report(kind, resolved);
+    const invoke = getInvoke();
+    if (!invoke) {{
+      void report('invoke-unavailable', resolved);
+      window.location.assign(resolved);
+      return;
+    }}
+    void invoke('plugin:browser-bridge|browser_link_open', {{
+      project_path: projectPath,
+      tab_id: tabId,
+      url: resolved,
+      kind,
+    }}).catch((error) => {{
+      void report('invoke-failed', String(error));
+      window.location.assign(resolved);
+    }});
+  }};
+
+  window.open = function(rawUrl) {{
+    requestOpen('window.open', rawUrl);
+    return null;
+  }};
+
+  document.addEventListener('click', (event) => {{
+    if (event.defaultPrevented) return;
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    let anchor = path.find((item) => item instanceof HTMLAnchorElement);
+    if (!anchor && event.target instanceof Element) anchor = event.target.closest('a');
+    if (!anchor) return;
+    const target = anchor.getAttribute('target');
+    if (!target || ['_self', '_top', '_parent'].includes(target.toLowerCase())) return;
+    const href = anchor.href;
+    if (!resolveUrl(href)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    requestOpen('anchor-click', href);
+  }}, true);
+}})();
+"#,
+        source_json = source_json,
+        project_path_json = project_path_json,
+        tab_id_json = tab_id_json,
+    );
+    let mut builder = tauri::webview::WebviewBuilder::new(
+        label.clone(),
+        tauri::WebviewUrl::External(parsed_url),
+    )
+    .focused(false)
+    .initialization_script_for_all_frames(initialization_script)
+    .data_directory(data_directory)
+    .on_new_window(move |requested_url, _features| {
+        let requested_url_string = requested_url.to_string();
+        log::info!(
+            "[IDE_OPEN] native-new-window-request source_tab={} url={}",
+            new_window_tab_id,
+            requested_url_string,
+        );
+        if matches!(requested_url.scheme(), "http" | "https") {
+            let _ = new_window_app.emit(
+                "ide-new-window",
+                serde_json::json!({
+                    "projectPath": new_window_project_path,
+                    "sourceTabId": new_window_tab_id,
+                    "url": requested_url_string,
+                }),
+            );
+        }
+        tauri::webview::NewWindowResponse::Deny
+    });
+
+    if data_store_identifier.len() == 16 {
+        let mut identifier = [0_u8; 16];
+        identifier.copy_from_slice(&data_store_identifier);
+        builder = builder.data_store_identifier(identifier);
+    } else {
+        log::warn!(
+            "[IDE_DEBUG] invalid IDE webview data store identifier length={} label={}",
+            data_store_identifier.len(),
+            label,
+        );
+    }
+
+    window
+        .add_child(
+            builder,
+            tauri::LogicalPosition::new(0_i32, 0_i32),
+            tauri::LogicalSize::new(1_u32, 1_u32),
+        )
+        .map_err(|error| format!("Create IDE webview failed: {}", error))?;
+    log::info!("[IDE_OPEN] link-interceptor-installed label={}", label);
+    log::info!("[IDE_DEBUG] native-webview-created-by-command label={}", label);
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn ide_debug_log(message: String) -> Result<(), String> {
+    log::info!("[IDE_DEBUG] {}", message);
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn ide_debug_dump_webviews(app: tauri::AppHandle) -> Result<(), String> {
+    let webviews = app.webviews();
+    log::info!("[IDE_DEBUG] native-webview-count={}", webviews.len());
+    for (label, webview) in webviews {
+        if label != "main" && !label.starts_with("sparky-ide-") {
+            continue;
+        }
+        let position = match webview.position() {
+            Ok(position) => position,
+            Err(error) => {
+                log::warn!("[IDE_DEBUG] native-webview-position-failed label={} error={}", label, error);
+                continue;
+            }
+        };
+        let size = match webview.size() {
+            Ok(size) => size,
+            Err(error) => {
+                log::warn!("[IDE_DEBUG] native-webview-size-failed label={} error={}", label, error);
+                continue;
+            }
+        };
+        log::info!(
+            "[IDE_DEBUG] native-webview-state label={} x={} y={} width={} height={}",
+            label,
+            position.x,
+            position.y,
+            size.width,
+            size.height,
+        );
+    }
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
 fn code_server_port() -> u16 {
     get_code_server_port()
 }
@@ -3284,16 +3494,22 @@ pub fn run() {
     });
 
     let ws_connected = Arc::new(AtomicBool::new(false));
+    let browser_mcp_state = Arc::new(BrowserMcpState::new());
 
     tauri::Builder::default()
         .manage(state)
         .manage(Arc::new(PtyManager::new()))
+        .manage(browser_mcp_state)
         .manage(WsConnectionState(ws_connected.clone()))
         .manage(WebAgentState { sender: StdMutex::new(None) })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(browser_bridge::init())
         .setup(|app| {
             let _pty_manager = app.state::<Arc<PtyManager>>();
+            let browser_mcp = app.state::<Arc<BrowserMcpState>>().inner().clone();
+            browser_bridge::start_server(app.handle().clone(), browser_mcp)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
 
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -3573,6 +3789,7 @@ pub fn run() {
             get_wss_status,
             pty_spawn,
             pty_write,
+            capture_page_screenshot,
             pty_kill,
             pty_resize,
             pty_exists,
@@ -3599,8 +3816,14 @@ pub fn run() {
             save_window_size,
             get_project_sessions,
             run_curl_command,
-            check_mcp_status,
-            start_mcp_server,
+            browser_bridge::get_browser_mcp_status,
+            browser_bridge::browser_register_target,
+            browser_bridge::browser_update_target,
+            browser_bridge::browser_update_target_bounds,
+            browser_bridge::browser_bind_target,
+            browser_bridge::browser_capture_screenshot,
+            browser_bridge::browser_reload_target,
+            browser_bridge::browser_unregister_target,
             get_testing_session,
             save_testing_session,
             update_session_name,
@@ -3609,6 +3832,10 @@ pub fn run() {
             check_code_server_connection,
             code_server_port,
             restart_code_server,
+            create_ide_webview,
+            ide_open_webview_link,
+            ide_debug_log,
+            ide_debug_dump_webviews,
             install_code_server,
             install_code_server_extension,
             get_installed_code_server_extensions,

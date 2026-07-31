@@ -500,11 +500,15 @@ pub async fn pty_spawn(
         manager.set_terminal_provider(terminal_id.clone(), provider_id.clone());
     }
 
-    let launch = agent::build_launch_config(
+    let browser_mcp = app
+        .state::<Arc<crate::browser_bridge::BrowserMcpState>>()
+        .connection(&terminal_id);
+    let launch = agent::build_launch_config_with_mcp(
         agent_kind,
         &terminal_id,
         provider.as_ref(),
         selected_model_id.as_deref(),
+        browser_mcp.as_ref(),
     )?;
 
     log::info!(

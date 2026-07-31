@@ -526,6 +526,9 @@ body {
 }
 
 .terminal-tabs-inner .ant-tabs-content-holder {
+  position: relative;
+  z-index: 1;
+  min-height: 0;
   border: none !important;
   box-shadow: none !important;
   padding: 0 !important;
@@ -533,17 +536,59 @@ body {
 }
 
 .terminal-tabs-inner .ant-tabs-nav {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 32px;
+  height: 32px;
+  min-height: 32px;
+  margin: 0 !important;
   background: var(--header-bg) !important;
   border-bottom: 1px solid var(--border-color) !important;
 }
 
 .terminal-tabs-inner .ant-tabs-tab {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
   background: transparent !important;
   border: none !important;
   border-radius: 0 !important;
   margin: 0 !important;
   padding: 4px 12px !important;
   color: var(--text-secondary) !important;
+}
+
+.terminal-tabs-inner .ant-tabs-nav-add {
+  width: 32px;
+  min-width: 32px !important;
+  height: 32px;
+  min-height: 32px !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 4px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  color: var(--text-tertiary) !important;
+  background: transparent !important;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.terminal-tabs-inner .ant-tabs-nav-add:hover,
+.terminal-tabs-inner .ant-tabs-nav-add:focus-visible {
+  color: var(--text-primary) !important;
+  background: var(--hover-bg) !important;
+  outline: none;
+}
+
+.terminal-tabs-inner .ant-tabs-nav-add .anticon {
+  font-size: 16px;
+  transition: transform 0.15s ease;
+}
+
+.terminal-tabs-inner .ant-tabs-nav-add:hover .anticon {
+  transform: scale(1.08);
 }
 
 .terminal-tabs-inner .ant-tabs-tab-active {
@@ -583,6 +628,29 @@ body {
 
 .terminal-tabs-inner .ide-tab-refresh:hover {
   color: var(--text-primary);
+}
+
+.ide-browser-viewport {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-primary);
+}
+
+.ide-browser-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  text-align: center;
 }
 
 /* ==================== IDE Tabs（已注释） ==================== */
@@ -1551,7 +1619,8 @@ body {
 }
 
 .agent-session-sidebar-header {
-  min-height: 44px;
+  height: 32px;
+  min-height: 32px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1609,8 +1678,30 @@ body {
 }
 
 .agent-session-group-heading {
+  width: 100%;
   padding: 0 8px 7px;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
   letter-spacing: 0.04em;
+}
+
+.agent-session-group-heading:hover {
+  color: var(--text-primary);
+}
+
+.agent-session-group-toggle {
+  width: 12px;
+  flex: 0 0 12px;
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+
+.agent-session-group-toggle.is-expanded {
+  transform: rotate(90deg);
 }
 
 .agent-session-group-count {

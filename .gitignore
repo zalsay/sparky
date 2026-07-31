@@ -26,3 +26,5 @@ trace-web/
 src-tauri/extensions/extensions.json
 src-tauri/extensions/.obsolete
 cc-switch/
+.pi/
+.workbuddy/

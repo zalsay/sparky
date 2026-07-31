@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
 
+use crate::browser_bridge::BrowserMcpConnection;
 use crate::AIProvider;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +63,16 @@ pub fn build_launch_config(
     provider: Option<&AIProvider>,
     selected_model_id: Option<&str>,
 ) -> Result<AgentLaunchConfig, String> {
+    build_launch_config_with_mcp(kind, terminal_id, provider, selected_model_id, None)
+}
+
+pub fn build_launch_config_with_mcp(
+    kind: AgentKind,
+    terminal_id: &str,
+    provider: Option<&AIProvider>,
+    selected_model_id: Option<&str>,
+    browser_mcp: Option<&BrowserMcpConnection>,
+) -> Result<AgentLaunchConfig, String> {
     let provider_config = provider.map(read_provider_config).transpose()?;
     let model_id = selected_model_id
         .filter(|value| !value.trim().is_empty())
@@ -84,12 +95,18 @@ pub fn build_launch_config(
 
     match kind {
         AgentKind::Claude => {
-            build_claude_config(terminal_id, provider_config.as_ref(), model_id, envs)
+            build_claude_config(terminal_id, provider_config.as_ref(), model_id, envs, browser_mcp)
         }
         AgentKind::Codex => {
-            build_codex_config(terminal_id, provider_config.as_ref(), model_id, envs)
+            build_codex_config(terminal_id, provider_config.as_ref(), model_id, envs, browser_mcp)
         }
-        AgentKind::Pi => build_pi_config(terminal_id, provider_config.as_ref(), model_id, envs),
+        AgentKind::Pi => build_pi_config(
+            terminal_id,
+            provider_config.as_ref(),
+            model_id,
+            envs,
+            browser_mcp,
+        ),
     }
 }
 
@@ -182,49 +199,72 @@ fn build_claude_config(
     provider: Option<&ProviderConfig>,
     model_id: Option<String>,
     envs: HashMap<String, String>,
+    browser_mcp: Option<&BrowserMcpConnection>,
 ) -> Result<AgentLaunchConfig, String> {
-    let Some(provider) = provider else {
+    let mut env = provider
+        .and_then(|config| config.value.get("env"))
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    if let Some(provider) = provider {
+        if !env.contains_key("ANTHROPIC_BASE_URL") {
+            if let Some(base_url) = &provider.base_url {
+                env.insert(
+                    "ANTHROPIC_BASE_URL".to_string(),
+                    Value::String(base_url.clone()),
+                );
+            }
+        }
+        if !env.contains_key("ANTHROPIC_AUTH_TOKEN") && !env.contains_key("ANTHROPIC_API_KEY") {
+            if let Some(api_key) = &provider.api_key {
+                env.insert(
+                    "ANTHROPIC_AUTH_TOKEN".to_string(),
+                    Value::String(api_key.clone()),
+                );
+            }
+        }
+        if !env.contains_key("ANTHROPIC_MODEL") {
+            if let Some(model_id) = model_id {
+                env.insert("ANTHROPIC_MODEL".to_string(), Value::String(model_id));
+            }
+        }
+    }
+
+    if provider.is_none() && browser_mcp.is_none() {
         return Ok(AgentLaunchConfig {
             command: "claude".to_string(),
             config_path: None,
             envs,
         });
-    };
-
-    let mut env = provider
-        .value
-        .get("env")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-
-    if !env.contains_key("ANTHROPIC_BASE_URL") {
-        if let Some(base_url) = &provider.base_url {
-            env.insert(
-                "ANTHROPIC_BASE_URL".to_string(),
-                Value::String(base_url.clone()),
-            );
-        }
-    }
-    if !env.contains_key("ANTHROPIC_AUTH_TOKEN") && !env.contains_key("ANTHROPIC_API_KEY") {
-        if let Some(api_key) = &provider.api_key {
-            env.insert(
-                "ANTHROPIC_AUTH_TOKEN".to_string(),
-                Value::String(api_key.clone()),
-            );
-        }
-    }
-    if !env.contains_key("ANTHROPIC_MODEL") {
-        if let Some(model_id) = model_id {
-            env.insert("ANTHROPIC_MODEL".to_string(), Value::String(model_id));
-        }
     }
 
     let config_path = agent_temp_dir(terminal_id).join("claude-settings.json");
-    write_json(&config_path, &json!({ "env": env }))?;
+    let settings = json!({ "env": env });
+    let mut command = format!("claude --settings {}", shell_quote(&config_path));
+    if let Some(browser_mcp) = browser_mcp {
+        let mcp_config_path = agent_temp_dir(terminal_id).join("browser-mcp.json");
+        write_json(
+            &mcp_config_path,
+            &json!({
+                "mcpServers": {
+                    "sparky-browser": {
+                        "type": "http",
+                        "url": browser_mcp.endpoint,
+                        "headers": {
+                            "Authorization": format!("Bearer {}", browser_mcp.token),
+                        },
+                    }
+                }
+            }),
+        )?;
+        command.push_str(&format!(" --mcp-config {}", shell_quote(&mcp_config_path)));
+    }
+
+    write_json(&config_path, &settings)?;
 
     Ok(AgentLaunchConfig {
-        command: format!("claude --settings {}", shell_quote(&config_path)),
+        command,
         config_path: Some(config_path),
         envs,
     })
@@ -235,6 +275,7 @@ fn build_codex_config(
     provider: Option<&ProviderConfig>,
     model_id: Option<String>,
     mut envs: HashMap<String, String>,
+    browser_mcp: Option<&BrowserMcpConnection>,
 ) -> Result<AgentLaunchConfig, String> {
     let config_dir = agent_temp_dir(terminal_id).join("codex");
     fs::create_dir_all(&config_dir)
@@ -270,6 +311,16 @@ fn build_codex_config(
         }
     }
 
+    if let Some(browser_mcp) = browser_mcp {
+        content.push_str("\n[mcp_servers.sparky_browser]\n");
+        content.push_str(&format!("url = {}\n", toml_string(&browser_mcp.endpoint)));
+        content.push_str("bearer_token_env_var = \"SPARKY_BROWSER_MCP_TOKEN\"\n");
+        envs.insert(
+            "SPARKY_BROWSER_MCP_TOKEN".to_string(),
+            browser_mcp.token.clone(),
+        );
+    }
+
     write_text(&config_path, &content)?;
     envs.insert(
         "CODEX_HOME".to_string(),
@@ -288,6 +339,7 @@ fn build_pi_config(
     provider: Option<&ProviderConfig>,
     model_id: Option<String>,
     mut envs: HashMap<String, String>,
+    browser_mcp: Option<&BrowserMcpConnection>,
 ) -> Result<AgentLaunchConfig, String> {
     let provider = provider.ok_or_else(|| "pi requires a selected model provider".to_string())?;
     let model_id = model_id.ok_or_else(|| "pi requires a selected model".to_string())?;
@@ -349,7 +401,23 @@ fn build_pi_config(
     )?;
 
     let settings_path = config_dir.join("settings.json");
-    let (packages, extensions) = mirror_local_pi_resources();
+    let (packages, mut extensions) = mirror_local_pi_resources();
+    if let Some(browser_mcp) = browser_mcp {
+        let browser_extension_path = config_dir.join("sparky-browser.js");
+        write_text(
+            &browser_extension_path,
+            &pi_browser_extension_source(),
+        )?;
+        extensions.push(browser_extension_path.to_string_lossy().to_string());
+        envs.insert(
+            "SPARKY_BROWSER_MCP_URL".to_string(),
+            browser_mcp.endpoint.clone(),
+        );
+        envs.insert(
+            "SPARKY_BROWSER_MCP_TOKEN".to_string(),
+            browser_mcp.token.clone(),
+        );
+    }
     let mut settings = json!({
         "defaultProvider": "sparky",
         "defaultModel": model_id,
@@ -379,6 +447,204 @@ fn build_pi_config(
         config_path: Some(models_path),
         envs,
     })
+}
+
+fn pi_browser_extension_source() -> &'static str {
+    r#"const browserEndpoint = () => process.env.SPARKY_BROWSER_MCP_URL;
+const browserToken = () => process.env.SPARKY_BROWSER_MCP_TOKEN;
+
+const string = () => ({ type: "string" });
+const integer = (minimum, maximum) => ({ type: "integer", minimum, maximum });
+const object = (properties, required = []) => ({
+  type: "object",
+  properties,
+  ...(required.length > 0 ? { required } : {}),
+});
+
+async function callBrowser(name, args = {}) {
+  const endpoint = browserEndpoint();
+  const token = browserToken();
+  if (!endpoint || !token) {
+    throw new Error("Sparky browser bridge is not configured for this Pi session");
+  }
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: `pi-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      method: "tools/call",
+      params: { name, arguments: args },
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(`Sparky browser bridge HTTP ${response.status}`);
+  }
+  if (payload.error) {
+    throw new Error(payload.error.message || "Sparky browser bridge request failed");
+  }
+
+  const result = payload.result;
+  if (!result) return null;
+  if (result.isError) {
+    const message = (result.content || [])
+      .map((item) => item.text || "")
+      .filter(Boolean)
+      .join("\\n");
+    throw new Error(message || "Sparky browser tool failed");
+  }
+  return result.structuredContent ?? result.content ?? null;
+}
+
+function toolResult(value) {
+  return {
+    content: [{
+      type: "text",
+      text: typeof value === "string" ? value : JSON.stringify(value, null, 2),
+    }],
+    details: { value },
+  };
+}
+
+export default function (pi) {
+  pi.registerTool({
+    name: "browser_targets",
+    label: "Browser Targets",
+    description: "List browser pages currently embedded in Sparky.",
+    promptSnippet: "List browser pages embedded in Sparky",
+    parameters: object({ project_path: string() }),
+    async execute(_toolCallId, params) {
+      return toolResult(await callBrowser("browser_targets", params));
+    },
+  });
+
+  pi.registerTool({
+    name: "browser_attach",
+    label: "Browser Attach",
+    description: "Attach this Pi session to one Sparky browser page.",
+    parameters: object({ target_id: string() }, ["target_id"]),
+    async execute(_toolCallId, params) {
+      return toolResult(await callBrowser("browser_attach", params));
+    },
+  });
+
+  pi.registerTool({
+    name: "browser_snapshot",
+    label: "Browser Snapshot",
+    description: "Return an accessibility-oriented snapshot of the attached browser page with stable refs.",
+    parameters: object({ target_id: string(), max_chars: integer(1000, 50000) }),
+    async execute(_toolCallId, params) {
+      return toolResult(await callBrowser("browser_snapshot", params));
+    },
+  });
+
+  pi.registerTool({
+    name: "browser_get_url",
+    label: "Browser URL",
+    description: "Read the current URL and title of the attached browser page.",
+    parameters: object({ target_id: string() }),
+    async execute(_toolCallId, params) {
+      return toolResult(await callBrowser("browser_get_url", params));
+    },
+  });
+
+  pi.registerTool({
+    name: "browser_click",
+    label: "Browser Click",
+    description: "Click an element in the attached browser page by snapshot ref or CSS selector.",
+    parameters: object({ target_id: string(), ref: string(), selector: string() }),
+    async execute(_toolCallId, params) {
+      return toolResult(await callBrowser("browser_click", params));
+    },
+  });
+
+  pi.registerTool({
+    name: "browser_fill",
+    label: "Browser Fill",
+    description: "Fill an input, textarea, or contenteditable element by ref or CSS selector.",
+    parameters: object({ target_id: string(), ref: string(), selector: string(), text: string() }, ["text"]),
+    async execute(_toolCallId, params) {
+      return toolResult(await callBrowser("browser_fill", params));
+    },
+  });
+
+  pi.registerTool({
+    name: "browser_press",
+    label: "Browser Press",
+    description: "Dispatch a keyboard key to an element or the attached browser page.",
+    parameters: object({ target_id: string(), ref: string(), selector: string(), key: string() }, ["key"]),
+    async execute(_toolCallId, params) {
+      return toolResult(await callBrowser("browser_press", params));
+    },
+  });
+
+  pi.registerTool({
+    name: "browser_scroll",
+    label: "Browser Scroll",
+    description: "Scroll the attached browser page or an element into view.",
+    parameters: object({
+      target_id: string(),
+      ref: string(),
+      selector: string(),
+      direction: string(),
+      amount: integer(1, 4000),
+    }),
+    async execute(_toolCallId, params) {
+      return toolResult(await callBrowser("browser_scroll", params));
+    },
+  });
+
+  pi.registerTool({
+    name: "browser_wait_for",
+    label: "Browser Wait",
+    description: "Wait until an element exists in the attached browser page.",
+    parameters: object({
+      target_id: string(),
+      ref: string(),
+      selector: string(),
+      timeout_ms: integer(100, 30000),
+    }),
+    async execute(_toolCallId, params) {
+      return toolResult(await callBrowser("browser_wait_for", params));
+    },
+  });
+
+  pi.registerTool({
+    name: "browser_navigate",
+    label: "Browser Navigate",
+    description: "Navigate the attached browser page to an http or https URL.",
+    parameters: object({ target_id: string(), url: string() }, ["url"]),
+    async execute(_toolCallId, params) {
+      return toolResult(await callBrowser("browser_navigate", params));
+    },
+  });
+
+  pi.registerTool({
+    name: "browser_evaluate",
+    label: "Browser Evaluate",
+    description: "Evaluate a focused JavaScript expression in the attached browser page.",
+    parameters: object({ target_id: string(), script: string() }, ["script"]),
+    async execute(_toolCallId, params) {
+      return toolResult(await callBrowser("browser_evaluate", params));
+    },
+  });
+
+  pi.registerTool({
+    name: "browser_screenshot",
+    label: "Browser Screenshot",
+    description: "Capture the visible bounds of the attached Sparky browser page and return the PNG path.",
+    parameters: object({ target_id: string() }),
+    async execute(_toolCallId, params) {
+      return toolResult(await callBrowser("browser_screenshot", params));
+    },
+  });
+}
+"#
 }
 
 fn mirror_local_pi_resources() -> (Vec<Value>, Vec<String>) {
@@ -686,6 +952,90 @@ mod tests {
             config_path.parent().expect("Codex config directory")
         );
         remove_generated_config(&config_path);
+    }
+
+    #[test]
+    fn claude_config_loads_embedded_browser_mcp_config() {
+        let connection = BrowserMcpConnection {
+            endpoint: "http://127.0.0.1:41000/mcp?terminal_id=test-terminal".to_string(),
+            token: "test-token".to_string(),
+        };
+        let launch = build_launch_config_with_mcp(
+            AgentKind::Claude,
+            "test-claude-mcp",
+            Some(&provider("anthropic-messages")),
+            Some("model-a"),
+            Some(&connection),
+        )
+        .expect("Claude config should be generated");
+
+        assert!(launch.command.contains("--mcp-config"));
+        let mcp_path = agent_temp_dir("test-claude-mcp").join("browser-mcp.json");
+        let mcp_config: Value = serde_json::from_str(
+            &fs::read_to_string(&mcp_path).expect("read browser MCP config"),
+        )
+        .expect("parse browser MCP config");
+        assert_eq!(
+            mcp_config["mcpServers"]["sparky-browser"]["type"],
+            "http"
+        );
+        assert_eq!(
+            mcp_config["mcpServers"]["sparky-browser"]["url"],
+            connection.endpoint
+        );
+        assert_eq!(
+            mcp_config["mcpServers"]["sparky-browser"]["headers"]["Authorization"],
+            "Bearer test-token"
+        );
+        let _ = fs::remove_dir_all(agent_temp_dir("test-claude-mcp"));
+    }
+
+    #[test]
+    fn pi_config_includes_isolated_browser_extension() {
+        let connection = BrowserMcpConnection {
+            endpoint: "http://127.0.0.1:41000/mcp?terminal_id=test-pi-browser".to_string(),
+            token: "test-token".to_string(),
+        };
+        let launch = build_launch_config_with_mcp(
+            AgentKind::Pi,
+            "test-pi-browser",
+            Some(&provider("openai-completions")),
+            Some("model-b"),
+            Some(&connection),
+        )
+        .expect("pi config should include browser extension");
+
+        let models_path = launch.config_path.expect("pi models path");
+        let settings_path = models_path
+            .parent()
+            .expect("pi config directory")
+            .join("settings.json");
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(&settings_path).expect("read pi settings"))
+                .expect("parse pi settings");
+        let extension_path = settings["extensions"]
+            .as_array()
+            .and_then(|extensions| {
+                extensions
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .find(|path| path.ends_with("sparky-browser.js"))
+            })
+            .expect("browser extension path");
+        assert!(extension_path.ends_with("sparky-browser.js"));
+        let extension = fs::read_to_string(extension_path).expect("read browser extension");
+        assert!(extension.contains("browser_snapshot"));
+        assert!(!extension.contains("test-token"));
+        assert!(!extension.contains(&connection.endpoint));
+        assert_eq!(
+            launch.envs.get("SPARKY_BROWSER_MCP_URL"),
+            Some(&connection.endpoint)
+        );
+        assert_eq!(
+            launch.envs.get("SPARKY_BROWSER_MCP_TOKEN"),
+            Some(&connection.token)
+        );
+        remove_generated_config(&models_path);
     }
 
     #[test]
