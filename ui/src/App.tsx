@@ -1,23 +1,47 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { ReactNode } from 'react';
-import { Form, Input, Button, Card, Divider, Tag, Table, Empty, List, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select, Badge } from 'antd';
-import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined, PushpinOutlined, PushpinFilled, LogoutOutlined, UserOutlined } from '@ant-design/icons';
+import { Form, Input, InputNumber, Button, Card, Divider, Tag, Table, Empty, List, Modal, Space, Menu, Tabs, Checkbox, ConfigProvider, theme, Switch, App as AntApp, Typography, Tooltip, ColorPicker, Slider, Dropdown, Splitter, Popconfirm, Select } from 'antd';
+import { SaveOutlined, ApiOutlined, SettingOutlined, DeleteOutlined, EyeOutlined, FolderOutlined, SunOutlined, MoonOutlined, PlusOutlined, ProjectOutlined, FullscreenOutlined, FullscreenExitOutlined, PoweroffOutlined, InfoCircleOutlined, CopyOutlined, ReloadOutlined, EditOutlined, HistoryOutlined, PlayCircleOutlined, ExperimentOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, ThunderboltOutlined, CheckOutlined, CloseOutlined, ArrowDownOutlined, MenuOutlined, WarningOutlined, SafetyCertificateOutlined, CompressOutlined, ClearOutlined, UndoOutlined, FileTextOutlined, DownloadOutlined, AppstoreAddOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 
 import TerminalComponent from './components/Terminal';
+import AgentSessionSidebar, { type AgentSessionInfo } from './components/AgentSessionSidebar';
+import AgentLogo from './components/AgentLogo';
 import ChatView from './components/chat/ChatView';
 import ContextDonut from './components/ContextDonut';
 import logo from '../../logo.png';
 import codeIcon from './assets/Code.svg';
-import claudeIcon from './assets/Claude.svg';
-import claudeDeactiveIcon from './assets/claude-deactive.svg';
 import feishuIcon from './assets/飞书.svg';
 import AppWeb from './web/AppWeb';
 import AuthPage from './features/auth/components/AuthPage';
 import { AuthProvider, useAuth } from './features/auth';
 import './App.css';
+
+type AgentType = 'claude' | 'codex' | 'pi';
+
+const AGENT_OPTIONS: Array<{ value: AgentType; label: string }> = [
+  { value: 'claude', label: 'Claude Code' },
+  { value: 'codex', label: 'Codex' },
+  { value: 'pi', label: 'pi' },
+];
+
+const normalizeAgentType = (value?: string): AgentType => {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === 'codex' || normalized === 'openai-codex') return 'codex';
+  if (normalized === 'pi' || normalized === 'pi-coding-agent') return 'pi';
+  return 'claude';
+};
+
+const agentLabel = (value?: string) => AGENT_OPTIONS.find(option => option.value === normalizeAgentType(value))?.label || 'Claude Code';
+
+const agentPermissionArgs = (agentType: AgentType, fullAuth: boolean) => {
+  if (!fullAuth) return '';
+  if (agentType === 'codex') return '--dangerously-bypass-approvals-and-sandbox';
+  if (agentType === 'pi') return '';
+  return '--dangerously-skip-permissions';
+};
 
 interface IDEPlugin {
   id: string;
@@ -135,7 +159,7 @@ const ModelListInput = ({ value = [], onChange }: { value?: string[], onChange?:
     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
       <div style={{ display: 'flex', gap: '8px' }}>
         <Input
-          placeholder="例如: claude-3-5-sonnet-20241022"
+          placeholder="例如: gpt-4o 或 claude-3-5-sonnet"
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           onPressEnter={(e) => {
@@ -157,7 +181,6 @@ const ModelListInput = ({ value = [], onChange }: { value?: string[], onChange?:
 };
 
 function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsDarkMode: (v: boolean) => void }) {
-  const { user, logout } = useAuth();
   const { message: messageApi, modal: modalApi, notification: notificationApi } = AntApp.useApp();
   const [form] = Form.useForm();
   const [providerForm] = Form.useForm();
@@ -178,6 +201,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     title: string | React.ReactNode;
     providerId?: string;
     selectedModelId?: string;
+    agentType?: AgentType;
   }
 
   interface IDETab {
@@ -207,6 +231,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [testingProvider, setTestingProvider] = useState(false);
   const [activeTerminalId, setActiveTerminalId] = useState<Record<string, string>>({});
   const [createTerminalModalOpen, setCreateTerminalModalOpen] = useState(false);
+  const [newTerminalAgentType, setNewTerminalAgentType] = useState<AgentType>();
   const [newTerminalProviderId, setNewTerminalProviderId] = useState<string>();
   const [newTerminalModelId, setNewTerminalModelId] = useState<string>();
   const [testModelId, setTestModelId] = useState<string>();
@@ -214,6 +239,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [lastProviderByProject, setLastProviderByProject] = useState<Record<string, string>>(() => {
     try {
       const saved = localStorage.getItem(LAST_PROVIDER_BY_PROJECT_STORAGE_KEY);
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [lastAgentByProject, setLastAgentByProject] = useState<Record<string, AgentType>>(() => {
+    try {
+      const saved = localStorage.getItem('sparky-last-agent-by-project');
       return saved ? JSON.parse(saved) : {};
     } catch {
       return {};
@@ -301,7 +334,10 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
   // Session management state
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [agentSessions, setAgentSessions] = useState<AgentSessionInfo[]>([]);
+  const agentSessionRequestRef = useRef(0);
   const [sessionModalOpen, setSessionModalOpen] = useState(false);
+  const [resumingAgentSessionId, setResumingAgentSessionId] = useState<string | null>(null);
   const [fullAuth, setFullAuth] = useState<Record<string, boolean>>(() => {
     try {
       const saved = localStorage.getItem('sparky-full-auth');
@@ -318,6 +354,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   const [mcpLoading, setMcpLoading] = useState(false);
   const [mcpStarting, setMcpStarting] = useState(false);
   const [codeServerConnected, setCodeServerConnected] = useState<boolean | null>(null);
+  const [codeServerStarting, setCodeServerStarting] = useState(false);
   const [codeServerPort, setCodeServerPort] = useState<number>(18080);
   const [ideRestarting, setIdeRestarting] = useState(false);
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
@@ -331,50 +368,62 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
   // Track terminal vs chat view modes per terminal id
   const [viewModes] = useState<Record<string, 'terminal' | 'chat'>>({});
-  const [terminalStatus, setTerminalStatus] = useState<Record<string, string>>({});
+  const [agentOutputPulse, setAgentOutputPulse] = useState<Record<string, boolean>>({});
+  const outputPulseTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   useEffect(() => {
     if (!tauriAvailable) return;
 
-    const poll = async () => {
-      const allTerminals = Object.values(projectTerminals).flat();
-      if (allTerminals.length === 0) return;
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
 
-      const newStatus: Record<string, string> = { ...terminalStatus };
-      let changed = false;
-
-      await Promise.all(allTerminals.map(async (term) => {
-        try {
-          const status = await invoke<string>('get_terminal_active_process', { terminal_id: term.id });
-          if (newStatus[term.id] !== status) {
-            newStatus[term.id] = status;
-            changed = true;
-          }
-        } catch (e) {
-          if (newStatus[term.id] !== 'offline') {
-            newStatus[term.id] = 'offline';
-            changed = true;
-          }
+    const setupListener = async () => {
+      const dispose = await listen<{ terminalId: string }>('pty-data', (event) => {
+        const terminalId = event.payload.terminalId;
+        const previousTimer = outputPulseTimersRef.current[terminalId];
+        if (previousTimer) {
+          clearTimeout(previousTimer);
         }
-      }));
 
-      if (changed) {
-        setTerminalStatus(newStatus);
+        setAgentOutputPulse(prev => prev[terminalId] ? prev : { ...prev, [terminalId]: true });
+        outputPulseTimersRef.current[terminalId] = setTimeout(() => {
+          setAgentOutputPulse(prev => {
+            if (!prev[terminalId]) return prev;
+            const next = { ...prev };
+            delete next[terminalId];
+            return next;
+          });
+          delete outputPulseTimersRef.current[terminalId];
+        }, 800);
+      });
+
+      if (cancelled) {
+        dispose();
+      } else {
+        unlisten = dispose;
       }
     };
 
-    const interval = setInterval(poll, 3000);
-    poll(); // Initial check
+    void setupListener();
 
-    return () => clearInterval(interval);
-  }, [tauriAvailable, projectTerminals]);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      Object.values(outputPulseTimersRef.current).forEach(clearTimeout);
+      outputPulseTimersRef.current = {};
+    };
+  }, [tauriAvailable]);
 
   useEffect(() => {
     localStorage.setItem(LAST_PROVIDER_BY_PROJECT_STORAGE_KEY, JSON.stringify(lastProviderByProject));
   }, [lastProviderByProject]);
 
+  useEffect(() => {
+    localStorage.setItem('sparky-last-agent-by-project', JSON.stringify(lastAgentByProject));
+  }, [lastAgentByProject]);
+
   // Dependency check
-  const [missingDependencies, setMissingDependencies] = useState<{ claude: boolean, code_server: boolean } | null>(null);
+  const [missingDependencies, setMissingDependencies] = useState<{ code_server: boolean } | null>(null);
 
   useEffect(() => {
     localStorage.setItem('sparky-full-auth', JSON.stringify(fullAuth));
@@ -444,24 +493,22 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   useEffect(() => {
     if (!tauriAvailable || isCheckingDependenciesRef.current) return;
     isCheckingDependenciesRef.current = true;
-    invoke<{ claude: boolean, code_server: boolean }>('check_dependencies')
+    invoke<{ claude: boolean, codex: boolean, pi: boolean, code_server: boolean }>('check_dependencies')
       .then(async (status) => {
-        if (!status.claude || !status.code_server) {
-          if (!status.code_server) {
-            const hide = messageApi.loading('正在安装必要依赖 Coder IDE ...', 0);
-            try {
-              await invoke('install_code_server');
-              hide();
-              messageApi.success('Coder IDE 安装成功');
-              status.code_server = true;
-            } catch (err) {
-              hide();
-              messageApi.error(`Coder IDE 安装失败: ${err}`);
-            }
+        if (!status.code_server) {
+          const hide = messageApi.loading('正在安装必要依赖 Coder IDE ...', 0);
+          try {
+            await invoke('install_code_server');
+            hide();
+            messageApi.success('Coder IDE 安装成功');
+            status.code_server = true;
+          } catch (err) {
+            hide();
+            messageApi.error(`Coder IDE 安装失败: ${err}`);
           }
-          if (!status.claude || !status.code_server) {
-            setMissingDependencies(status);
-          }
+        }
+        if (!status.code_server) {
+          setMissingDependencies({ code_server: false });
         }
       })
       .catch((e) => {
@@ -595,6 +642,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
         providerForm.setFieldsValue({
           ...editingProvider,
           ...settings,
+          api: settings.api || (editingProvider.app_type?.toLowerCase().includes('claude') ? 'anthropic-messages' : 'openai-responses'),
+          default_thinking_level: settings.default_thinking_level || 'xhigh',
+          context_window: settings.context_window || 256000,
           model_ids: modelIds
         });
       } else {
@@ -603,43 +653,64 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     }
   }, [providerModalOpen, editingProvider, providerForm]);
 
-  // Check code-server connection when entering project detail or when marked as disconnected
+  // Give code-server time to finish its asynchronous startup before showing a failure.
   useEffect(() => {
     if (activeMenu !== 'project-detail') {
       setCodeServerConnected(null);
+      setCodeServerStarting(false);
       return;
     }
 
     if (!selectedProject) {
+      setCodeServerStarting(false);
       return;
     }
 
-    let intervalId: NodeJS.Timeout;
+    let startupPhase = true;
+    let cancelled = false;
+    let startupTimeout: ReturnType<typeof setTimeout> | undefined;
+
+    setCodeServerConnected(null);
+    setCodeServerStarting(true);
 
     const checkConnection = async () => {
       try {
         const connected = await invoke<boolean>('check_code_server_connection');
+        if (cancelled) return;
         if (connected) {
+          startupPhase = false;
+          if (startupTimeout) clearTimeout(startupTimeout);
+          setCodeServerStarting(false);
           setCodeServerConnected(true);
-          if (ideRestarting) {
-            setIdeRestarting(false);
-          }
-        } else {
+          setIdeRestarting(false);
+        } else if (!startupPhase) {
+          setCodeServerStarting(false);
           setCodeServerConnected(false);
         }
       } catch (err) {
+        if (cancelled) return;
         console.error('Failed to check code-server connection:', err);
-        setCodeServerConnected(false);
+        if (!startupPhase) {
+          setCodeServerStarting(false);
+          setCodeServerConnected(false);
+        }
       }
     };
 
-    checkConnection();
-    intervalId = setInterval(checkConnection, 2000);
+    void checkConnection();
+    const intervalId = setInterval(() => void checkConnection(), 2000);
+    startupTimeout = setTimeout(() => {
+      startupPhase = false;
+      setCodeServerStarting(false);
+      void checkConnection();
+    }, 15000);
 
     return () => {
-      if (intervalId) clearInterval(intervalId);
+      cancelled = true;
+      clearInterval(intervalId);
+      if (startupTimeout) clearTimeout(startupTimeout);
     };
-  }, [activeMenu, selectedProject, codeServerConnected, ideRestarting]);
+  }, [activeMenu, selectedProject, tauriAvailable]);
 
   const handleRestartIDE = async () => {
     if (!tauriAvailable) {
@@ -921,6 +992,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
           .catch(() => {
             setTerminalHistory(prev => ({ ...prev, [project.path]: [] }));
           }),
+        invoke<AgentSessionInfo[]>('get_agent_session_history', { project_path: project.path })
+          .then((history) => setAgentSessions(history || []))
+          .catch(() => setAgentSessions([])),
       ]);
     }
 
@@ -959,7 +1033,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
               id: tab.id,
               title: typeof tab.title === 'string' ? tab.title : `终端-${index + 1}`,
               providerId: tab.providerId,
-              selectedModelId: tab.selectedModelId
+              selectedModelId: tab.selectedModelId,
+              agentType: normalizeAgentType(tab.agentType)
             }));
         });
       }
@@ -1007,6 +1082,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       return;
     }
 
+    const lastAgent = lastAgentByProject[selectedProject.path] || 'claude';
+    setNewTerminalAgentType(lastAgent);
+
     const lastProvider = lastProviderByProject[selectedProject.path];
     const lastProviderExists = !!lastProvider && providers.some(p => `${p.app_type}::${p.id}` === lastProvider);
     const providerId = lastProviderExists ? lastProvider : undefined;
@@ -1032,7 +1110,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
   };
 
   const handleConfirmCreateTerminal = () => {
-    if (!selectedProject || !newTerminalProviderId) return;
+    if (!selectedProject || !newTerminalAgentType || !newTerminalProviderId) return;
 
     const current = projectTerminals[selectedProject.path] || [];
     const newId = crypto.randomUUID();
@@ -1040,7 +1118,8 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       ...prev,
       [selectedProject.path]: [...current, {
         id: newId,
-        title: `Claude-${current.length + 1}`,
+        title: `${agentLabel(newTerminalAgentType)}-${current.length + 1}`,
+        agentType: newTerminalAgentType,
         providerId: newTerminalProviderId,
         selectedModelId: newTerminalModelId
       }]
@@ -1050,8 +1129,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       [selectedProject.path]: newId
     }));
     setCreateTerminalModalOpen(false);
+    setNewTerminalAgentType(undefined);
     setNewTerminalProviderId(undefined);
     setNewTerminalModelId(undefined);
+    setLastAgentByProject(prev => {
+      const next = { ...prev, [selectedProject.path]: newTerminalAgentType };
+      localStorage.setItem('sparky-last-agent-by-project', JSON.stringify(next));
+      return next;
+    });
     setLastProviderByProject(prev => {
       const next = { ...prev, [selectedProject.path]: newTerminalProviderId };
       localStorage.setItem('lastProviderByProject', JSON.stringify(next));
@@ -1158,6 +1243,19 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     }
   };
 
+  const fetchAgentSessions = async (projectPath: string) => {
+    const requestId = ++agentSessionRequestRef.current;
+    try {
+      const result = await invoke<AgentSessionInfo[]>('get_agent_session_history', { project_path: projectPath });
+      if (requestId !== agentSessionRequestRef.current) return;
+      setAgentSessions((result || []).filter((session) => session.agent_type === 'pi' || session.agent_type === 'codex'));
+    } catch (error) {
+      if (requestId !== agentSessionRequestRef.current) return;
+      console.error('Failed to fetch Agent sessions:', error);
+      setAgentSessions([]);
+    }
+  };
+
   const handleUpdateSessionName = async (session_id: string, newName: string) => {
     if (!selectedProject) return;
     try {
@@ -1246,15 +1344,141 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     }
   }, [appConfig, notificationApi, saveConfigState]);
 
-  const buildClaudeCmd = async (terminalId: string, extraArgs: string = ''): Promise<string> => {
-    let settingsFlag = '';
+  const buildAgentCmd = async (terminalId: string, extraArgs: string = '', fallbackAgent: AgentType = 'claude'): Promise<string> => {
     try {
-      const settingsPath = await invoke<string>('get_terminal_settings_path', { terminal_id: terminalId });
-      if (settingsPath) settingsFlag = ` --settings "${settingsPath}"`;
+      const command = await invoke<string>('get_terminal_agent_command', { terminal_id: terminalId });
+      return `${command}${extraArgs ? ' ' + extraArgs : ''}\n`;
     } catch {
-      console.warn('No settings path for terminal, launching claude without --settings');
+      // Legacy PTYs created before agent metadata was added need an Agent-specific fallback.
+      return `${fallbackAgent}${extraArgs ? ' ' + extraArgs : ''}\n`;
     }
-    return `claude${settingsFlag}${extraArgs ? ' ' + extraArgs : ''}\n`;
+  };
+
+  const waitForTerminal = async (terminalId: string) => {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (await invoke<boolean>('pty_exists', { terminal_id: terminalId })) {
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('PTY 启动超时');
+  };
+
+  const providerModelIds = (provider?: AIProvider) => {
+    if (!provider?.settings_config) return [];
+    try {
+      const settings = JSON.parse(provider.settings_config);
+      if (Array.isArray(settings.model_ids) && settings.model_ids.length > 0) {
+        return settings.model_ids.filter((value: unknown): value is string => typeof value === 'string');
+      }
+      return typeof settings.model_id === 'string' ? [settings.model_id] : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const resolveHistoryProvider = (project: Project) => {
+    const candidateIds = [
+      lastProviderByProject[project.path],
+      project.default_provider_id,
+      appConfig?.default_provider_id,
+    ].filter((value): value is string => !!value);
+    return candidateIds
+      .map((providerId) => providers.find(provider => `${provider.app_type}::${provider.id}` === providerId))
+      .find((provider): provider is AIProvider => !!provider)
+      || providers[0];
+  };
+
+  const handleResumeHistoricalSession = async (session: AgentSessionInfo) => {
+    if (!selectedProject || resumingAgentSessionId) return;
+    if (!tauriAvailable) {
+      messageApi.warning('请在桌面应用中恢复 Agent 会话');
+      return;
+    }
+
+    const agentType = normalizeAgentType(session.agent_type);
+    const provider = resolveHistoryProvider(selectedProject);
+    if (!provider) {
+      messageApi.warning('请先添加至少一个 AI Provider');
+      return;
+    }
+    const modelIds = providerModelIds(provider);
+    const selectedModelId = lastModelByProject[selectedProject.path] && modelIds.includes(lastModelByProject[selectedProject.path])
+      ? lastModelByProject[selectedProject.path]
+      : modelIds[0];
+    if (agentType === 'pi' && !selectedModelId) {
+      messageApi.warning('PI 会话恢复需要先为 Provider 配置 Model ID');
+      return;
+    }
+
+    const projectPath = selectedProject.path;
+    const current = projectTerminals[projectPath] || [];
+    const terminalId = crypto.randomUUID();
+    const terminalTitle = `${agentLabel(agentType)}-${current.length + 1}`;
+    const providerId = `${provider.app_type}::${provider.id}`;
+    setResumingAgentSessionId(session.session_id);
+    setProjectTerminals(prev => ({
+      ...prev,
+      [projectPath]: [...(prev[projectPath] || []), {
+        id: terminalId,
+        title: terminalTitle,
+        agentType,
+        providerId,
+        selectedModelId,
+      }],
+    }));
+    setActiveTerminalId(prev => ({ ...prev, [projectPath]: terminalId }));
+
+    try {
+      await waitForTerminal(terminalId);
+      await invoke('prepare_agent_session', {
+        terminal_id: terminalId,
+        project_path: projectPath,
+        agent_type: agentType,
+        session_id: session.session_id,
+      });
+      const permissionArgs = agentPermissionArgs(agentType, fullAuth[projectPath] || false);
+      const resumeArgs = agentType === 'codex'
+        ? `${permissionArgs} resume ${session.session_id}`.trim()
+        : `--session ${session.session_id}`;
+      const command = await buildAgentCmd(terminalId, resumeArgs, agentType);
+      await invoke('pty_write', { terminal_id: terminalId, data: command });
+    } catch (error) {
+      messageApi.error(`恢复 ${agentLabel(agentType)} 会话失败: ${error}`);
+      await invoke('pty_kill', { terminal_id: terminalId }).catch(() => undefined);
+      setProjectTerminals(prev => ({
+        ...prev,
+        [projectPath]: (prev[projectPath] || []).filter(tab => tab.id !== terminalId),
+      }));
+    } finally {
+      setResumingAgentSessionId(null);
+    }
+  };
+
+  const handleResumePreviousSession = async () => {
+    if (!selectedProject) return;
+    const tid = activeTerminalId[selectedProject.path];
+    if (!tid || tid === 'detail') return;
+
+    if (activeAgentType === 'claude') {
+      await fetchSessions(selectedProject.path);
+      setSessionModalOpen(true);
+      return;
+    }
+
+    const isFullAuth = fullAuth[selectedProject.path] || false;
+
+    try {
+      const sessionId = await invoke<string>('get_terminal_session_id', { terminal_id: tid });
+      const permissionArgs = agentPermissionArgs(activeAgentType, isFullAuth);
+      const resumeArgs = activeAgentType === 'codex'
+        ? `${permissionArgs} resume ${sessionId}`.trim()
+        : `--session ${sessionId}`;
+      const cmd = await buildAgentCmd(tid, resumeArgs, activeAgentType);
+      await invoke('pty_write', { terminal_id: tid, data: cmd });
+    } catch (error) {
+      messageApi.error(`恢复 ${agentLabel(activeAgentType)} 会话失败: ${error}`);
+    }
   };
 
   const handleSave = async (values: any) => {
@@ -1408,10 +1632,12 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
     setSelectedProject(project);
     setActiveMenu('project-detail');
     setActiveProjects(prev => prev.includes(project.path) ? prev : [...prev, project.path]);
+    setAgentSessions([]);
 
     await Promise.all([
       fetchSessions(project.path),
       fetchTerminalHistory(project.path),
+      fetchAgentSessions(project.path),
     ]);
   }, [fetchSessions, fetchTerminalHistory]);
   const handleDeleteProject = (id: number) => {
@@ -1472,6 +1698,15 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
       messageApi.error(`操作失败: ${error} `);
     }
   };
+
+  const activeProjectTerminal = selectedProject
+    ? (projectTerminals[selectedProject.path] || []).find(term => term.id === activeTerminalId[selectedProject.path])
+    : undefined;
+  const codeServerUrl = selectedProject
+    ? `http://localhost:${codeServerPort}/?folder=${encodeURIComponent(selectedProject.path)}`
+    : '';
+  const activeAgentType = normalizeAgentType(activeProjectTerminal?.agentType);
+  const isClaudeAgent = activeAgentType === 'claude';
 
   return (
     <ConfigProvider
@@ -1610,12 +1845,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                   />
                 </Tooltip>
               )}
-              <Tag icon={<UserOutlined />} style={{ margin: 0 }}>
-                {user?.display_name || user?.username || '已登录用户'}
-              </Tag>
-              <Button size="small" icon={<LogoutOutlined />} onClick={() => void logout()}>
-                退出登录
-              </Button>
               <Switch
                 className="theme-switch"
                 checked={isDarkMode}
@@ -1799,8 +2028,9 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           onClick={() => {
                             setEditingProvider({
                               name: '',
-                              settings_config: JSON.stringify({ api_timeout: '3000000', disable_traffic: 1 }),
-                              app_type: 'ClaudeCode',
+                              settings_config: JSON.stringify({ api_timeout: '3000000', disable_traffic: 1, api: 'openai-responses', default_thinking_level: 'xhigh', context_window: 256000 }),
+                              app_type: 'generic',
+                              provider_type: 'openai-responses',
                               cost_multiplier: '1.0',
                               is_current: false,
                               in_failover_queue: false,
@@ -2093,6 +2323,14 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                               <p style={{ margin: 0 }}>正在重新连接 IDE 服务</p>
                             </div>
                           </div>
+                        ) : codeServerStarting || codeServerConnected === null ? (
+                          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', padding: 24, textAlign: 'center', gap: 16 }}>
+                            <LoadingOutlined style={{ fontSize: 48, color: 'var(--text-secondary)' }} spin />
+                            <div>
+                              <h3 style={{ color: 'var(--text-primary)', margin: 0, marginBottom: 8 }}>正在启动 Code Server...</h3>
+                              <p style={{ margin: 0 }}>正在连接 IDE 服务</p>
+                            </div>
+                          </div>
                         ) : codeServerConnected === false ? (
                           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', padding: 24, textAlign: 'center', gap: 16 }}>
                             <WarningOutlined style={{ fontSize: 48, color: '#faad14' }} />
@@ -2132,7 +2370,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                               if (action === 'add') {
                                 setNewTabUrl('');
                                 setNewTabModalOpen(true);
-                              } else if (action === 'remove' && typeof targetKey === 'string') {
+                              } else if (action === 'remove' && typeof targetKey === 'string' && targetKey !== 'code-server') {
                                 setIdeTabs(prev => {
                                   const currentTabs = prev[selectedProject.path] || [];
                                   const nextTabs = currentTabs.filter(tab => tab.id !== targetKey);
@@ -2158,7 +2396,43 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                             }}
                             style={{ flex: 1, display: 'flex', flexDirection: 'column', marginTop: 0 }}
                             className="terminal-tabs-inner settings-tabs"
-                            items={(ideTabs[selectedProject.path] || []).map(tab => ({
+                            items={[
+                              {
+                                key: 'code-server',
+                                label: (
+                                  <span className="ide-tab-label">
+                                    <img src={codeIcon} alt="Code Server" style={{ width: 14, height: 14 }} />
+                                    <span className="ide-tab-title">Code Server</span>
+                                  </span>
+                                ),
+                                closable: false,
+                                children: (
+                                  <div style={{ flex: 1, display: 'flex', minHeight: 0, position: 'relative' }}>
+                                    <iframe
+                                      key={`code-server-${codeServerPort}-${selectedProject.path}`}
+                                      src={codeServerUrl}
+                                      title="Code Server"
+                                      style={{
+                                        flex: 1,
+                                        width: '100%',
+                                        height: '100%',
+                                        border: 'none',
+                                        display: 'block',
+                                        background: 'var(--bg-primary)'
+                                      }}
+                                      allow="clipboard-read *; clipboard-write *; display-capture *"
+                                      onLoad={() => setTabLoadErrors(prev => ({ ...prev, 'code-server': false }))}
+                                      onError={() => setTabLoadErrors(prev => ({ ...prev, 'code-server': true }))}
+                                    />
+                                    {tabLoadErrors['code-server'] && (
+                                      <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.45)', color: '#fff', padding: 16, textAlign: 'center' }}>
+                                        Code Server 页面加载失败，请检查 IDE 服务状态。
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              },
+                              ...(ideTabs[selectedProject.path] || []).map(tab => ({
                               key: tab.id,
                               label: (
                                 <span className="ide-tab-label">
@@ -2210,7 +2484,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                   )}
                                 </div>
                               )
-                            }))}
+                            }))]}
                           />
                         )}
                       </div>
@@ -2382,7 +2656,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                           const args = isFullAuth
                                             ? `--dangerously-skip-permissions --resume ${record.session_id}`
                                             : `--resume ${record.session_id}`;
-                                          const cmd = await buildClaudeCmd(tid, args);
+                                          const cmd = await buildAgentCmd(tid, args);
                                           invoke('pty_write', { terminal_id: tid, data: cmd });
                                           setSessionModalOpen(false);
                                         }}
@@ -2504,7 +2778,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                             targetTerminalId = crypto.randomUUID();
                                             setProjectTerminals(prev => ({
                                               ...prev,
-                                              [selectedProject.path]: [...current, { id: targetTerminalId as string, title: "MCP 测试" }]
+                                              [selectedProject.path]: [...current, { id: targetTerminalId as string, title: "MCP 测试", agentType: 'claude' }]
                                             }));
                                           }
 
@@ -2529,18 +2803,18 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
 
                                               if (existingSession) {
                                                 // Resume existing testing session
-                                                cmd = await buildClaudeCmd(targetTerminalId, isFullAuth
+                                                cmd = await buildAgentCmd(targetTerminalId, isFullAuth
                                                   ? `--dangerously-skip-permissions --resume ${existingSession}`
                                                   : `--resume ${existingSession}`);
                                                 messageApi.info(`恢复测试会话: ${existingSession.slice(0, 12)}...`);
                                               } else {
-                                                // Start new claude session - capture current sessions first to avoid saving old session
+                                                // Start a new agent session and capture current sessions first to avoid saving old session
                                                 const currentSessions = await invoke<SessionInfo[]>('get_project_sessions', {
                                                   project_path: selectedProject.path,
                                                 }).catch(() => [] as SessionInfo[]);
                                                 const topId = currentSessions.length > 0 ? currentSessions[0].id : 0;
 
-                                                cmd = await buildClaudeCmd(targetTerminalId, isFullAuth
+                                                cmd = await buildAgentCmd(targetTerminalId, isFullAuth
                                                   ? '--dangerously-skip-permissions'
                                                   : '');
                                                 messageApi.info('启动新的 MCP 测试会话，正在连接...');
@@ -2668,21 +2942,31 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           open={createTerminalModalOpen}
                           onCancel={() => {
                             setCreateTerminalModalOpen(false);
+                            setNewTerminalAgentType(undefined);
                             setNewTerminalProviderId(undefined);
                           }}
                           onOk={handleConfirmCreateTerminal}
                           okText="创建"
                           cancelText="取消"
-                          okButtonProps={{ disabled: !newTerminalProviderId }}
+                          okButtonProps={{ disabled: !newTerminalAgentType || !newTerminalProviderId }}
                           destroyOnHidden
                           width={600}
                         >
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                             <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-                              请选择这个终端要使用的 AI Provider。
+                              选择 Agent 类型和模型 Provider。配置只注入当前终端，不修改全局 Agent 配置。
                             </div>
                             <Select
-                              placeholder="选择 AI Provider"
+                              placeholder="选择 Agent"
+                              value={newTerminalAgentType}
+                              onChange={(value: AgentType) => setNewTerminalAgentType(value)}
+                              style={{ width: '100%' }}
+                              options={AGENT_OPTIONS}
+                            />
+                            <Select
+                              placeholder="选择模型 Provider"
+                              disabled={!newTerminalAgentType}
+
                               value={newTerminalProviderId}
                               onChange={(val) => {
                                 setNewTerminalProviderId(val);
@@ -2771,19 +3055,30 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                           </div>
                         </Modal>
 
-                        <div className={`terminal-wrapper ${terminalFullscreen ? 'fullscreen' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
-                          {terminalStateReady ? (
+                        <div className="pty-workspace">
+                          <AgentSessionSidebar
+                            sessions={agentSessions}
+                            selectedSessionId={resumingAgentSessionId || undefined}
+                            disabled={!terminalStateReady || !!resumingAgentSessionId}
+                            onRefresh={() => {
+                              if (selectedProject) void fetchAgentSessions(selectedProject.path);
+                            }}
+                            onSelect={handleResumeHistoricalSession}
+                          />
+                          <div className={`terminal-wrapper ${terminalFullscreen ? 'fullscreen' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+                            {terminalStateReady ? (
                             <Tabs
                               type="editable-card"
                               size="small"
                               tabBarExtraContent={
                                 <Space size="small" style={{ marginRight: 8, display: 'flex', alignItems: 'center' }}>
-                                  <Tooltip title={fullAuth[selectedProject.path] ? '完全授权模式 (--dangerously-skip-permissions)' : '安全模式 (进行权限管控)'}>
+                                  <Tooltip title={fullAuth[selectedProject.path] ? `${agentLabel(activeAgentType)} 完全授权模式` : '安全模式 (进行权限管控)'}>
                                     <Button
                                       size="small"
                                       type={fullAuth[selectedProject.path] ? 'primary' : 'text'}
                                       danger={fullAuth[selectedProject.path] || false}
                                       className={fullAuth[selectedProject.path] ? 'auth-btn-active' : ''}
+                                      disabled={activeAgentType === 'pi'}
                                       icon={<SafetyCertificateOutlined />}
                                       onClick={() => setFullAuth(prev => ({ ...prev, [selectedProject.path]: !(prev[selectedProject.path] || false) }))}
                                     />
@@ -2795,21 +3090,19 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         const tid = activeTerminalId[selectedProject.path];
                                         if (!tid) return;
                                         const isFullAuth = fullAuth[selectedProject.path] || false;
-                                        const cmd = await buildClaudeCmd(tid, isFullAuth ? '--dangerously-skip-permissions' : '');
+                                        const cmd = await buildAgentCmd(tid, agentPermissionArgs(activeAgentType, isFullAuth));
                                         invoke('pty_write', { terminal_id: tid, data: cmd });
                                       }} />
                                   </Tooltip>
-                                  <Tooltip title="继续会话">
+                                  <Tooltip title={activeAgentType === 'claude' ? '继续 Claude 会话' : `恢复上个 ${agentLabel(activeAgentType)} 会话`}>
                                     <Button size="small" type="text"
                                       disabled={!activeTerminalId[selectedProject.path] || activeTerminalId[selectedProject.path] === 'detail'}
-                                      onClick={async () => {
-                                        await fetchSessions(selectedProject.path);
-                                        setSessionModalOpen(true);
-                                      }} icon={<HistoryOutlined />} />
+                                      onClick={handleResumePreviousSession}
+                                      icon={<HistoryOutlined />} />
                                   </Tooltip>
                                   <Tooltip title="测试会话">
                                     <Button size="small" type="text"
-                                      disabled={!activeTerminalId[selectedProject.path] || activeTerminalId[selectedProject.path] === 'detail'}
+                                      disabled={!activeTerminalId[selectedProject.path] || activeTerminalId[selectedProject.path] === 'detail' || !isClaudeAgent}
                                       onClick={() => {
                                         setTestModalOpen(true);
                                         if (tauriAvailable) {
@@ -2830,17 +3123,20 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                       items: [
                                         {
                                           key: 'update',
-                                          label: '更新 Claude',
+                                          label: '更新 Agent',
+                                          disabled: !isClaudeAgent,
                                           icon: <ReloadOutlined />,
-                                          onClick: () => {
+                                          onClick: async () => {
                                             const tid = activeTerminalId[selectedProject.path];
                                             if (!tid) return;
-                                            invoke('pty_write', { terminal_id: tid, data: 'claude update\n' });
+                                            const command = await buildAgentCmd(tid, 'update');
+                                            invoke('pty_write', { terminal_id: tid, data: command });
                                           }
                                         },
                                         {
                                           key: 'records',
                                           label: 'Claude 记录',
+                                          disabled: !isClaudeAgent,
                                           icon: <HistoryOutlined />,
                                           onClick: () => {
                                             setShowDetailTab(prev => ({ ...prev, [selectedProject.path]: true }));
@@ -2856,6 +3152,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         {
                                           key: 'compact',
                                           label: '/compact (精简上下文)',
+                                          disabled: !isClaudeAgent,
                                           icon: <CompressOutlined />,
                                           onClick: () => {
                                             const tid = activeTerminalId[selectedProject.path];
@@ -2867,6 +3164,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         {
                                           key: 'clear',
                                           label: '/clear (清空历史)',
+                                          disabled: !isClaudeAgent,
                                           icon: <ClearOutlined />,
                                           onClick: () => {
                                             const tid = activeTerminalId[selectedProject.path];
@@ -2877,6 +3175,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         {
                                           key: 'undo',
                                           label: '/undo (撤销修改)',
+                                          disabled: !isClaudeAgent,
                                           icon: <UndoOutlined />,
                                           onClick: () => {
                                             const tid = activeTerminalId[selectedProject.path];
@@ -2887,6 +3186,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         {
                                           key: 'files',
                                           label: '/files (查看已载入文件)',
+                                          disabled: !isClaudeAgent,
                                           icon: <FileTextOutlined />,
                                           onClick: () => {
                                             const tid = activeTerminalId[selectedProject.path];
@@ -2957,6 +3257,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                               items={[
                                 ...(projectTerminals[selectedProject.path] || []).map(term => {
                                   const isActive = activeTerminalId[selectedProject.path] === term.id;
+                                  const terminalAgentType = normalizeAgentType(term.agentType);
                                   const currentProvider = providers.find(p => `${p.app_type}::${p.id}` === term.providerId);
                                   let currentModelId = term.selectedModelId;
                                   if (!currentModelId && currentProvider?.settings_config) {
@@ -2973,11 +3274,17 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                     key: term.id,
                                     label: (
                                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                        <img src={isActive ? claudeIcon : claudeDeactiveIcon} width={18} height={18} alt="Claude" />
-                                        <span>{term.title}</span>
-                                        {terminalStatus[term.id] === 'claude' && (
-                                          <Badge status="processing" text={<span style={{ color: 'var(--primary-color)', fontSize: '12px' }}>Claude 运行中</span>} />
+                                        {terminalAgentType === 'pi' || terminalAgentType === 'codex' ? (
+                                          <AgentLogo agentType={terminalAgentType} size={14} />
+                                        ) : (
+                                          <AppstoreAddOutlined style={{ color: isActive ? 'var(--primary-color)' : 'var(--text-tertiary)' }} />
                                         )}
+                                        <span>{term.title}</span>
+                                        <span
+                                          className={`terminal-agent-output-dot${agentOutputPulse[term.id] ? ' is-pulsing' : ''}`}
+                                          title={`${agentLabel(terminalAgentType)} 输出`}
+                                          aria-label={`${agentLabel(terminalAgentType)} 输出`}
+                                        />
                                       </div>
                                     ),
                                     closable: true,
@@ -3026,9 +3333,11 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                               {currentModelId || '未选择模型'}
                                             </Tag>
                                           </div>
-                                          <ContextDonut
-                                            projectPath={selectedProject!.path}
-                                          />
+                                          {terminalAgentType === 'claude' && (
+                                            <ContextDonut
+                                              projectPath={selectedProject!.path}
+                                            />
+                                          )}
                                           {!terminalFullscreen && (
                                             <Button
                                               type="text"
@@ -3048,6 +3357,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                         {/* To maintain alignment we just replaced the overlay buttons */}
                                         <div style={{ flex: 1, display: (viewModes[term.id] || 'terminal') === 'terminal' ? 'block' : 'none' }}>
                                           {(() => {
+                                            const agentType = normalizeAgentType(term.agentType);
                                             const providerIdStr = term.providerId || selectedProject?.default_provider_id || appConfig?.default_provider_id;
                                             const providerIdForSpawn = providerIdStr && providerIdStr.includes('::') ? providerIdStr.split('::')[1] : undefined;
                                             return (
@@ -3057,12 +3367,13 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                                 title={term.title as string}
                                                 defaultProviderId={providerIdForSpawn}
                                                 selectedModelId={term.selectedModelId}
+                                                agentType={agentType}
                                                 onData={handleTerminalInput}
                                                 onLinkClick={async (path) => {
                                                   try {
                                                     const exists = await invoke<boolean>('check_file_exists', { filePath: path });
                                                     if (!exists) {
-                                                      messageApi.warning(`文件路径不存在: ${path}，Claude 可能省略了上级目录，请使用准确路径`);
+                                                      messageApi.warning(`文件路径不存在: ${path}，Agent 可能省略了上级目录，请使用准确路径`);
                                                       return;
                                                     }
                                                   } catch (e) {
@@ -3089,7 +3400,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                             );
                                           })()}
                                         </div>
-                                        {viewModes[term.id] === 'chat' && (
+                                        {terminalAgentType === 'claude' && viewModes[term.id] === 'chat' && (
                                           <ChatView projectPath={selectedProject!.path} activeTerminalId={term.id} />
                                         )}
                                       </div>
@@ -3370,12 +3681,13 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                                 }] : []),
                               ]}
                             />
-                          ) : (
-                            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', gap: 8 }}>
-                              <LoadingOutlined style={{ fontSize: 18 }} />
-                              <span>终端恢复中...</span>
-                            </div>
-                          )}
+                            ) : (
+                              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', gap: 8 }}>
+                                <LoadingOutlined style={{ fontSize: 18 }} />
+                                <span>终端恢复中...</span>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </Card>
                     </Splitter.Panel>
@@ -3674,20 +3986,6 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
           <div style={{ marginTop: '16px', fontSize: '14px', lineHeight: '1.6' }}>
             <p>Sparky 需要以下全局工具才能正常运行。检测到您的系统缺少以下依赖：</p>
 
-            {missingDependencies && !missingDependencies.claude && (
-              <div style={{ marginTop: '16px', background: 'var(--bg-secondary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-                <h4 style={{ margin: '0 0 8px 0', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <img src={claudeIcon} width={16} height={16} alt="Claude" />
-                  Claude Code (必须)
-                </h4>
-                <p style={{ margin: '0 0 8px 0', fontSize: '13px', color: 'var(--text-secondary)' }}>用于在终端中执行 AI 交互逻辑。</p>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <code style={{ flex: 1, padding: '6px 10px', background: 'rgba(0,0,0,0.2)', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)' }}>npm install -g @anthropic-ai/claude-code</code>
-                  <Button size="small" icon={<CopyOutlined />} onClick={() => navigator.clipboard.writeText('npm install -g @anthropic-ai/claude-code')} />
-                </div>
-              </div>
-            )}
-
             {missingDependencies && !missingDependencies.code_server && (
               <div style={{ marginTop: '16px', background: 'var(--bg-secondary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
                 <h4 style={{ margin: '0 0 8px 0', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -3740,19 +4038,23 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                     base_url: values.base_url,
                     model_ids: values.model_ids,
                     model_id: currentTestModel, // User-selected model for testing, or fallback
+                    api: values.api,
+                    default_thinking_level: values.default_thinking_level,
+                    context_window: values.context_window,
                     api_timeout: values.api_timeout,
                     disable_traffic: values.disable_traffic ? 1 : 0
                   };
                   const provider = {
                     ...values,
                     id: editingProvider?.id || (window as any).crypto.randomUUID(),
-                    app_type: 'ClaudeCode', // 我们的默认类型
+                    app_type: editingProvider?.app_type || 'generic',
+                    provider_type: values.api,
                     settings_config: JSON.stringify(settings),
                     meta: JSON.stringify({}),
                     cost_multiplier: '1.0',
                     is_current: false,
                     in_failover_queue: false,
-                    endpoints: [{ url: values.base_url, provider_id: '', app_type: 'ClaudeCode', added_at: Date.now() }]
+                    endpoints: [{ url: values.base_url, provider_id: '', app_type: editingProvider?.app_type || 'generic', added_at: Date.now() }]
                   };
                   const res = await invoke<string>('test_ai_provider_connection', { provider });
                   messageApi.success(res);
@@ -3789,13 +4091,17 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                   base_url: values.base_url,
                   model_ids: values.model_ids,
                   model_id: values.model_ids?.[0], // legacy fallback
+                  api: values.api,
+                  default_thinking_level: values.default_thinking_level,
+                  context_window: values.context_window,
                   api_timeout: values.api_timeout,
                   disable_traffic: values.disable_traffic ? 1 : 0
                 };
                 const newId = editingProvider?.id || (window as any).crypto.randomUUID();
                 const provider = {
                   id: newId,
-                  app_type: editingProvider?.app_type || 'ClaudeCode',
+                  app_type: editingProvider?.app_type || 'generic',
+                  provider_type: values.api,
                   name: values.name,
                   settings_config: JSON.stringify(settings),
                   website_url: values.website_url,
@@ -3805,7 +4111,7 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
                   in_failover_queue: editingProvider?.in_failover_queue || false,
                   created_at: editingProvider?.created_at || Date.now(),
                   sort_index: editingProvider?.sort_index || 0,
-                  endpoints: editingProvider?.endpoints || [{ url: values.base_url, provider_id: newId, app_type: editingProvider?.app_type || 'ClaudeCode', added_at: Date.now() }]
+                  endpoints: editingProvider?.endpoints || [{ url: values.base_url, provider_id: newId, app_type: editingProvider?.app_type || 'generic', added_at: Date.now() }]
                 } as AIProvider;
 
                 await invoke('upsert_ai_provider', { provider });
@@ -3839,16 +4145,40 @@ function AppContent({ isDarkMode, setIsDarkMode }: { isDarkMode: boolean, setIsD
             }}
           >
             <Form.Item name="name" label="名称" rules={[{ required: true }]}>
-              <Input placeholder="例如: Official Claude" />
+              <Input placeholder="例如: Official Provider" />
             </Form.Item>
             <Form.Item name="api_key" label="API Key" rules={[{ required: true }]}>
-              <Input.Password placeholder="ANTHROPIC_AUTH_TOKEN" />
+              <Input.Password placeholder="Provider API Key" />
             </Form.Item>
             <Form.Item name="base_url" label="Base URL">
-              <Input placeholder="ANTHROPIC_BASE_URL (可选)" />
+              <Input placeholder="Provider API Base URL (可选)" />
+            </Form.Item>
+            <Form.Item name="api" label="API 协议" initialValue="openai-responses">
+              <Select
+                options={[
+                  { value: 'openai-responses', label: 'OpenAI Responses' },
+                  { value: 'openai-completions', label: 'OpenAI Chat Completions' },
+                  { value: 'anthropic-messages', label: 'Anthropic Messages' },
+                  { value: 'google-generative-ai', label: 'Google Generative AI' },
+                ]}
+              />
             </Form.Item>
             <Form.Item name="model_ids" label="Model IDs (可添加多个)">
               <ModelListInput />
+            </Form.Item>
+            <Form.Item name="default_thinking_level" label="pi 默认思考强度" initialValue="xhigh">
+              <Select
+                options={[
+                  { value: 'low', label: 'Low' },
+                  { value: 'medium', label: 'Medium' },
+                  { value: 'high', label: 'High' },
+                  { value: 'xhigh', label: 'XHigh' },
+                  { value: 'max', label: 'Max' },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item name="context_window" label="pi 上下文窗口" initialValue={256000}>
+              <InputNumber min={1024} max={2000000} step={1024} style={{ width: '100%' }} />
             </Form.Item>
             <Form.Item name="website_url" label="官网">
               <Input placeholder="Provider 官网链接 (可选)" />
@@ -3914,7 +4244,7 @@ function AppGate({
   );
 
   useEffect(() => {
-    if (!initialized) {
+    if (tauriAvailable || !initialized) {
       return;
     }
 
@@ -3932,7 +4262,7 @@ function AppGate({
       window.history.replaceState({}, '', '/login');
       setAuthMode('login');
     }
-  }, [initialized, isAuthenticated]);
+  }, [initialized, isAuthenticated, tauriAvailable]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -3955,6 +4285,10 @@ function AppGate({
       window.history.pushState({}, '', target);
     }
   }, []);
+
+  if (tauriAvailable) {
+    return <AppContent isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} />;
+  }
 
   if (!initialized) {
     return (
@@ -3983,11 +4317,7 @@ function AppGate({
     );
   }
 
-  return tauriAvailable ? (
-    <AppContent isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} />
-  ) : (
-    <AppWeb isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} />
-  );
+  return <AppWeb isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} />;
 }
 
 function App() {

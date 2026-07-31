@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../ui/dist",
     "devUrl": "http://localhost:51760",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "cargo build --release --bin sparky-server --manifest-path Cargo.toml && cp -f target/release/sparky-server target/release/sparky-server-aarch64-apple-darwin || true && npm run build"
+    "beforeDevCommand": "UI_DIR=ui; [ -d $UI_DIR ] || UI_DIR=../ui; npm --prefix $UI_DIR run dev -- --host 127.0.0.1 --port 51760",
+    "beforeBuildCommand": "ROOT_DIR=.; [ -f $ROOT_DIR/src/bin/sparky-server.rs ] || ROOT_DIR=..; cargo build --release --bin sparky-server --manifest-path $ROOT_DIR/Cargo.toml && cp -f $ROOT_DIR/target/release/sparky-server $ROOT_DIR/target/release/sparky-server-aarch64-apple-darwin || true && UI_DIR=ui; [ -d $UI_DIR ] || UI_DIR=../ui; npm --prefix $UI_DIR run build"
   },
   "app": {
     "windows": [

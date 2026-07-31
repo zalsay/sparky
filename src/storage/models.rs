@@ -114,20 +114,6 @@ pub struct ProjectDetail {
     pub terminal_history: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebIdeProjectStatus {
-    pub project_id: String,
-    pub project_path: String,
-    pub project_name: String,
-    pub active_pty_count: u32,
-    pub agent_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebIdeSummaryResponse {
-    pub projects: Vec<WebIdeProjectStatus>,
-}
-
 pub fn load_app_config(conn: &Connection) -> Result<AppConfig, String> {
     Ok(load_config_from_db(conn)?.unwrap_or_default())
 }

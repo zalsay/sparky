@@ -9,9 +9,10 @@ interface PtyInfo {
   rows: number;
   defaultProviderId?: string;
   selectedModelId?: string;
+  agentType?: string;
 }
 
-export function usePty(terminalId: string, projectPath: string, customEnvs?: Record<string, string>, onData?: (data: string, projectPath: string, terminalId: string) => void, defaultProviderId?: string, selectedModelId?: string) {
+export function usePty(terminalId: string, projectPath: string, customEnvs?: Record<string, string>, onData?: (data: string, projectPath: string, terminalId: string) => void, defaultProviderId?: string, selectedModelId?: string, agentType: string = 'claude') {
   const [isRunning, setIsRunning] = useState(false);
   const ptyRef = useRef<PtyInfo | null>(null);
   const currentTerminalRef = useRef<string | null>(terminalId);
@@ -101,7 +102,7 @@ export function usePty(terminalId: string, projectPath: string, customEnvs?: Rec
       console.log('PTY exists:', exists);
 
       if (isRunning && exists) {
-        console.warn('Reusing existing PTY. Proxy env vars are not re-injected; recreate terminal if proxy logs are missing.');
+        console.warn('Reusing existing PTY. Agent configuration is not re-injected; recreate the terminal after changing agent or provider.');
         await ensureTerminalProvider(terminalId);
         console.log('Same terminal, setting up listener');
         await setupListener(terminalId);
@@ -109,10 +110,10 @@ export function usePty(terminalId: string, projectPath: string, customEnvs?: Rec
       }
 
       if (exists) {
-        console.warn('Reconnecting existing PTY. Proxy env vars may be stale; recreate terminal if Claude bypasses proxy.');
+        console.warn('Reconnecting existing PTY. Agent configuration may be stale; recreate the terminal after changing agent or provider.');
         await ensureTerminalProvider(terminalId);
         console.log('Reconnecting to existing PTY for terminal:', terminalId);
-        ptyRef.current = { projectPath, terminalId, cols: 100, rows: 30, defaultProviderId };
+        ptyRef.current = { projectPath, terminalId, cols: 100, rows: 30, defaultProviderId, agentType };
         setIsRunning(true);
         await setupListener(terminalId);
         return ptyRef.current;
@@ -146,17 +147,18 @@ export function usePty(terminalId: string, projectPath: string, customEnvs?: Rec
         terminal_id: terminalId,
         default_provider_id: defaultProviderId,
         selected_model_id: selectedModelId,
+        agent_type: agentType,
       });
 
       console.log('PTY spawned for terminal:', result);
-      ptyRef.current = { projectPath, terminalId: result, cols: 100, rows: 30, defaultProviderId, selectedModelId };
+      ptyRef.current = { projectPath, terminalId: result, cols: 100, rows: 30, defaultProviderId, selectedModelId, agentType };
       // Do not setIsRunning(true) here; wait for actual pty-data from setupListener
       return ptyRef.current;
     } catch (error) {
       console.error('Failed to start PTY:', error);
       return null;
     }
-  }, [isRunning, setupListener, ensureTerminalProvider, projectPath, terminalId, customEnvs, tauriAvailable, defaultProviderId]);
+  }, [isRunning, setupListener, ensureTerminalProvider, projectPath, terminalId, customEnvs, tauriAvailable, defaultProviderId, selectedModelId, agentType]);
 
   const write = useCallback(async (data: string) => {
     if (!tauriAvailable) {

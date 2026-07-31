@@ -24,6 +24,7 @@ interface TerminalProps {
   envs?: Record<string, string>;
   defaultProviderId?: string;
   selectedModelId?: string;
+  agentType?: string;
 }
 
 export interface TerminalRef {
@@ -120,7 +121,7 @@ function getOrCreateTerminal(terminalId: string, title?: string, themeVals?: { b
   return created;
 }
 
-export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent({ projectPath, terminalId, title, onData, onLinkClick, mergeTop, historyLines, fullscreen, theme, envs, defaultProviderId, selectedModelId }: TerminalProps, ref) {
+export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent({ projectPath, terminalId, title, onData, onLinkClick, mergeTop, historyLines, fullscreen, theme, envs, defaultProviderId, selectedModelId, agentType = 'claude' }: TerminalProps, ref) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -130,7 +131,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
 
 
   const tauriAvailable = isTauri();
-  const { startPty, write, clearPty } = usePty(terminalId, projectPath, envs, undefined, defaultProviderId, selectedModelId);
+  const { startPty, write, clearPty } = usePty(terminalId, projectPath, envs, undefined, defaultProviderId, selectedModelId, agentType);
 
   useImperativeHandle(ref, () => ({
     scrollToBottom: () => {
@@ -434,7 +435,7 @@ export default forwardRef<TerminalRef, TerminalProps>(function TerminalComponent
       if (disposed || !ptyReady) return;
       if (!tauriAvailable) return;
       try {
-        await invoke('pty_resize', { terminalId, cols, rows });
+        await invoke('pty_resize', { terminal_id: terminalId, cols, rows });
       } catch (e) {
         // ignore
       }

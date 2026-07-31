@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::{
     storage::{
         db::open_db,
-        models::{self, AIProvider, AppConfig, HookRecordsResponse, WebIdeSummaryResponse},
+        models::{self, AIProvider, AppConfig, HookRecordsResponse},
     },
     web_server::{
         auth::AuthSession,
@@ -335,7 +335,7 @@ async fn web_ide_summary(
         .web_ide
         .summary_for_agent(&auth.0.agent_id, &auth.0.allowed_projects)
         .await;
-    Ok(Json(json!(WebIdeSummaryResponse { projects })))
+    Ok(Json(json!({ "projects": projects })))
 }
 
 async fn web_ide_events(

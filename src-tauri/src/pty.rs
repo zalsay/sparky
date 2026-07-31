@@ -1,12 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, Arc};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize, PtyPair, Child};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
 use std::thread;
 use tauri::{Emitter, Manager};
 use rusqlite::params;
-use serde_json::json;
+use serde::Serialize;
+use serde_json::{json, Value};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+use crate::agent::{self, AgentKind};
 
 pub struct PtyManager {
     masters: Mutex<HashMap<String, Box<dyn portable_pty::MasterPty + Send>>>,
@@ -16,7 +19,9 @@ pub struct PtyManager {
     spawning: Mutex<HashSet<String>>,
     verified_terminals: Mutex<HashSet<String>>,
     terminal_providers: Mutex<HashMap<String, String>>, // terminal_id -> provider_id
-    terminal_settings_paths: Mutex<HashMap<String, std::path::PathBuf>>, // terminal_id -> temp settings file
+    terminal_agents: Mutex<HashMap<String, String>>, // terminal_id -> agent type
+    terminal_commands: Mutex<HashMap<String, String>>, // terminal_id -> launch command
+    terminal_settings_paths: Mutex<HashMap<String, std::path::PathBuf>>, // terminal_id -> generated config file
 }
 
 impl PtyManager {
@@ -29,6 +34,8 @@ impl PtyManager {
             spawning: Mutex::new(HashSet::new()),
             verified_terminals: Mutex::new(HashSet::new()),
             terminal_providers: Mutex::new(HashMap::new()),
+            terminal_agents: Mutex::new(HashMap::new()),
+            terminal_commands: Mutex::new(HashMap::new()),
             terminal_settings_paths: Mutex::new(HashMap::new()),
         }
     }
@@ -108,11 +115,15 @@ impl PtyManager {
         if removed.is_some() {
             self.verified_terminals.lock().unwrap().remove(terminal_id);
             self.terminal_providers.lock().unwrap().remove(terminal_id);
+            self.terminal_agents.lock().unwrap().remove(terminal_id);
+            self.terminal_commands.lock().unwrap().remove(terminal_id);
             if let Some(path) = self.terminal_settings_paths.lock().unwrap().remove(terminal_id) {
-                if path.exists() {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::remove_dir_all(parent);
+                } else {
                     let _ = std::fs::remove_file(&path);
-                    log::info!("[remove_pty] Cleaned up settings file for terminal {}", terminal_id);
                 }
+                log::info!("[remove_pty] Cleaned up generated config for terminal {}", terminal_id);
             }
             self.update_active_ptys_in_db();
         }
@@ -168,6 +179,29 @@ impl PtyManager {
             .unwrap_or(0)
     }
 
+    pub fn get_project_agent_session_roots(&self, project_path: &str) -> Vec<(String, PathBuf)> {
+        let terminal_ids = self
+            .project_terminals
+            .lock()
+            .unwrap()
+            .get(project_path)
+            .cloned()
+            .unwrap_or_default();
+        terminal_ids
+            .into_iter()
+            .filter_map(|terminal_id| {
+                let agent_type = self.terminal_agents.lock().unwrap().get(&terminal_id).cloned()?;
+                let settings_path = self
+                    .terminal_settings_paths
+                    .lock()
+                    .unwrap()
+                    .get(&terminal_id)
+                    .cloned()?;
+                Some((agent_type, settings_path.parent()?.join("sessions")))
+            })
+            .collect()
+    }
+
     fn update_active_ptys_in_db(&self) {
         let projects = self.get_active_projects();
         std::thread::spawn(move || {
@@ -205,6 +239,22 @@ impl PtyManager {
         self.terminal_settings_paths.lock().unwrap()
             .get(terminal_id)
             .map(|p| p.to_string_lossy().to_string())
+    }
+
+    pub fn store_agent_launch(&self, terminal_id: String, agent_type: String, command: String, config_path: Option<std::path::PathBuf>) {
+        self.terminal_agents.lock().unwrap().insert(terminal_id.clone(), agent_type);
+        self.terminal_commands.lock().unwrap().insert(terminal_id.clone(), command);
+        if let Some(path) = config_path {
+            self.store_settings_path(terminal_id, path);
+        }
+    }
+
+    pub fn get_agent_type(&self, terminal_id: &str) -> Option<String> {
+        self.terminal_agents.lock().unwrap().get(terminal_id).cloned()
+    }
+
+    pub fn get_agent_command(&self, terminal_id: &str) -> Option<String> {
+        self.terminal_commands.lock().unwrap().get(terminal_id).cloned()
     }
 
     pub fn get_provider_details(&self, provider_id: &str) -> Option<crate::AIProvider> {
@@ -390,6 +440,17 @@ impl PtyManager {
     }
 }
 
+struct SpawnReservation {
+    manager: Arc<PtyManager>,
+    terminal_id: String,
+}
+
+impl Drop for SpawnReservation {
+    fn drop(&mut self) {
+        self.manager.spawning.lock().unwrap().remove(&self.terminal_id);
+    }
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn pty_spawn(
     app: tauri::AppHandle,
@@ -403,6 +464,7 @@ pub async fn pty_spawn(
     terminal_id: String,
     default_provider_id: Option<String>,
     selected_model_id: Option<String>,
+    agent_type: Option<String>,
 ) -> Result<String, String> {
     // Atomic spawn lock: prevent concurrent duplicate spawns for same terminal
     {
@@ -410,7 +472,7 @@ pub async fn pty_spawn(
         let mut spawning = manager.spawning.lock().unwrap();
         if spawning.contains(&terminal_id) || manager.has_pty(&terminal_id) {
             log::warn!(
-                "[pty_spawn] SKIP duplicate for terminal: {} (existing PTY keeps old env; recreate PTY to re-inject proxy vars)",
+                "[pty_spawn] SKIP duplicate for terminal: {} (existing PTY keeps its Agent configuration; recreate it to change Agent or provider)",
                 terminal_id
             );
             return Ok(terminal_id);
@@ -418,100 +480,39 @@ pub async fn pty_spawn(
         spawning.insert(terminal_id.clone());
     }
 
+    let _spawn_reservation = {
+        let manager = app.state::<Arc<PtyManager>>();
+        SpawnReservation {
+            manager: manager.inner().clone(),
+            terminal_id: terminal_id.clone(),
+        }
+    };
+
     log::info!("Spawning PTY: program={}, args={:?}, cwd={}, project={}, terminal={}, selected_model={:?}", program, args, cwd, project_path, terminal_id, selected_model_id);
 
     let manager = app.state::<Arc<PtyManager>>();
-    let has_direct_provider = if let Some(ref provider_id) = default_provider_id {
-        log::info!("[PTY_SPAWN] Setting provider {} for terminal {}", provider_id, terminal_id);
+    let agent_kind = AgentKind::parse(agent_type.as_deref());
+    let provider = default_provider_id
+        .as_deref()
+        .and_then(|provider_id| manager.get_provider_details(provider_id));
+    if let Some(provider_id) = default_provider_id.as_ref() {
+        log::info!("[PTY_SPAWN] Setting provider {} for {} terminal {}", provider_id, agent_kind.as_str(), terminal_id);
         manager.set_terminal_provider(terminal_id.clone(), provider_id.clone());
-        true
-    } else {
-        false
-    };
-
-    let proxy_config = app.state::<crate::ProxyConfig>();
-    let proxy_root_url = format!("http://127.0.0.1:{}", proxy_config.port);
-
-    // Generate temp settings file for `claude --settings` with REAL provider config
-    // Same approach as cc-switch: write { "env": { ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL, ANTHROPIC_MODEL, ... } }
-    if has_direct_provider {
-        let provider_id = default_provider_id.as_ref().unwrap();
-        if let Some(provider) = manager.get_provider_details(provider_id) {
-            let config: serde_json::Value = serde_json::from_str(&provider.settings_config)
-                .unwrap_or(serde_json::json!({}));
-
-            // If settings_config already has cc-switch format { "env": { ... } }, use it as base
-            let mut env_vars = if let Some(env_obj) = config.get("env").and_then(|v| v.as_object()) {
-                env_obj.clone()
-            } else {
-                serde_json::Map::new()
-            };
-
-            // API URL
-            if !env_vars.contains_key("ANTHROPIC_BASE_URL") {
-                let base_url = config
-                    .get("base_url")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
-                    .or_else(|| {
-                        provider.endpoints.first().map(|e| e.url.clone())
-                    });
-                if let Some(ref url) = base_url {
-                    env_vars.insert("ANTHROPIC_BASE_URL".to_string(), serde_json::Value::String(url.clone()));
-                }
-            }
-
-            // API key
-            if !env_vars.contains_key("ANTHROPIC_AUTH_TOKEN") && !env_vars.contains_key("ANTHROPIC_API_KEY") {
-                if let Some(key) = config.get("api_key").and_then(|v| v.as_str()) {
-                    env_vars.insert("ANTHROPIC_AUTH_TOKEN".to_string(), serde_json::Value::String(key.to_string()));
-                }
-            }
-
-            // Model ID: use selected_model_id if provided, else fallback to model_ids[0] or model_id
-            if !env_vars.contains_key("ANTHROPIC_MODEL") {
-                let chosen_model = selected_model_id.clone()
-                    .or_else(|| {
-                        config.get("model_ids")
-                            .and_then(|v| v.as_array())
-                            .and_then(|arr| arr.first())
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string())
-                    })
-                    .or_else(|| {
-                        config.get("model_id")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string())
-                    });
-
-                if let Some(model_id) = chosen_model {
-                    let model_val = serde_json::Value::String(model_id);
-                    env_vars.insert("ANTHROPIC_MODEL".to_string(), model_val.clone());
-                    env_vars.entry("ANTHROPIC_DEFAULT_HAIKU_MODEL".to_string()).or_insert(model_val.clone());
-                    env_vars.entry("ANTHROPIC_DEFAULT_SONNET_MODEL".to_string()).or_insert(model_val.clone());
-                    env_vars.entry("ANTHROPIC_DEFAULT_OPUS_MODEL".to_string()).or_insert(model_val.clone());
-                }
-            }
-
-            let temp_dir = std::env::temp_dir();
-            let settings_file = temp_dir.join(format!("sparky_claude_settings_{}.json", terminal_id));
-            let settings = serde_json::json!({ "env": env_vars });
-            let content = serde_json::to_string_pretty(&settings)
-                .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-            std::fs::write(&settings_file, &content)
-                .map_err(|e| format!("Failed to write settings file: {}", e))?;
-
-            log::info!(
-                "[PTY_SPAWN] Direct provider settings: provider={}({}) base_url={:?} model={:?} file={:?}",
-                provider.name, provider.id,
-                env_vars.get("ANTHROPIC_BASE_URL"),
-                env_vars.get("ANTHROPIC_MODEL"),
-                settings_file
-            );
-            manager.store_settings_path(terminal_id.clone(), settings_file);
-        }
     }
+
+    let launch = agent::build_launch_config(
+        agent_kind,
+        &terminal_id,
+        provider.as_ref(),
+        selected_model_id.as_deref(),
+    )?;
+
+    log::info!(
+        "[PTY_SPAWN] Agent launch prepared: agent={}, command={}, config={:?}",
+        agent_kind.as_str(),
+        launch.command,
+        launch.config_path
+    );
 
     let pty_system = native_pty_system();
 
@@ -534,11 +535,7 @@ pub async fn pty_spawn(
     cmd.args(&args);
     cmd.cwd(&cwd);
 
-    // When injecting provider settings via --settings, remove inherited Anthropic env vars
-    // to avoid conflicts (e.g., "Auth conflict: Both AUTH_TOKEN and API_KEY are set")
-    // CommandBuilder::new() inherits ALL parent env vars via get_base_env(),
-    // so cmd.env_remove() is required — merely skipping cmd.env() does NOT work.
-    if has_direct_provider {
+    if agent_kind.is_claude() {
         cmd.env_remove("ANTHROPIC_API_KEY");
         cmd.env_remove("ANTHROPIC_AUTH_TOKEN");
         cmd.env_remove("ANTHROPIC_BASE_URL");
@@ -549,25 +546,27 @@ pub async fn pty_spawn(
         cmd.env_remove("ANTHROPIC_DEFAULT_OPUS_MODEL");
     }
 
-    // Inject utility env vars (no proxy routing — provider config is in --settings file)
-    cmd.env("SPARKY_PROXY_BASE_URL", &proxy_root_url);
+    for (key, value) in &launch.envs {
+        cmd.env(key, value);
+    }
     cmd.env("SPARKY_TERMINAL_ID", &terminal_id);
-    
-    // Ensure UTF-8 locale is set so Chinese characters work properly in the PTY
+    cmd.env("SPARKY_AGENT_TYPE", agent_kind.as_str());
+
+    // Ensure UTF-8 locale is set so non-ASCII input/output works properly in the PTY.
     cmd.env("LANG", "en_US.UTF-8");
     cmd.env("LC_ALL", "en_US.UTF-8");
-    log::info!(
-        "[PTY_SPAWN] Utility env set for terminal {}: SPARKY_TERMINAL_ID, SPARKY_PROXY_BASE_URL",
-        terminal_id
-    );
+
     let mut has_hook = false;
     for (key, value) in envs {
         if key == "CLAUDE_MONITOR_HOOK_COMMAND" {
+            if !agent_kind.is_claude() {
+                continue;
+            }
             has_hook = true;
         }
         cmd.env(&key, &value);
     }
-    if !has_hook {
+    if agent_kind.is_claude() && !has_hook {
         if let Ok(hook_cmd) = crate::build_hook_command() {
             cmd.env("CLAUDE_MONITOR_HOOK_COMMAND", hook_cmd);
         }
@@ -576,16 +575,20 @@ pub async fn pty_spawn(
     let child = pair.slave.spawn_command(cmd)
         .map_err(|e| format!("Failed to spawn command: {}", e))?;
 
-    // Store the pair and child with project path as key
+    // Store the pair and child with project path as key.
     let manager = app.state::<Arc<PtyManager>>();
     manager.add_pty(project_path.clone(), terminal_id.clone(), pair, child);
+    manager.store_agent_launch(
+        terminal_id.clone(),
+        agent_kind.as_str().to_string(),
+        launch.command,
+        launch.config_path,
+    );
 
     let _ = app.emit("pty-spawn", json!({
         "projectPath": project_path.clone(),
+        "agentType": agent_kind.as_str(),
     }));
-
-    // Remove from spawning set
-    manager.spawning.lock().unwrap().remove(&terminal_id);
 
     log::info!("[pty_spawn] PTY stored for terminal: {}", terminal_id);
 
@@ -670,6 +673,11 @@ pub async fn pty_spawn(
                     }));
                 }
             }
+        }
+        // Natural process exit must use the same cleanup path as an explicit kill.
+        let manager = app_handle.state::<Arc<PtyManager>>();
+        if manager.has_pty(&terminal_id_clone) {
+            let _ = manager.remove_pty(&terminal_id_clone);
         }
         log::info!("PTY reader thread exiting for terminal: {}", terminal_id_clone);
         let _ = app_handle.emit("pty-exit", serde_json::json!({
@@ -758,6 +766,499 @@ pub async fn pty_spawn(
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub fn get_terminal_agent_command(app: tauri::AppHandle, terminal_id: String) -> Result<String, String> {
+    let manager = app.state::<Arc<PtyManager>>();
+    manager
+        .get_agent_command(&terminal_id)
+        .ok_or_else(|| format!("No launch command found for terminal: {}", terminal_id))
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentSessionInfo {
+    pub session_id: String,
+    pub agent_type: String,
+    pub project_path: String,
+    pub started_at: i64,
+    pub last_active_at: i64,
+    pub title: String,
+}
+
+struct StoredAgentSession {
+    info: AgentSessionInfo,
+    source_path: PathBuf,
+    source_root: PathBuf,
+}
+
+fn resolved_path(path: &str) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
+}
+
+fn paths_match(left: &str, right: &Path) -> bool {
+    resolved_path(left) == resolved_path(right.to_string_lossy().as_ref())
+}
+
+fn pi_agent_dir() -> Option<PathBuf> {
+    std::env::var_os("PI_CODING_AGENT_DIR")
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+        .or_else(|| dirs::home_dir().map(|home| home.join(".pi").join("agent")))
+        .filter(|path| path.is_dir())
+}
+
+fn codex_home() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+        .filter(|path| path.is_dir())
+}
+
+fn timestamp_millis(value: Option<&Value>) -> Option<i64> {
+    match value {
+        Some(Value::Number(number)) => {
+            let value = number.as_i64().or_else(|| number.as_f64().map(|v| v as i64))?;
+            Some(if value < 10_000_000_000 { value * 1000 } else { value })
+        }
+        Some(Value::String(value)) => chrono::DateTime::parse_from_rfc3339(value)
+            .ok()
+            .map(|date| date.timestamp_millis()),
+        _ => None,
+    }
+}
+
+fn modified_millis(path: &Path) -> i64 {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+fn text_from_content(value: Option<&Value>) -> Option<String> {
+    match value {
+        Some(Value::String(text)) if !text.trim().is_empty() => Some(text.trim().to_string()),
+        Some(Value::Array(items)) => items.iter().find_map(|item| {
+            item.get("text")
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+                .map(|text| text.trim().to_string())
+        }),
+        _ => None,
+    }
+}
+
+fn session_title(text: Option<String>, agent_type: &str) -> String {
+    let text = text
+        .unwrap_or_else(|| format!("{} 会话", agent_type))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut title = text.chars().take(96).collect::<String>();
+    if text.chars().count() > 96 {
+        title.push_str("...");
+    }
+    title
+}
+
+fn pi_session_dir_name(project_path: &Path) -> String {
+    let path = project_path.to_string_lossy();
+    let trimmed = path.trim_start_matches(|value| value == '/' || value == '\\');
+    let safe = trimmed
+        .chars()
+        .map(|value| if matches!(value, '/' | '\\' | ':') { '-' } else { value })
+        .collect::<String>();
+    format!("--{}--", safe)
+}
+
+fn parse_pi_session(path: &Path, project_path: &Path, source_root: &Path) -> Option<StoredAgentSession> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut session_id = None;
+    let mut cwd = None;
+    let mut started_at = None;
+    let mut title = None;
+
+    for line in BufReader::new(file).lines().take(256).flatten() {
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if value.get("type").and_then(Value::as_str) == Some("session") {
+            session_id = value.get("id").and_then(Value::as_str).map(str::to_string);
+            cwd = value.get("cwd").and_then(Value::as_str).map(str::to_string);
+            started_at = timestamp_millis(value.get("timestamp"));
+        }
+        if title.is_none()
+            && value.get("type").and_then(Value::as_str) == Some("message")
+            && value
+                .get("message")
+                .and_then(|message| message.get("role"))
+                .and_then(Value::as_str)
+                == Some("user")
+        {
+            title = value
+                .get("message")
+                .and_then(|message| text_from_content(message.get("content")));
+        }
+    }
+
+    let session_id = session_id.filter(|value| is_session_id(value))?;
+    let cwd = cwd?;
+    if !paths_match(&cwd, project_path) {
+        return None;
+    }
+    let started_at = started_at.unwrap_or_else(|| modified_millis(path));
+    Some(StoredAgentSession {
+        info: AgentSessionInfo {
+            session_id,
+            agent_type: "pi".to_string(),
+            project_path: project_path.to_string_lossy().to_string(),
+            started_at,
+            last_active_at: modified_millis(path),
+            title: session_title(title, "PI"),
+        },
+        source_path: path.to_path_buf(),
+        source_root: source_root.to_path_buf(),
+    })
+}
+
+fn parse_codex_session(path: &Path, project_path: &Path, source_root: &Path) -> Option<StoredAgentSession> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut session_id = None;
+    let mut cwd = None;
+    let mut started_at = None;
+    let mut title = None;
+
+    for line in BufReader::new(file).lines().take(256).flatten() {
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if value.get("type").and_then(Value::as_str) == Some("session_meta") {
+            let payload = value.get("payload")?;
+            session_id = payload.get("id").and_then(Value::as_str).map(str::to_string);
+            cwd = payload.get("cwd").and_then(Value::as_str).map(str::to_string);
+            started_at = timestamp_millis(payload.get("timestamp"));
+        }
+        if value.get("type").and_then(Value::as_str) == Some("event_msg") {
+            let payload = value.get("payload")?;
+            if cwd.is_none() && payload.get("type").and_then(Value::as_str) == Some("turn_context") {
+                cwd = payload.get("cwd").and_then(Value::as_str).map(str::to_string);
+            }
+            if title.is_none() && payload.get("type").and_then(Value::as_str) == Some("user_message") {
+                title = payload.get("message").and_then(Value::as_str).map(str::to_string);
+            }
+        }
+    }
+
+    let session_id = session_id.filter(|value| is_session_id(value))?;
+    let cwd = cwd?;
+    if !paths_match(&cwd, project_path) {
+        return None;
+    }
+    let started_at = started_at.unwrap_or_else(|| modified_millis(path));
+    Some(StoredAgentSession {
+        info: AgentSessionInfo {
+            session_id,
+            agent_type: "codex".to_string(),
+            project_path: project_path.to_string_lossy().to_string(),
+            started_at,
+            last_active_at: modified_millis(path),
+            title: session_title(title, "codex"),
+        },
+        source_path: path.to_path_buf(),
+        source_root: source_root.to_path_buf(),
+    })
+}
+
+fn collect_agent_sessions(
+    project_path: &Path,
+    additional_roots: &[(String, PathBuf)],
+) -> Vec<StoredAgentSession> {
+    let mut sessions = Vec::new();
+    if let Some(agent_dir) = pi_agent_dir() {
+        let root = agent_dir.join("sessions");
+        let mut pi_files = Vec::new();
+        collect_session_files(&root, &mut pi_files);
+        sessions.extend(
+            pi_files
+                .iter()
+                .filter_map(|path| parse_pi_session(path, project_path, &root)),
+        );
+    }
+    if let Some(home) = codex_home() {
+        for root in [home.join("sessions"), home.join("archived_sessions")] {
+            let mut codex_files = Vec::new();
+            collect_session_files(&root, &mut codex_files);
+            sessions.extend(
+                codex_files
+                    .iter()
+                    .filter_map(|path| parse_codex_session(path, project_path, &root)),
+            );
+        }
+    }
+    for (agent_type, root) in additional_roots {
+        let mut files = Vec::new();
+        collect_session_files(root, &mut files);
+        if agent_type == "pi" {
+            sessions.extend(
+                files
+                    .iter()
+                    .filter_map(|path| parse_pi_session(path, project_path, root)),
+            );
+        } else if agent_type == "codex" {
+            sessions.extend(
+                files
+                    .iter()
+                    .filter_map(|path| parse_codex_session(path, project_path, root)),
+            );
+        }
+    }
+
+    sessions.sort_by(|left, right| right.info.last_active_at.cmp(&left.info.last_active_at));
+    let mut seen = HashSet::new();
+    sessions.retain(|session| {
+        seen.insert(format!("{}:{}", session.info.agent_type, session.info.session_id))
+    });
+    sessions.truncate(100);
+    sessions
+}
+
+fn find_agent_session(
+    project_path: &Path,
+    additional_roots: &[(String, PathBuf)],
+    agent_type: &str,
+    session_id: &str,
+) -> Option<StoredAgentSession> {
+    collect_agent_sessions(project_path, additional_roots)
+        .into_iter()
+        .find(|session| {
+            session.info.agent_type == agent_type && session.info.session_id == session_id
+        })
+}
+
+fn copy_session_to_terminal(
+    session: &StoredAgentSession,
+    target_config_dir: &Path,
+    project_path: &Path,
+) -> Result<(), String> {
+    let relative_path = if session.info.agent_type == "pi" {
+        PathBuf::from("sessions")
+            .join(pi_session_dir_name(project_path))
+            .join(session.source_path.file_name().ok_or("Invalid session filename")?)
+    } else {
+        let relative = session
+            .source_path
+            .strip_prefix(&session.source_root)
+            .map(PathBuf::from)
+            .or_else(|_| {
+                session
+                    .source_path
+                    .file_name()
+                    .map(PathBuf::from)
+                    .ok_or(())
+            })
+            .map_err(|_| "Invalid session filename")?;
+        PathBuf::from("sessions").join(relative)
+    };
+    let destination = target_config_dir.join(relative_path);
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| format!("Create session directory failed: {}", error))?;
+    }
+    std::fs::copy(&session.source_path, &destination)
+        .map_err(|error| format!("Copy session history failed: {}", error))?;
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn get_agent_session_history(
+    app: tauri::AppHandle,
+    project_path: String,
+) -> Result<Vec<AgentSessionInfo>, String> {
+    let manager = app.state::<Arc<PtyManager>>();
+    let additional_roots = manager.get_project_agent_session_roots(&project_path);
+    Ok(collect_agent_sessions(Path::new(&project_path), &additional_roots)
+        .into_iter()
+        .map(|session| session.info)
+        .collect())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn prepare_agent_session(
+    app: tauri::AppHandle,
+    terminal_id: String,
+    project_path: String,
+    agent_type: String,
+    session_id: String,
+) -> Result<(), String> {
+    if !session_id
+        .chars()
+        .all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_'))
+    {
+        return Err("Invalid session id".to_string());
+    }
+    if agent_type != "pi" && agent_type != "codex" {
+        return Err(format!("Unsupported session agent: {}", agent_type));
+    }
+
+    let manager = app.state::<Arc<PtyManager>>();
+    let settings_path = manager
+        .get_settings_path(&terminal_id)
+        .ok_or_else(|| format!("No Agent config found for terminal: {}", terminal_id))?;
+    let target_config_dir = Path::new(&settings_path)
+        .parent()
+        .ok_or_else(|| format!("Invalid Agent config path for terminal: {}", terminal_id))?;
+    let project_path_ref = Path::new(&project_path);
+    let additional_roots = manager.get_project_agent_session_roots(&project_path);
+    let session = find_agent_session(
+        project_path_ref,
+        &additional_roots,
+        &agent_type,
+        &session_id,
+    )
+    .ok_or_else(|| format!("Session not found for project: {}", project_path))?;
+    copy_session_to_terminal(&session, target_config_dir, project_path_ref)
+}
+
+fn is_session_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && [8, 13, 18, 23].iter().all(|index| bytes[*index] == b'-')
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            [8, 13, 18, 23].contains(&index)
+                || byte.is_ascii_hexdigit()
+        })
+}
+
+#[cfg(test)]
+mod agent_session_tests {
+    use super::*;
+
+    #[test]
+    fn parses_pi_and_codex_session_formats() {
+        let root = std::env::temp_dir().join(format!("sparky-agent-session-test-{}", uuid::Uuid::new_v4()));
+        let project = root.join("project");
+        let pi_root = root.join("pi");
+        let codex_root = root.join("codex");
+        std::fs::create_dir_all(&project).expect("create project directory");
+        std::fs::create_dir_all(&pi_root).expect("create pi directory");
+        std::fs::create_dir_all(&codex_root).expect("create codex directory");
+
+        let pi_id = "019fab65-a9da-7333-b3c1-6834ed819c74";
+        let pi_path = pi_root.join("pi.jsonl");
+        std::fs::write(
+            &pi_path,
+            format!(
+                "{}\n{}\n",
+                json!({
+                    "type": "session",
+                    "id": pi_id,
+                    "timestamp": "2026-07-29T01:03:14.394Z",
+                    "cwd": project,
+                }),
+                json!({
+                    "type": "message",
+                    "message": {
+                        "role": "user",
+                        "content": [{ "type": "text", "text": "Review the project" }]
+                    }
+                })
+            ),
+        )
+        .expect("write pi session");
+
+        let codex_id = "019d4c3f-fc2a-7031-8701-f9bedf2d69a4";
+        let codex_path = codex_root.join("rollout.jsonl");
+        std::fs::write(
+            &codex_path,
+            format!(
+                "{}\n{}\n",
+                json!({
+                    "type": "session_meta",
+                    "payload": {
+                        "id": codex_id,
+                        "timestamp": "2026-04-02T11:32:34.257Z",
+                        "cwd": project,
+                    }
+                }),
+                json!({
+                    "type": "event_msg",
+                    "payload": { "type": "user_message", "message": "Fix the PTY layout" }
+                })
+            ),
+        )
+        .expect("write codex session");
+
+        let pi = parse_pi_session(&pi_path, &project, &pi_root).expect("parse pi session");
+        assert_eq!(pi.info.agent_type, "pi");
+        assert_eq!(pi.info.session_id, pi_id);
+        assert_eq!(pi.info.title, "Review the project");
+
+        let codex = parse_codex_session(&codex_path, &project, &codex_root).expect("parse codex session");
+        assert_eq!(codex.info.agent_type, "codex");
+        assert_eq!(codex.info.session_id, codex_id);
+        assert_eq!(codex.info.title, "Fix the PTY layout");
+
+        std::fs::remove_dir_all(root).expect("remove test directory");
+    }
+}
+
+fn collect_session_files(root: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_session_files(&path, files);
+        } else if path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
+            files.push(path);
+        }
+    }
+}
+
+fn read_session_id(path: &std::path::Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let first_line = BufReader::new(file).lines().find_map(Result::ok)?;
+    let value: serde_json::Value = serde_json::from_str(first_line.trim()).ok()?;
+    let entry_type = value.get("type").and_then(serde_json::Value::as_str);
+    if entry_type != Some("session") && entry_type != Some("session_meta") {
+        return None;
+    }
+
+    ["id", "session_id", "sessionId"]
+        .iter()
+        .find_map(|key| value.get(*key).and_then(serde_json::Value::as_str))
+        .filter(|value| is_session_id(value))
+        .map(str::to_string)
+}
+
+fn find_latest_session_id(root: &std::path::Path) -> Option<String> {
+    let mut files = Vec::new();
+    collect_session_files(root, &mut files);
+    files.sort_by_key(|path| {
+        std::fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::UNIX_EPOCH)
+    });
+    files.into_iter().rev().find_map(|path| read_session_id(&path))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn get_terminal_session_id(app: tauri::AppHandle, terminal_id: String) -> Result<String, String> {
+    let manager = app.state::<Arc<PtyManager>>();
+    let settings_path = manager
+        .get_settings_path(&terminal_id)
+        .ok_or_else(|| format!("No Agent config found for terminal: {}", terminal_id))?;
+    let config_dir = std::path::Path::new(&settings_path)
+        .parent()
+        .ok_or_else(|| format!("Invalid Agent config path for terminal: {}", terminal_id))?;
+
+    find_latest_session_id(config_dir).ok_or_else(|| {
+        format!("No persisted Agent session found for terminal: {}", terminal_id)
+    })
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub fn pty_write(app: tauri::AppHandle, terminal_id: String, data: String) -> Result<(), String> {
     log::debug!("PTY write: terminal={}, data={}", terminal_id, data);
 
@@ -768,64 +1269,21 @@ pub fn pty_write(app: tauri::AppHandle, terminal_id: String, data: String) -> Re
 #[tauri::command(rename_all = "snake_case")]
 pub fn pty_kill(app: tauri::AppHandle, terminal_id: String) -> Result<(), String> {
     log::info!("[pty_kill] START terminal={}", terminal_id);
-
     let manager = app.state::<Arc<PtyManager>>();
-    
-    log::info!("[pty_kill] acquiring masters lock...");
-    let master = manager.masters.lock().unwrap().remove(&terminal_id);
-    log::info!("[pty_kill] masters done, master found={}", master.is_some());
-    
-    log::info!("[pty_kill] acquiring children lock...");
-    let child = manager.children.lock().unwrap().remove(&terminal_id);
-    log::info!("[pty_kill] children done, child found={}", child.is_some());
-    
-    log::info!("[pty_kill] trying writers lock...");
-    match manager.writers.try_lock() {
-        Ok(mut w) => { 
-            w.remove(&terminal_id); 
-            log::info!("[pty_kill] writers removed");
-        }
-        Err(_) => { 
-            log::warn!("[pty_kill] writers lock CONTENDED, skipping for: {}", terminal_id); 
-        }
-    }
-    
-    log::info!("[pty_kill] acquiring project_terminals lock...");
-    {
-        let mut pt = manager.project_terminals.lock().unwrap();
-        let mut to_remove = None;
-        for (project, terminals) in pt.iter_mut() {
-            if let Some(pos) = terminals.iter().position(|x| x == &terminal_id) {
-                terminals.remove(pos);
-                if terminals.is_empty() {
-                    to_remove = Some(project.clone());
-                }
-                break;
-            }
-        }
-        if let Some(ref p) = to_remove {
-            pt.remove(p);
-        }
-    }
-    log::info!("[pty_kill] project_terminals done");
-    
-    manager.update_active_ptys_in_db();
+    let removed = manager.remove_pty(&terminal_id);
 
-    if let (Some(master), Some(mut child)) = (master, child) {
-        log::info!("[pty_kill] spawning background kill thread...");
+    if let Some((master, mut child)) = removed {
         let tid = terminal_id.clone();
         std::thread::spawn(move || {
-            log::info!("[pty_kill bg] calling child.kill() for: {}", tid);
+            log::info!("[pty_kill bg] killing child for terminal {}", tid);
             let _ = child.kill();
-            log::info!("[pty_kill bg] child.kill() done, dropping master for: {}", tid);
             drop(master);
-            log::info!("[pty_kill bg] COMPLETE for: {}", tid);
+            log::info!("[pty_kill bg] COMPLETE for terminal {}", tid);
         });
     } else {
         log::warn!("[pty_kill] PTY not found for: {}", terminal_id);
     }
 
-    log::info!("[pty_kill] returning Ok for: {}", terminal_id);
     Ok(())
 }
 
@@ -857,7 +1315,7 @@ pub fn pty_exists(app: tauri::AppHandle, terminal_id: String) -> bool {
     let exists = manager.has_pty(&terminal_id);
     if exists {
         log::warn!(
-            "[pty_exists] Reusing existing terminal {}. Existing shell env is kept; if proxy logs are missing, close and recreate terminal.",
+            "[pty_exists] Reusing existing terminal {}. Existing Agent environment is kept; recreate the terminal after changing Agent or provider.",
             terminal_id
         );
     } else {
@@ -887,14 +1345,17 @@ pub fn get_terminal_active_process(app: tauri::AppHandle, terminal_id: String) -
         ProcessRefreshKind::default()
     );
 
+    let expected_agent = manager
+        .get_agent_type(&terminal_id)
+        .unwrap_or_else(|| "shell".to_string());
     let mut active_proc = "shell".to_string();
     for process in sys.processes().values() {
         if let Some(ppid) = process.parent() {
             if Some(ppid.as_u32()) == shell_pid {
                 let name = process.name().to_string_lossy().to_lowercase();
                 log::debug!("get_terminal_active_process: found child={} for shell_pid={:?}", name, shell_pid);
-                if name.contains("claude") {
-                    return Ok("claude".to_string());
+                if name.contains(&expected_agent) || (expected_agent == "pi" && name.contains("node")) {
+                    return Ok(expected_agent.clone());
                 }
                 if active_proc == "shell" {
                     active_proc = name;

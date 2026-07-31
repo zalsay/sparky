@@ -23,17 +23,14 @@ use websocket::FeishuWsClient;
 
 mod feishu_client;
 
+mod agent;
 mod pty;
-use crate::pty::{PtyManager, pty_spawn, pty_write, pty_kill, pty_resize, pty_exists, get_terminal_active_process};
+use crate::pty::{PtyManager, pty_spawn, pty_write, pty_kill, pty_resize, pty_exists, get_terminal_active_process, get_terminal_agent_command, get_terminal_session_id, get_agent_session_history, prepare_agent_session};
 
 mod web_agent;
 
 // mod proxy;
 // use proxy::{ProxyState, start_proxy_server};
-
-pub struct ProxyConfig {
-    pub port: u16,
-}
 
 pub struct WsConnectionState(pub Arc<AtomicBool>);
 
@@ -1351,39 +1348,82 @@ fn upsert_ai_provider(provider: AIProvider) -> Result<String, String> {
 #[tauri::command(rename_all = "snake_case")]
 async fn test_ai_provider_connection(provider: AIProvider) -> Result<String, String> {
     let client = reqwest::Client::new();
-    
-    // 解析 settings_config 获取 api_key 和 base_url
     let settings: serde_json::Value = serde_json::from_str(&provider.settings_config).map_err(|e| e.to_string())?;
-    let api_key = settings.get("api_key").and_then(|v| v.as_str()).unwrap_or_default();
-    let base_url = settings.get("base_url").and_then(|v| v.as_str()).unwrap_or_default();
-    let model_id = settings.get("model_id").and_then(|v| v.as_str()).unwrap_or("claude-3-5-sonnet-20241022");
-
-    let url = if base_url.is_empty() {
-        "https://api.anthropic.com/v1/messages".to_string()
-    } else {
-        let base = base_url.trim_end_matches('/');
-        if base.contains("/v1/messages") {
-            base.to_string()
+    let api_key = settings
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .or_else(|| settings.get("env").and_then(|v| v.get("OPENAI_API_KEY")).and_then(|v| v.as_str()))
+        .or_else(|| settings.get("env").and_then(|v| v.get("ANTHROPIC_AUTH_TOKEN")).and_then(|v| v.as_str()))
+        .unwrap_or_default();
+    let base_url = settings
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .filter(|value| !value.is_empty())
+        .or_else(|| provider.endpoints.first().map(|endpoint| endpoint.url.as_str()))
+        .unwrap_or("");
+    let model_id = settings
+        .get("model_id")
+        .and_then(|v| v.as_str())
+        .or_else(|| settings.get("model_ids").and_then(|v| v.as_array()).and_then(|items| items.first()).and_then(|v| v.as_str()))
+        .unwrap_or("default");
+    let api = settings
+        .get("api")
+        .and_then(|v| v.as_str())
+        .or(provider.provider_type.as_deref())
+        .unwrap_or(&provider.app_type)
+        .to_ascii_lowercase();
+    let is_anthropic = api.contains("anthropic") || api.contains("claude");
+    let is_responses = api.contains("responses");
+    let base = base_url.trim_end_matches('/');
+    let url = if base.is_empty() {
+        if is_anthropic {
+            "https://api.anthropic.com/v1/messages".to_string()
+        } else if is_responses {
+            "https://api.openai.com/v1/responses".to_string()
         } else {
-            format!("{}/v1/messages", base)
+            "https://api.openai.com/v1/chat/completions".to_string()
         }
+    } else if is_anthropic {
+        if base.ends_with("/messages") { base.to_string() } else { format!("{}/v1/messages", base) }
+    } else if is_responses {
+        if base.ends_with("/responses") { base.to_string() } else { format!("{}/responses", base) }
+    } else if base.ends_with("/chat/completions") {
+        base.to_string()
+    } else {
+        format!("{}/chat/completions", base)
     };
 
-    let res = client.post(&url)
-        .header("x-api-key", api_key)
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&serde_json::json!({
-            "model": model_id,
-            "max_tokens": 10,
-            "messages": [
-                {"role": "user", "content": "Hi"}
-            ]
-        }))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut request = client
+        .post(&url)
+        .header("content-type", "application/json");
+    if is_anthropic {
+        request = request
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&serde_json::json!({
+                "model": model_id,
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "Hi"}]
+            }));
+    } else if is_responses {
+        request = request
+            .header("authorization", format!("Bearer {}", api_key))
+            .json(&serde_json::json!({
+                "model": model_id,
+                "input": "Hi",
+                "max_output_tokens": 10
+            }));
+    } else {
+        request = request
+            .header("authorization", format!("Bearer {}", api_key))
+            .json(&serde_json::json!({
+                "model": model_id,
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "Hi"}]
+            }));
+    }
 
+    let res = request.send().await.map_err(|e| e.to_string())?;
     if res.status().is_success() {
         Ok("成功: 已成功连接至模型服务。".to_string())
     } else {
@@ -2926,6 +2966,8 @@ async fn save_window_size(window: tauri::Window) -> Result<(), String> {
 #[derive(Serialize)]
 pub struct DependencyStatus {
     pub claude: bool,
+    pub codex: bool,
+    pub pi: bool,
     pub code_server: bool,
 }
 
@@ -3089,6 +3131,8 @@ async fn get_installed_code_server_extensions() -> Result<Vec<String>, String> {
 fn check_dependencies() -> Result<DependencyStatus, String> {
     Ok(DependencyStatus {
         claude: find_executable("claude").is_some(),
+        codex: find_executable("codex").is_some(),
+        pi: find_executable("pi").is_some(),
         code_server: get_code_server_path().is_file(),
     })
 }
@@ -3268,8 +3312,6 @@ pub fn run() {
             //     start_proxy_server(proxy_state).await
             // }).expect("Failed to start proxy server");
 
-            app.manage(ProxyConfig { port: 0 });
-            
             // 将 sparky 二进制复制到 ~/sparky/ 供 hooks 使用
             if let Ok(exe_path) = std::env::current_exe() {
                 // 在 .app bundle 里，sparky CLI 与 Tauri exe 同目录
@@ -3579,6 +3621,10 @@ pub fn run() {
             get_terminal_active_process,
             set_terminal_provider,
             get_terminal_settings_path,
+            get_terminal_agent_command,
+            get_terminal_session_id,
+            get_agent_session_history,
+            prepare_agent_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

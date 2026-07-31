@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "updatedAt": "2026-07-31T06:10:07.418Z",
+  "tier": "ultra",
+  "presetTier": "low",
+  "pressure": 0.9867266666666665,
+  "config": {
+    "fastGatePct": 50,
+    "thresholdTokens": 150000,
+    "tierPct": 0.5,
+    "effectiveThresholdPct": 50,
+    "anchorUserMessages": 3,
+    "preserveRecent": 4,
+    "auto": true,
+    "autoInline": true
+  },
+  "session": {
+    "id": "sess_019fb5b2aef8750d",
+    "state": "mega-compact: ready",
+    "persistedThisSession": false,
+    "lastCheckpointId": null,
+    "lastCompactedFrom": 0,
+    "lastCompactedTokens": 0,
+    "dedupSkips": 0,
+    "dedupAttempts": 0
+  },
+  "context": {
+    "tokens": 148009,
+    "percent": 49.33633333333333,
+    "contextWindow": 300000
+  },
+  "trigger": {
+    "armed": false,
+    "ready": false,
+    "currentTokens": 148009,
+    "thresholdTokens": 150000,
+    "fastGatePct": 50,
+    "tierPct": 0.5,
+    "effectiveThresholdPct": 50
+  },
+  "store": {
+    "checkpointCount": 3,
+    "totalTokenEstimate": 415,
+    "lastCheckpointId": "chkpt_003",
+    "lastSummary": "Conversation: 14 messages (0 user, 4 assistant, 10 tool). Tools: bash, edit, read.\nCurrent work: 已改为复用本机 pi 的扩展，不再对每个 PTY 执行 `pi install`。 \nKey files: src-tauri/src/lib.rs, src-tauri/src/pty.rs, ui/src/App.tsx, src-tauri/src/agent.rs, src/lib.rs.\nPending work:\n  • 655-            this.settingsManager.setProjectPackages(nextPackages);",
+    "injectedCount": 0,
+    "dedupHitRate": 0,
+    "storageDedupRate": 0.9824561403508771,
+    "tokensSaved": 384945,
+    "originalTokens": 385360,
+    "dedupAttempts": 171,
+    "dedupCollapsed": 168
+  },
+  "crew": {
+    "activeAgents": 0,
+    "currentTurn": 12
+  },
+  "repo": {
+    "checkpointCount": 3,
+    "totalTokenEstimate": 415,
+    "originalTokens": 385360,
+    "sessionCount": 1,
+    "tokensSaved": 34220958,
+    "dedupAttempts": 171,
+    "dedupCollapsed": 168,
+    "storageDedupRate": 0.9824561403508771
+  },
+  "compression": {
+    "session": {
+      "tokensIn": -384945,
+      "tokensOut": 415,
+      "tokensFreed": 0,
+      "compressionPct": 0,
+      "dedupPct": 0
+    },
+    "repo": {
+      "tokensIn": 33836013,
+      "tokensOut": 415,
+      "tokensFreed": 34220958,
+      "compressionPct": 1.0113767836653804,
+      "dedupPct": 0.9824561403508771
+    }
+  },
+  "integrity": {
+    "regionsRetained": 3,
+    "compressedOriginalBytes": 139484,
+    "regionsWithoutBlob": 0,
+    "bytesPermanentlyDeleted": 0,
+    "duplicatesCollapsed": 0
+  },
+  "cacheHits": {
+    "session": 0,
+    "total": 168,
+    "sessionTokensSaved": 0,
+    "totalTokensSaved": 16800
+  },
+  "compacts": {
+    "session": 0,
+    "total": 3
+  },
+  "timeSaved": {
+    "compact": {
+      "sessionSec": 0,
+      "totalSec": 34220.958
+    },
+    "cacheHit": {
+      "sessionSec": 0,
+      "totalSec": 16.8
+    }
+  },
+  "model": {
+    "name": "gpt-5.6-luna",
+    "provider": "custom",
+    "providerName": "custom",
+    "inputRate": 0,
+    "outputRate": 0
+  },
+  "diag": {
+    "ctxFastGate": 40,
+    "liveTrimFires": 0,
+    "liveTrimReplays": 0
+  },
+  "retries": {
+    "errorRetryCount": 0,
+    "consecutiveErrors": 0,
+    "maxConsecutiveErrors": 10,
+    "errorRetryHardStop": false,
+    "sessionRetryCount": 0,
+    "sessionMax": 3,
+    "poisonedCount": 0
+  }
+}
